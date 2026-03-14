@@ -1,0 +1,899 @@
+use anyhow::Result;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::{backend::Backend, widgets::{ListState, TableState}, Terminal};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+use crate::ai::ChatMessage;
+use crate::migration::mapper::map_resource;
+use crate::migration::scorer::compute_overall_score;
+use crate::migration::types::MigrationResult;
+use crate::terraform::parser::parse_tf_file;
+use crate::terraform::scanner::find_tf_files;
+use crate::terraform::types::PassthroughBlock;
+use crate::todo::{scan_output_todos, apply_resolution, TodoItem, TodoStatus};
+use crate::zones::{find_zone_idx, ZONES};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum View {
+    Splash,
+    FileBrowser,
+    Scanner,
+    Resources,
+    Summary,
+    Generator,
+    DiffReview,
+    TodoReview,
+    Chat,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenStep {
+    AskZone,
+    AskOutputDir,
+    Generating,
+    Done,
+}
+
+pub enum AppMessage {
+    FileFound(String),
+    ScanComplete(Vec<MigrationResult>, Vec<PassthroughBlock>, f64),
+    GenerateLog(String),
+    GenerateDone(usize),
+    AiSuggestion(usize, String),
+    AiError(usize, String),
+    ChatResponse(String),
+    ChatError(String),
+    Error(String),
+}
+
+pub struct App {
+    pub view: View,
+    pub should_quit: bool,
+    pub tick: u64,
+
+    // Input
+    pub input_buf: String,
+
+    // Paths
+    pub scan_path: Option<PathBuf>,
+    pub output_path: Option<PathBuf>,
+
+    // Scan state
+    pub scan_files: Vec<String>,
+    pub scan_current: Option<String>,
+    pub scan_complete: bool,
+    pub resources: Vec<String>, // just for count display during scan
+
+    // Migration results
+    pub migration_results: Vec<MigrationResult>,
+    pub passthroughs: Vec<PassthroughBlock>,
+    pub overall_score: f64,
+
+    // Table navigation
+    pub table_state: TableState,
+    /// Whether the right preview panel has focus (true) or the left table (false)
+    pub resources_focus_preview: bool,
+    /// Scroll offset for the right preview panel
+    pub preview_scroll: usize,
+    /// Scroll offset for the summary right panel (resources needing attention)
+    pub summary_scroll: usize,
+
+    // Generator state
+    pub gen_step: GenStep,
+    pub target_zone: String,
+    pub zone_idx: usize,
+    pub gen_log: Vec<String>,
+    pub is_generating: bool,
+    pub gen_complete: bool,
+    pub gen_files_count: usize,
+
+    // File browser state
+    pub fb_cwd: PathBuf,
+    pub fb_entries: Vec<(String, bool)>, // (name, is_dir)
+    pub fb_state: ListState,
+
+    // Diff review state
+    pub diff_idx: usize,
+    pub diff_scroll: usize,
+
+    // TODO review state
+    pub todos: Vec<TodoItem>,
+    pub todo_idx: usize,
+    pub todo_input: String,
+    pub api_key: Option<String>,
+
+    // Chat / AI advisor state
+    pub chat_messages: Vec<ChatMessage>,
+    pub chat_input: String,
+    pub chat_scroll: usize,
+    /// Last computed max scroll from the render pass (updated via interior mutability).
+    pub chat_scroll_max: std::cell::Cell<u16>,
+    pub chat_loading: bool,
+    /// Concatenated content of generated .tf files, built once on entering the chat view.
+    pub chat_tf_context: String,
+
+    // Async channel
+    tx: mpsc::Sender<AppMessage>,
+    rx: mpsc::Receiver<AppMessage>,
+}
+
+impl App {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(256);
+        let mut table_state = TableState::default();
+        table_state.select(Some(0));
+        Self {
+            view: View::Splash,
+            should_quit: false,
+            tick: 0,
+            input_buf: String::new(),
+            scan_path: None,
+            output_path: None,
+            scan_files: Vec::new(),
+            scan_current: None,
+            scan_complete: false,
+            resources: Vec::new(),
+            migration_results: Vec::new(),
+            passthroughs: Vec::new(),
+            overall_score: 0.0,
+            table_state,
+            resources_focus_preview: false,
+            preview_scroll: 0,
+            summary_scroll: 0,
+            gen_step: GenStep::AskZone,
+            target_zone: "de-fra1".into(),
+            zone_idx: find_zone_idx("de-fra1"),
+            gen_log: Vec::new(),
+            is_generating: false,
+            gen_complete: false,
+            gen_files_count: 0,
+            fb_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            fb_entries: Vec::new(),
+            fb_state: ListState::default(),
+            diff_idx: 0,
+            diff_scroll: 0,
+            todos: Vec::new(),
+            todo_idx: 0,
+            todo_input: String::new(),
+            api_key: std::env::var("LLM_API_KEY").ok(),
+            chat_messages: Vec::new(),
+            chat_input: String::new(),
+            chat_scroll: 9999,
+            chat_scroll_max: std::cell::Cell::new(0),
+            chat_loading: false,
+            chat_tf_context: String::new(),
+            tx,
+            rx,
+        }
+    }
+
+    pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        let tick_rate = Duration::from_millis(50);
+        let mut last_tick = Instant::now();
+
+        loop {
+            terminal.draw(|f| crate::ui::render(f, self))?;
+
+            // Poll for crossterm events
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if event::poll(timeout)? {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_key(key.code).await;
+                    }
+                }
+            }
+
+            // Process async messages
+            while let Ok(msg) = self.rx.try_recv() {
+                self.handle_message(msg);
+            }
+
+            // Tick
+            if last_tick.elapsed() >= tick_rate {
+                self.tick = self.tick.wrapping_add(1);
+                last_tick = Instant::now();
+
+                // Auto-advance scanner → resources when done
+                if self.view == View::Scanner && self.scan_complete {
+                    // Wait a moment then advance
+                    if self.tick % 20 == 0 {
+                        self.view = View::Resources;
+                    }
+                }
+            }
+
+            if self.should_quit {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_key(&mut self, code: KeyCode) {
+        match self.view {
+            View::Splash => self.handle_splash_key(code).await,
+            View::FileBrowser => self.handle_filebrowser_key(code).await,
+            View::Scanner => self.handle_scanner_key(code),
+            View::Resources => self.handle_resources_key(code).await,
+            View::Summary => self.handle_summary_key(code).await,
+            View::Generator => self.handle_generator_key(code).await,
+            View::DiffReview => self.handle_diff_key(code).await,
+            View::TodoReview => self.handle_todo_key(code).await,
+            View::Chat => self.handle_chat_key(code).await,
+        }
+    }
+
+    async fn handle_splash_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                self.fb_load_dir(None);
+                self.view = View::FileBrowser;
+            }
+            KeyCode::Char(c) => self.input_buf.push(c),
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+            }
+            KeyCode::Enter => {
+                if !self.input_buf.is_empty() {
+                    let path = PathBuf::from(self.input_buf.trim());
+                    self.scan_path = Some(path.clone());
+                    self.input_buf.clear();
+                    self.view = View::Scanner;
+                    self.start_scan(path).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_filebrowser_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Esc => {
+                self.view = View::Splash;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let len = self.fb_entries.len();
+                if len > 0 {
+                    let cur = self.fb_state.selected().unwrap_or(0);
+                    let next = if cur == 0 { len - 1 } else { cur - 1 };
+                    self.fb_state.select(Some(next));
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let len = self.fb_entries.len();
+                if len > 0 {
+                    let cur = self.fb_state.selected().unwrap_or(0);
+                    let next = if cur + 1 >= len { 0 } else { cur + 1 };
+                    self.fb_state.select(Some(next));
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(idx) = self.fb_state.selected() {
+                    if let Some((name, is_dir)) = self.fb_entries.get(idx).cloned() {
+                        if is_dir {
+                            let new_path = if name == "[..]" {
+                                self.fb_cwd.parent()
+                                    .map(|p| p.to_path_buf())
+                                    .unwrap_or_else(|| self.fb_cwd.clone())
+                            } else {
+                                self.fb_cwd.join(&name)
+                            };
+                            self.fb_load_dir(Some(new_path));
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                let parent = self.fb_cwd.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.fb_cwd.clone());
+                self.fb_load_dir(Some(parent));
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                let path = self.fb_cwd.clone();
+                self.scan_path = Some(path.clone());
+                self.view = View::Scanner;
+                self.start_scan(path).await;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn fb_load_dir(&mut self, path: Option<PathBuf>) {
+        if let Some(p) = path {
+            self.fb_cwd = p;
+        }
+        self.fb_entries.clear();
+        // Add parent dir entry unless we're at root
+        if self.fb_cwd.parent().is_some() {
+            self.fb_entries.push(("[..]".to_string(), true));
+        }
+
+        if let Ok(read) = std::fs::read_dir(&self.fb_cwd) {
+            let mut dirs: Vec<String> = Vec::new();
+            let mut tf_files: Vec<String> = Vec::new();
+
+            for entry in read.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') { continue; }
+                if path.is_dir() {
+                    dirs.push(name);
+                } else if name.ends_with(".tf") {
+                    tf_files.push(name);
+                }
+            }
+
+            dirs.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            tf_files.sort();
+
+            for d in dirs    { self.fb_entries.push((d, true)); }
+            for f in tf_files { self.fb_entries.push((f, false)); }
+        }
+
+        self.fb_state.select(if self.fb_entries.is_empty() { None } else { Some(0) });
+    }
+
+    fn handle_scanner_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            _ => {}
+        }
+    }
+
+    async fn handle_resources_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Char('s') | KeyCode::Char('S') => self.view = View::Summary,
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                self.view = View::Generator;
+                self.input_buf.clear();
+                self.output_path = None;
+                self.gen_step = GenStep::AskZone;
+                self.gen_complete = false;
+                self.zone_idx = find_zone_idx(&self.target_zone);
+            }
+            KeyCode::Tab => self.view = View::Summary,
+            KeyCode::BackTab => {
+                self.view = View::Generator;
+                self.input_buf.clear();
+                self.output_path = None;
+                self.gen_step = GenStep::AskZone;
+                self.gen_complete = false;
+                self.zone_idx = find_zone_idx(&self.target_zone);
+            }
+            // Panel focus switching
+            KeyCode::Right | KeyCode::Char('l') if !self.resources_focus_preview => {
+                self.resources_focus_preview = true;
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.resources_focus_preview => {
+                self.resources_focus_preview = false;
+            }
+            // Preview panel scroll
+            KeyCode::Down | KeyCode::Char('j') if self.resources_focus_preview => {
+                self.preview_scroll = self.preview_scroll.saturating_add(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.resources_focus_preview => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(1);
+            }
+            // Table navigation
+            KeyCode::Down | KeyCode::Char('j') => {
+                let i = match self.table_state.selected() {
+                    Some(i) => {
+                        if i >= self.migration_results.len().saturating_sub(1) {
+                            0
+                        } else {
+                            i + 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.table_state.select(Some(i));
+                // Reset preview scroll when switching rows
+                self.preview_scroll = 0;
+                self.resources_focus_preview = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let i = match self.table_state.selected() {
+                    Some(i) => {
+                        if i == 0 {
+                            self.migration_results.len().saturating_sub(1)
+                        } else {
+                            i - 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.table_state.select(Some(i));
+                // Reset preview scroll when switching rows
+                self.preview_scroll = 0;
+                self.resources_focus_preview = false;
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_summary_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                self.view = View::Generator;
+                self.input_buf.clear();
+                self.output_path = None;
+                self.gen_step = GenStep::AskZone;
+                self.gen_complete = false;
+                self.zone_idx = find_zone_idx(&self.target_zone);
+            }
+            KeyCode::Tab => {
+                self.view = View::Generator;
+                self.input_buf.clear();
+                self.output_path = None;
+                self.gen_step = GenStep::AskZone;
+                self.gen_complete = false;
+                self.zone_idx = find_zone_idx(&self.target_zone);
+            }
+            KeyCode::BackTab => self.view = View::Resources,
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                self.summary_scroll = self.summary_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                self.summary_scroll = self.summary_scroll.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_generator_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Tab => self.view = View::Resources,
+            KeyCode::BackTab => self.view = View::Summary,
+            KeyCode::Char('t') | KeyCode::Char('T') if self.gen_complete => {
+                if let Some(output_dir) = &self.output_path {
+                    self.todos = scan_output_todos(output_dir);
+                    self.todo_idx = 0;
+                    self.todo_input.clear();
+                    self.view = View::TodoReview;
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') if self.gen_complete => {
+                self.diff_idx = 0;
+                self.diff_scroll = 0;
+                self.view = View::DiffReview;
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') if self.gen_complete => {
+                self.enter_chat_view(false).await;
+            }
+            KeyCode::Char('v') | KeyCode::Char('V') if self.gen_complete => {
+                self.enter_chat_view(true).await;
+            }
+
+            // Zone picker navigation
+            KeyCode::Up | KeyCode::Char('k') if self.gen_step == GenStep::AskZone => {
+                if self.zone_idx > 0 {
+                    self.zone_idx -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.gen_step == GenStep::AskZone => {
+                if self.zone_idx + 1 < ZONES.len() {
+                    self.zone_idx += 1;
+                }
+            }
+
+            // Output dir text input
+            KeyCode::Char(c) if self.gen_step == GenStep::AskOutputDir => {
+                self.input_buf.push(c);
+            }
+            KeyCode::Backspace if self.gen_step == GenStep::AskOutputDir => {
+                self.input_buf.pop();
+            }
+
+            KeyCode::Enter => {
+                match self.gen_step {
+                    GenStep::AskZone => {
+                        self.target_zone = ZONES[self.zone_idx].slug.to_string();
+                        self.gen_step = GenStep::AskOutputDir;
+                    }
+                    GenStep::AskOutputDir => {
+                        if !self.input_buf.trim().is_empty() {
+                            let out = PathBuf::from(self.input_buf.trim());
+                            self.output_path = Some(out.clone());
+                            self.input_buf.clear();
+                            self.gen_step = GenStep::Generating;
+                            self.start_generation(out).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_todo_key(&mut self, code: KeyCode) {
+        // When the user has started typing, route most keys to the text input.
+        // Only Tab/BackTab (navigation) and Esc (cancel input) bypass the input field.
+        if !self.todo_input.is_empty() {
+            match code {
+                KeyCode::Esc => { self.todo_input.clear(); }
+                KeyCode::Tab | KeyCode::BackTab => self.view = View::Generator,
+                KeyCode::Backspace => { self.todo_input.pop(); }
+                KeyCode::Char(c) => { self.todo_input.push(c); }
+                // Apply on Enter even while typing
+                KeyCode::Enter => self.apply_todo_resolution().await,
+                _ => {}
+            }
+            return;
+        }
+
+        // Input is empty — single-char commands are active.
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Tab | KeyCode::BackTab => self.view = View::Generator,
+
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !self.todos.is_empty() {
+                    self.todo_idx = (self.todo_idx + 1) % self.todos.len();
+                    self.todo_input.clear();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if !self.todos.is_empty() {
+                    self.todo_idx = if self.todo_idx == 0 {
+                        self.todos.len() - 1
+                    } else {
+                        self.todo_idx - 1
+                    };
+                    self.todo_input.clear();
+                }
+            }
+            // [N] jump to next pending (unresolved/unskipped) todo
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                if !self.todos.is_empty() {
+                    let len = self.todos.len();
+                    let start = (self.todo_idx + 1) % len;
+                    for offset in 0..len {
+                        let idx = (start + offset) % len;
+                        if self.todos[idx].status == TodoStatus::Pending {
+                            self.todo_idx = idx;
+                            self.todo_input.clear();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // AI suggestion
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let (Some(api_key), Some(item)) =
+                    (self.api_key.clone(), self.todos.get_mut(self.todo_idx))
+                {
+                    if item.status == TodoStatus::Pending || item.status == TodoStatus::Resolved {
+                        item.status = TodoStatus::Loading;
+                        let item_clone = item.clone();
+                        let idx = self.todo_idx;
+                        let tx = self.tx.clone();
+                        tokio::spawn(async move {
+                            match crate::ai::get_todo_suggestion(&item_clone, &api_key).await {
+                                Ok(s) => { let _ = tx.send(AppMessage::AiSuggestion(idx, s)).await; }
+                                Err(e) => { let _ = tx.send(AppMessage::AiError(idx, e.to_string())).await; }
+                            }
+                        });
+                    }
+                }
+            }
+
+            // Skip
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                if let Some(item) = self.todos.get_mut(self.todo_idx) {
+                    item.status = TodoStatus::Skipped;
+                    self.todo_input.clear();
+                    // Advance to next pending
+                    if self.todo_idx + 1 < self.todos.len() {
+                        self.todo_idx += 1;
+                    }
+                }
+            }
+
+            // Apply resolution on Enter
+            KeyCode::Enter => self.apply_todo_resolution().await,
+
+            // Begin text input with any other printable char
+            KeyCode::Char(c) => { self.todo_input.push(c); }
+            KeyCode::Backspace => { self.todo_input.pop(); }
+
+            _ => {}
+        }
+    }
+
+    async fn apply_todo_resolution(&mut self) {
+        let resolution = if !self.todo_input.is_empty() {
+            Some(self.todo_input.clone())
+        } else {
+            self.todos.get(self.todo_idx).and_then(|i| i.ai_suggestion.clone())
+        };
+
+        if let (Some(res), Some(output_dir)) = (resolution, self.output_path.clone()) {
+            if let Some(item) = self.todos.get_mut(self.todo_idx) {
+                let _ = apply_resolution(&output_dir, item, &res);
+                item.resolution = Some(res.clone());
+                item.status = TodoStatus::Resolved;
+                self.todo_input.clear();
+                // Advance to next pending
+                let next = (self.todo_idx + 1).min(self.todos.len().saturating_sub(1));
+                if next > self.todo_idx || self.todos.len() == 1 {
+                    self.todo_idx = next;
+                }
+            }
+        }
+    }
+
+    fn handle_message(&mut self, msg: AppMessage) {
+        match msg {
+            AppMessage::FileFound(path) => {
+                self.scan_files.push(path.clone());
+                self.scan_current = Some(path);
+            }
+            AppMessage::ScanComplete(results, passthroughs, score) => {
+                self.resources = results.iter().map(|r| r.resource_type.clone()).collect();
+                self.migration_results = results;
+                self.passthroughs = passthroughs;
+                self.overall_score = score;
+                self.scan_complete = true;
+                self.table_state.select(Some(0));
+            }
+            AppMessage::GenerateLog(line) => {
+                self.gen_log.push(line);
+            }
+            AppMessage::GenerateDone(count) => {
+                self.is_generating = false;
+                self.gen_complete = true;
+                self.gen_step = GenStep::Done;
+                self.gen_files_count = count;
+            }
+            AppMessage::AiSuggestion(idx, suggestion) => {
+                if let Some(item) = self.todos.get_mut(idx) {
+                    item.ai_suggestion = Some(suggestion);
+                    item.status = TodoStatus::Pending;
+                }
+            }
+            AppMessage::AiError(idx, err) => {
+                if let Some(item) = self.todos.get_mut(idx) {
+                    item.ai_suggestion = Some(format!("[AI error: {}]", err));
+                    item.status = TodoStatus::Pending;
+                }
+            }
+            AppMessage::ChatResponse(text) => {
+                self.chat_loading = false;
+                self.chat_messages.push(ChatMessage::ai(text));
+                self.chat_scroll = 9999; // auto-scroll to bottom
+            }
+            AppMessage::ChatError(err) => {
+                self.chat_loading = false;
+                self.chat_messages.push(ChatMessage::ai(format!("[Error: {}]", err)));
+                self.chat_scroll = 9999;
+            }
+            AppMessage::Error(e) => {
+                self.gen_log.push(format!("[ERR] {}", e));
+            }
+        }
+    }
+
+    async fn start_scan(&self, path: PathBuf) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            // Find all .tf files
+            let tf_files = match find_tf_files(&path) {
+                Ok(files) => files,
+                Err(e) => {
+                    let _ = tx.send(AppMessage::Error(format!("Scan error: {}", e))).await;
+                    return;
+                }
+            };
+
+            // Parse each file and map resources
+            let mut all_results: Vec<MigrationResult> = Vec::new();
+            let mut all_passthroughs: Vec<PassthroughBlock> = Vec::new();
+            for file in &tf_files {
+                let display = file.display().to_string();
+                let _ = tx.send(AppMessage::FileFound(display)).await;
+
+                // Small yield to let UI update
+                tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+                match parse_tf_file(file) {
+                    Ok(tf_file) => {
+                        for res in &tf_file.resources {
+                            let result = map_resource(res);
+                            all_results.push(result);
+                        }
+                        all_passthroughs.extend(tf_file.passthroughs);
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AppMessage::Error(format!("Parse error in {}: {}", file.display(), e)))
+                            .await;
+                    }
+                }
+            }
+
+            let score = compute_overall_score(&all_results);
+            let _ = tx.send(AppMessage::ScanComplete(all_results, all_passthroughs, score)).await;
+        });
+    }
+
+    async fn start_generation(&mut self, output_dir: PathBuf) {
+        self.is_generating = true;
+        self.gen_log.clear();
+        self.gen_log.push(format!(">> Zone: {}", self.target_zone));
+        self.gen_log.push(format!(">> Generating to: {}", output_dir.display()));
+
+        let tx = self.tx.clone();
+        let results = self.migration_results.clone();
+        let passthroughs = self.passthroughs.clone();
+        let zone = self.target_zone.clone();
+
+        tokio::spawn(async move {
+            let mut log: Vec<String> = Vec::new();
+            match crate::migration::generator::generate_files(&results, &passthroughs, &output_dir, &zone, &mut log) {
+                Ok(count) => {
+                    for line in log {
+                        let _ = tx.send(AppMessage::GenerateLog(line)).await;
+                    }
+                    let _ = tx.send(AppMessage::GenerateDone(count)).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::Error(format!("Generation failed: {}", e))).await;
+                }
+            }
+        });
+    }
+
+    /// Build a truncated string of all generated .tf file contents for AI context.
+    fn build_tf_context(&self) -> String {
+        const MAX_CHARS: usize = 14_000;
+        let Some(output_dir) = &self.output_path else { return String::new() };
+
+        let mut ctx = String::new();
+        if let Ok(entries) = std::fs::read_dir(output_dir) {
+            let mut paths: Vec<_> = entries
+                .flatten()
+                .filter(|e| e.path().extension().map_or(false, |x| x == "tf"))
+                .collect();
+            paths.sort_by_key(|e| e.file_name());
+            for entry in paths {
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    let header = format!("# --- {} ---\n", entry.file_name().to_string_lossy());
+                    ctx.push_str(&header);
+                    ctx.push_str(&content);
+                    ctx.push('\n');
+                    if ctx.len() >= MAX_CHARS { break; }
+                }
+            }
+        }
+        if ctx.len() > MAX_CHARS {
+            ctx.truncate(MAX_CHARS);
+            ctx.push_str("\n... (truncated)");
+        }
+        ctx
+    }
+
+    /// Enter the Chat view. If `validate` is true, immediately send a validation request.
+    async fn enter_chat_view(&mut self, validate: bool) {
+        self.chat_tf_context = self.build_tf_context();
+        self.chat_messages.clear();
+        self.chat_input.clear();
+        self.chat_loading = false;
+        self.chat_scroll = 9999;
+        self.view = View::Chat;
+
+        if validate {
+            let prompt = "Please validate this UpCloud Terraform for correctness. \
+                Check for: unresolved <TODO> placeholders, missing required attributes, \
+                incorrect resource references, and any UpCloud-specific issues. \
+                List problems clearly, then summarise what looks good.";
+            self.chat_messages.push(ChatMessage::user(prompt));
+            self.chat_loading = true;
+            self.start_chat_message().await;
+        } else if let Some(api_key) = &self.api_key {
+            // Send a greeting / summary from the AI on open
+            let _ = api_key; // used below
+            self.chat_messages.push(ChatMessage::user(
+                "Briefly introduce yourself and summarise the generated Terraform in 2-3 sentences."
+            ));
+            self.chat_loading = true;
+            self.start_chat_message().await;
+        }
+    }
+
+    /// Spawn an async task that sends the current chat_messages to the AI and waits for a reply.
+    async fn start_chat_message(&mut self) {
+        let Some(api_key) = self.api_key.clone() else { return };
+        let messages = self.chat_messages.clone();
+        let tf_context = self.chat_tf_context.clone();
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            match crate::ai::chat_with_tf(&messages, &tf_context, &api_key).await {
+                Ok(resp) => { let _ = tx.send(AppMessage::ChatResponse(resp)).await; }
+                Err(e)   => { let _ = tx.send(AppMessage::ChatError(e.to_string())).await; }
+            }
+        });
+    }
+
+    async fn handle_chat_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') if self.chat_input.is_empty() => {
+                self.should_quit = true;
+            }
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
+                self.view = View::Generator;
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.chat_input.is_empty() => {
+                let max = self.chat_scroll_max.get() as usize;
+                // Clamp from the 9999 sentinel to the actual bottom, then move up.
+                let effective = self.chat_scroll.min(max);
+                self.chat_scroll = effective.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.chat_input.is_empty() => {
+                let max = self.chat_scroll_max.get() as usize;
+                let effective = self.chat_scroll.min(max);
+                if effective >= max {
+                    self.chat_scroll = 9999; // already at bottom — keep auto-scroll
+                } else {
+                    self.chat_scroll = effective + 1;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.chat_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.chat_input.pop();
+            }
+            KeyCode::Enter => {
+                let msg = self.chat_input.trim().to_string();
+                if !msg.is_empty() && !self.chat_loading {
+                    self.chat_input.clear();
+                    self.chat_messages.push(ChatMessage::user(&msg));
+                    self.chat_loading = true;
+                    self.chat_scroll = 9999;
+                    self.start_chat_message().await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_diff_key(&mut self, code: KeyCode) {
+        let total = self.migration_results.len();
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Esc | KeyCode::Backspace => self.view = View::Generator,
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
+                if total > 0 {
+                    self.diff_idx = if self.diff_idx == 0 { total - 1 } else { self.diff_idx - 1 };
+                    self.diff_scroll = 0;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
+                if total > 0 {
+                    self.diff_idx = (self.diff_idx + 1) % total;
+                    self.diff_scroll = 0;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                self.diff_scroll = self.diff_scroll.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+}

@@ -1,0 +1,1690 @@
+use anyhow::Result;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::migration::providers::aws::database::{extract_parameter_blocks, is_valid_pg_property};
+use crate::migration::types::{MigrationResult, MigrationStatus};
+use crate::terraform::types::{PassthroughBlock, PassthroughKind};
+use crate::zones::zone_to_objstorage_region;
+
+/// Prefix that identifies an unresolved TODO placeholder in generated HCL.
+/// Used to skip values that the mapper could not resolve at mapping time.
+const TODO_PLACEHOLDER_PREFIX: &str = "<TODO";
+
+
+pub fn generate_files(
+    results: &[MigrationResult],
+    passthroughs: &[PassthroughBlock],
+    output_dir: &Path,
+    zone: &str,
+    log: &mut Vec<String>,
+) -> Result<usize> {
+    std::fs::create_dir_all(output_dir)?;
+
+    let objstorage_region = zone_to_objstorage_region(zone);
+
+    // ── Build cross-resolution lookup tables ──────────────────────────────────
+    let lb_names: Vec<String> = results.iter()
+        .filter(|r| r.upcloud_type == "upcloud_loadbalancer")
+        .map(|r| r.resource_name.clone())
+        .collect();
+
+    let network_names: Vec<String> = results.iter()
+        .filter(|r| r.upcloud_type.contains("upcloud_network"))
+        .map(|r| r.resource_name.clone())
+        .collect();
+
+    let server_names: Vec<String> = results.iter()
+        .filter(|r| r.upcloud_type == "upcloud_server")
+        .map(|r| r.resource_name.clone())
+        .collect();
+
+    let k8s_names: Vec<String> = results.iter()
+        .filter(|r| r.upcloud_type == "upcloud_kubernetes_cluster")
+        .map(|r| r.resource_name.clone())
+        .collect();
+
+    // Build key_pair_name → public_key map for auto-resolving login blocks.
+    let mut ssh_key_map: HashMap<String, LoginKeysValue> = HashMap::new();
+    for r in results {
+        if r.resource_type == "aws_key_pair" {
+            if let Some(snippet) = &r.snippet {
+                if let Some(keys) = extract_login_keys(snippet) {
+                    ssh_key_map.insert(r.resource_name.clone(), keys);
+                }
+            }
+        }
+    }
+
+    let backend_names: Vec<String> = results.iter()
+        .filter(|r| r.upcloud_type == "upcloud_loadbalancer_backend")
+        .map(|r| r.resource_name.clone())
+        .collect();
+
+    // Build server_info_map: server resource_name → Option<count string>
+    // Used for name-based firewall server_id resolution and IP ref indexing.
+    let server_info_map: HashMap<String, Option<String>> = results.iter()
+        .filter(|r| r.upcloud_type == "upcloud_server")
+        .map(|r| {
+            let count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl);
+            (r.resource_name.clone(), count)
+        })
+        .collect();
+
+    // Build network_count_map: network resource_name → whether it has count.
+    // Used to decide whether network references need [count.index] or [0].
+    let network_count_map: HashMap<String, bool> = results.iter()
+        .filter(|r| r.upcloud_type.contains("upcloud_network"))
+        .map(|r| {
+            let has_count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl).is_some();
+            (r.resource_name.clone(), has_count)
+        })
+        .collect();
+
+    // Build param_group_map: parameter group resource_name → Vec<(param_name, value)>
+    // Used to inject parameters inline into the properties {} block of DB resources.
+    let param_group_map: HashMap<String, Vec<(String, String)>> = results.iter()
+        .filter(|r| r.resource_type == "aws_db_parameter_group"
+               || r.resource_type == "aws_elasticache_parameter_group")
+        .filter_map(|r| r.source_hcl.as_ref().map(|hcl| {
+            (r.resource_name.clone(), extract_parameter_blocks(hcl))
+        }))
+        .collect();
+
+    // Apply zone substitution and cross-resolve TODO placeholders
+    let resolve = |hcl: &str, _resource_name: &str| -> String {
+        let mut s = hcl
+            .replace("__ZONE__", zone)
+            .replace("__OBJSTORAGE_REGION__", objstorage_region);
+
+        // LB references
+        if let Some(lb) = lb_names.first() {
+            s = s.replace("upcloud_loadbalancer.<TODO>.id", &format!("upcloud_loadbalancer.{}.id", lb));
+        }
+
+        // Backend name for frontends
+        if let Some(backend) = backend_names.first() {
+            s = s.replace(
+                "upcloud_loadbalancer_backend.<TODO>.name",
+                &format!("upcloud_loadbalancer_backend.{}.name", backend),
+            );
+        }
+
+        // Network reference for LB networks blocks and server network_interface.
+        // When the network is a counted resource, the reference must include an index:
+        //   - counted server context  → [count.index]
+        //   - non-counted server      → [0]
+        if let Some(net) = network_names.first() {
+            let net_has_count = network_count_map.get(net.as_str()).copied().unwrap_or(false);
+            let net_ref = if net_has_count {
+                if extract_count_from_hcl(&s).is_some() {
+                    format!("upcloud_network.{}[count.index].id", net)
+                } else {
+                    format!("upcloud_network.{}[0].id", net)
+                }
+            } else {
+                format!("upcloud_network.{}.id", net)
+            };
+            s = s.replace("\"<TODO: upcloud_network reference>\"", &net_ref);
+            // Legacy placeholders kept for backwards compat
+            s = s.replace("\"<TODO: reference upcloud_network UUID>\"", &net_ref);
+            s = s.replace("\"<TODO: upcloud_network UUID>\"", &net_ref);
+        }
+
+        // Server IP for LB backend members.
+        // When the server is a counted resource, the reference must include [0].
+        if let Some(srv) = server_names.first() {
+            let srv_has_count = server_info_map.get(srv.as_str()).map(|c| c.is_some()).unwrap_or(false);
+            let srv_ref = if srv_has_count {
+                format!("upcloud_server.{}[0].network_interface[0].ip_address", srv)
+            } else {
+                format!("upcloud_server.{}.network_interface[0].ip_address", srv)
+            };
+            s = s.replace("\"<TODO: server IP>\"", &srv_ref);
+        }
+
+        // K8s cluster ref for node groups
+        if let Some(k8s) = k8s_names.first() {
+            s = s.replace(
+                "upcloud_kubernetes_cluster.<TODO>.id",
+                &format!("upcloud_kubernetes_cluster.{}.id", k8s),
+            );
+        }
+
+        // Resolve login block SSH keys: replace TODO placeholders with actual public keys.
+        let mut resolved = s.clone();
+        for (kp_name, keys_value) in &ssh_key_map {
+            let placeholder = format!("<TODO: SSH public key for aws_key_pair.{}>", kp_name);
+            match keys_value {
+                // Literal key: replace just the TODO content; surrounding quotes stay.
+                LoginKeysValue::Literal(public_key) => {
+                    resolved = resolved.replace(&placeholder, public_key);
+                }
+                // Expression key (ternary etc.): replace the quoted placeholder INCLUDING
+                // its surrounding quotes so the expression is a bare HCL value, not a string.
+                LoginKeysValue::Expression(expr) => {
+                    let quoted_placeholder = format!("\"{}\"", placeholder);
+                    resolved = resolved.replace(&quoted_placeholder, expr);
+                }
+            }
+        }
+        // Generic SSH key TODO fallback — use the first available literal key.
+        if resolved.contains("<TODO: paste SSH public key>") {
+            if let Some(LoginKeysValue::Literal(key)) = ssh_key_map.values().next() {
+                resolved = resolved.replace("<TODO: paste SSH public key>", key);
+            }
+        }
+        s = resolved;
+
+        // Resolve DB parameter group property markers: # __DB_PROPS:PREFIX:GROUP_NAME__
+        // Each marker line is replaced with the actual property lines from the param group.
+        if s.contains("# __DB_PROPS:") {
+            let mut out = String::with_capacity(s.len());
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if let Some(inner) = trimmed.strip_prefix("# __DB_PROPS:") {
+                    if let Some(inner) = inner.strip_suffix("__") {
+                        if let Some((prefix, group_name)) = inner.split_once(':') {
+                            if let Some(params) = param_group_map.get(group_name) {
+                                if !params.is_empty() {
+                                    let _ = prefix; // prefix not prepended; UpCloud property names are unprefixed
+                                    for (name, value) in params {
+                                        if is_valid_pg_property(name) {
+                                            out.push_str(&format!("    {} = \"{}\"\n", name, value));
+                                        } else {
+                                            out.push_str(&format!(
+                                                "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
+                                                name, value
+                                            ));
+                                        }
+                                    }
+                                    continue; // marker replaced — skip appending the marker line
+                                }
+                            }
+                            // Group not found or empty — leave a TODO comment
+                            out.push_str(&format!(
+                                "    # <TODO: migrate parameters from aws_db_parameter_group.{}>\n",
+                                group_name
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+            // Preserve original trailing-newline behaviour
+            if !s.ends_with('\n') && out.ends_with('\n') {
+                out.pop();
+            }
+            s = out;
+        }
+
+        // Replace any remaining AWS-specific data source references
+        s = sanitize_aws_refs(s);
+
+        s
+    };
+
+    // Group fully-convertible results by source file basename
+    let mut file_map: HashMap<String, Vec<&MigrationResult>> = HashMap::new();
+    for result in results {
+        if result.upcloud_hcl.is_some() {
+            let basename = PathBuf::from(&result.source_file)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("output.tf")
+                .to_string();
+            file_map.entry(basename).or_default().push(result);
+        }
+    }
+
+    // Group passthrough blocks (variable / output / locals) by source file basename.
+    // Files that contain only passthrough blocks (no resources) must also be created.
+    let mut passthrough_map: HashMap<String, Vec<&PassthroughBlock>> = HashMap::new();
+    for pt in passthroughs {
+        let basename = pt
+            .source_file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("variables.tf")
+            .to_string();
+        // Make sure files with only passthroughs (no resources) still appear in the output.
+        file_map.entry(basename.clone()).or_default();
+        passthrough_map.entry(basename).or_default().push(pt);
+    }
+
+    // Write provider config
+    let provider_path = output_dir.join("providers.tf");
+    let provider_hcl = r#"terraform {
+  required_providers {
+    upcloud = {
+      source  = "UpCloudLtd/upcloud"
+      version = "~> 5.0"
+    }
+  }
+}
+
+variable "upcloud_token" {
+  description = "UpCloud API token"
+  type        = string
+  sensitive   = true
+}
+
+provider "upcloud" {
+  token = var.upcloud_token
+}
+"#;
+    std::fs::write(&provider_path, provider_hcl)?;
+    log.push(format!("  [OK] providers.tf"));
+
+    let mut total = 1;
+
+    for (filename, file_results) in &file_map {
+        let out_path = output_dir.join(filename);
+        let mut content = String::new();
+        content.push_str(&format!(
+            "# Migrated from AWS Terraform\n# Source: {}\n# Target zone: {}\n\n",
+            filename, zone
+        ));
+
+        for result in file_results {
+            if let Some(hcl) = &result.upcloud_hcl {
+                let mut resolved = resolve(hcl, &result.resource_name);
+
+                // Name-based firewall server_id resolution (runs after generic resolve).
+                // Matches the SG resource name against server names; injects count when
+                // the matched server itself uses count.
+                if result.upcloud_type == "upcloud_firewall_rules" {
+                    resolved = resolve_firewall_server(
+                        &resolved,
+                        &result.resource_name,
+                        &server_info_map,
+                    );
+                    // If server_id is still unresolved after name-based resolution, the
+                    // security group name didn't match any server (e.g. it was attached to
+                    // a load balancer). UpCloud LBs have built-in security and don't use
+                    // upcloud_firewall_rules, so skip the resource entirely.
+                    if resolved.contains("upcloud_server.<TODO>.id") {
+                        log.push(format!(
+                            "  [SKIP] {} {} (server_id unresolved — \
+                             no server resource named '{}'; if this SG guards a database, \
+                             cache, or LB, UpCloud manages their access control separately \
+                             and upcloud_firewall_rules is not needed)",
+                            result.resource_type, result.resource_name, result.resource_name
+                        ));
+                        continue;
+                    }
+                }
+
+                content.push_str(&format!(
+                    "# {} {}\n",
+                    result.resource_type, result.resource_name
+                ));
+                for note in &result.notes {
+                    content.push_str(&format!("# NOTE: {}\n", note));
+                }
+                content.push_str(&resolved);
+                content.push('\n');
+            }
+        }
+
+        // Append passthrough blocks (variable / output / locals) for this file.
+        if let Some(pts) = passthrough_map.get(filename) {
+            for pt in pts {
+                let aws_name = pt
+                    .name
+                    .as_deref()
+                    .map(|n| n.starts_with("aws_") || n == "aws")
+                    .unwrap_or(false);
+                if aws_name {
+                    // Do NOT inject <TODO:> into the variable name — that breaks HCL.
+                    // Instead, add a plain comment so the user knows to review it.
+                    content.push_str(&format!(
+                        "# NOTE: Variable name '{}' references AWS — consider renaming \
+                         (e.g. \"{}\").\n",
+                        pt.name.as_deref().unwrap_or(""),
+                        pt.name
+                            .as_deref()
+                            .unwrap_or("")
+                            .trim_start_matches("aws_"),
+                    ));
+                }
+                // Rewrite AWS resource references inside output/locals blocks.
+                // Variables don't reference other resources so they pass through as-is.
+                let hcl = if pt.kind == PassthroughKind::Output || pt.kind == PassthroughKind::Locals {
+                    rewrite_output_refs(&pt.raw_hcl)
+                } else {
+                    pt.raw_hcl.clone()
+                };
+                content.push_str(&hcl);
+                content.push('\n');
+                content.push('\n');
+            }
+        }
+
+        match std::fs::write(&out_path, &content) {
+            Ok(_) => {
+                log.push(format!("  [OK] {}", filename));
+                if let Err(e) = hcl::from_str::<hcl::Body>(&content) {
+                    log.push(format!("  [HCL ERR] {} — {}", filename, e));
+                }
+                total += 1;
+            }
+            Err(e) => {
+                log.push(format!("  [ERR] {}: {}", filename, e));
+            }
+        }
+    }
+
+    // Write MIGRATION_NOTES.md covering partial and unsupported resources
+    let partial: Vec<&MigrationResult> = results
+        .iter()
+        .filter(|r| {
+            r.status == MigrationStatus::Partial
+                && (r.snippet.is_some() || !r.notes.is_empty())
+        })
+        .collect();
+
+    let unsupported: Vec<&MigrationResult> = results
+        .iter()
+        .filter(|r| r.status == MigrationStatus::Unsupported || r.status == MigrationStatus::Unknown)
+        .collect();
+
+    if !partial.is_empty() || !unsupported.is_empty() {
+        let notes_path = output_dir.join("MIGRATION_NOTES.md");
+        let mut notes = String::from("# Migration Notes\n\n");
+        notes.push_str(&format!("Target zone: **{}**  \n", zone));
+        notes.push_str(&format!("Object storage region: **{}**\n\n", objstorage_region));
+
+        if !partial.is_empty() {
+            notes.push_str("## Partial Resources — Manual Action Required\n\n");
+            notes.push_str("These resources have no standalone UpCloud equivalent. \
+                The code snippets below must be merged into the appropriate resource blocks.\n\n");
+
+            for r in &partial {
+                notes.push_str(&format!(
+                    "### `{}` **{}**  *({})*\n\n",
+                    r.resource_type, r.resource_name, r.source_file
+                ));
+                for note in &r.notes {
+                    notes.push_str(&format!("{}\n\n", note));
+                }
+                if let Some(snippet) = &r.snippet {
+                    notes.push_str("```hcl\n");
+                    notes.push_str(snippet);
+                    notes.push_str("\n```\n\n");
+                }
+            }
+        }
+
+        if !unsupported.is_empty() {
+            notes.push_str("## Unsupported Resources — No UpCloud Equivalent\n\n");
+            notes.push_str("These resources require fully manual migration:\n\n");
+            for r in &unsupported {
+                notes.push_str(&format!(
+                    "- **{}** `{}` *({})*\n",
+                    r.resource_type, r.resource_name, r.source_file
+                ));
+                for note in &r.notes {
+                    notes.push_str(&format!("  - {}\n", note));
+                }
+            }
+            notes.push('\n');
+        }
+
+        std::fs::write(&notes_path, &notes)?;
+        log.push(format!(
+            "  [OK] MIGRATION_NOTES.md ({} partial, {} unsupported)",
+            partial.len(),
+            unsupported.len()
+        ));
+        total += 1;
+    }
+
+    Ok(total)
+}
+
+/// The two forms a `keys = [...]` value can take in a generated login block.
+enum LoginKeysValue {
+    /// A literal public-key string, e.g. `"ssh-rsa AAAA..."`.
+    /// The surrounding double-quotes in the HCL are kept; only the TODO content
+    /// inside them is replaced.
+    Literal(String),
+    /// An HCL expression, e.g. `var.x != "" ? var.x : "fallback"`.
+    /// The entire quoted TODO placeholder (including its surrounding `"`) is
+    /// replaced with the bare expression.
+    Expression(String),
+}
+
+/// Extract the SSH public key value from a `login { keys = [...] }` snippet
+/// by parsing the snippet as HCL and inspecting the AST.
+///
+/// Returns `None` when the snippet cannot be parsed, has no `login`/`keys`,
+/// or the key is still an unresolved `<TODO` placeholder.
+///
+/// # Why two variants?
+///
+/// `hcl::Expression` implements `Display` (via `hcl::format::to_string`), so
+/// non-literal expressions can be serialized back to HCL source text and
+/// embedded verbatim in the generated output.  The two variants differ in how
+/// the surrounding double-quotes in the HCL template are handled:
+///
+/// - `Literal` — the template already contains `keys = ["..."]`; only the
+///   inner value is swapped in, leaving the quotes intact.
+/// - `Expression` — the entire `"<TODO: ...>"` placeholder (quotes included)
+///   is replaced with the bare expression so the result is valid HCL.
+///
+/// # Examples
+///
+/// ```text
+/// // Input snippet — literal key
+/// login {
+///   keys = ["ssh-rsa AAAA..."]
+/// }
+/// // → LoginKeysValue::Literal("ssh-rsa AAAA...")
+///
+/// // Input snippet — ternary expression
+/// login {
+///   keys = [var.key != "" ? var.key : "fallback"]
+/// }
+/// // → LoginKeysValue::Expression(r#"var.key != "" ? var.key : "fallback""#)
+/// ```
+fn extract_login_keys(snippet: &str) -> Option<LoginKeysValue> {
+    let body: hcl::Body = hcl::from_str(snippet).ok()?;
+
+    let login_body = body
+        .blocks()
+        .find(|b| b.identifier() == "login")?
+        .body()
+        .clone();
+
+    let keys_expr = login_body
+        .attributes()
+        .find(|a| a.key() == "keys")?
+        .expr()
+        .clone();
+
+    // keys = [...] is always an Array expression with one element.
+    let hcl::Expression::Array(elements) = keys_expr else {
+        return None;
+    };
+    let first = elements.into_iter().next()?;
+
+    // Reject unresolved TODO placeholders left by the mapper.
+    if first.to_string().contains(TODO_PLACEHOLDER_PREFIX) {
+        return None;
+    }
+
+    Some(match first {
+        // Plain string literal: the HCL template already has surrounding quotes,
+        // so we only need the inner value.
+        hcl::Expression::String(s) => LoginKeysValue::Literal(s),
+        // Any other expression (conditional, traversal, operation, …): serialize
+        // back to HCL source text via Expression's Display impl and strip the
+        // surrounding quotes from the template placeholder at resolution time.
+        other => LoginKeysValue::Expression(other.to_string()),
+    })
+}
+
+/// Replace AWS-specific data source references that leaked into output HCL.
+/// Handles patterns like `data.aws_caller_identity.current.account_id`.
+/// Also replaces cross-resource AWS refs like `aws_security_group.main.id`.
+/// Skips any `aws_` occurrences that are already inside a `<TODO: ...>` marker.
+fn sanitize_aws_refs(mut s: String) -> String {
+    // data.aws_* data source references
+    let mut search_from = 0;
+    loop {
+        let Some(rel) = s[search_from..].find("data.aws_") else { break };
+        let start = search_from + rel;
+        if inside_todo_marker(&s, start) {
+            search_from = start + "data.aws_".len();
+            continue;
+        }
+        let end = s[start..]
+            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
+            .map(|off| start + off)
+            .unwrap_or(s.len());
+        let aws_ref = s[start..end].to_string();
+        s = s.replacen(&aws_ref, "<TODO: remove AWS data source ref>", 1);
+        search_from = 0; // restart since string changed
+    }
+    // aws_type.name.attr resource references inside interpolations ${...}
+    // These have the form "aws_*.*.*" with at least one dot
+    let mut search_from = 0;
+    while let Some(rel) = s[search_from..].find("aws_") {
+        let start = search_from + rel;
+        if inside_todo_marker(&s, start) {
+            search_from = start + "aws_".len();
+            continue;
+        }
+        let end = s[start..]
+            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
+            .map(|off| start + off)
+            .unwrap_or(s.len());
+        let candidate = &s[start..end];
+        if candidate.matches('.').count() >= 1 {
+            let owned = candidate.to_string();
+            s = s.replacen(&owned, "<TODO: remove AWS resource ref>", 1);
+            // reset search since string changed
+            search_from = 0;
+        } else {
+            // no dots = likely a comment or type name; skip past it
+            search_from = end;
+        }
+    }
+    // Clean up any "${<TODO: ...>...}" that were created by replacing an AWS ref
+    // that was inside a Terraform template expression (e.g. in a user_data heredoc).
+    // "${<invalid>}" is not valid HCL; strip the "${...}" wrapper so the TODO
+    // becomes plain text in the heredoc (which IS valid HCL).
+    s = remove_todo_interpolations(s);
+
+    s
+}
+
+/// Replace every `${<TODO: ...>...}` template interpolation with the plain text
+/// `<TODO: remove AWS resource ref>`.
+///
+/// These arise when `sanitize_aws_refs` replaces an AWS traversal that was
+/// embedded inside a `${...}` in a heredoc user_data block.  Leaving the
+/// `${...}` wrapper makes the HCL invalid; stripping it produces a literal
+/// string in the heredoc that `terraform validate` (and hcl-rs) can parse.
+fn remove_todo_interpolations(mut s: String) -> String {
+    loop {
+        // Find "${" (with optional spaces) immediately followed by "<TODO:"
+        let start = {
+            let bytes = s.as_bytes();
+            let mut found = None;
+            let mut i = 0;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'$' && bytes[i + 1] == b'{' {
+                    let mut j = i + 2;
+                    while j < bytes.len() && bytes[j] == b' ' {
+                        j += 1;
+                    }
+                    if s[j..].starts_with("<TODO:") {
+                        found = Some(i);
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            found
+        };
+        let Some(start) = start else { break };
+
+        // Find the matching closing '}', tracking brace depth.
+        let inner_start = start + 2;
+        let mut depth = 1usize;
+        let mut end = s.len(); // fallback: consume to end
+        for (idx, c) in s[inner_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = inner_start + idx + c.len_utf8();
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        s.replace_range(start..end, "<TODO: remove AWS resource ref>");
+    }
+    s
+}
+
+/// Returns true if byte position `pos` in `s` is inside an open `<TODO: ...>` marker,
+/// i.e. there is a `<TODO` before `pos` with no closing `>` between them.
+fn inside_todo_marker(s: &str, pos: usize) -> bool {
+    if let Some(last_open) = s[..pos].rfind(TODO_PLACEHOLDER_PREFIX) {
+        !s[last_open..pos].contains('>')
+    } else {
+        false
+    }
+}
+
+/// Map an AWS resource type name to its UpCloud equivalent.
+fn upcloud_type_for_aws(aws_type: &str) -> Option<&'static str> {
+    match aws_type {
+        "aws_instance" | "aws_launch_template" | "aws_launch_configuration"
+            => Some("upcloud_server"),
+        "aws_lb" | "aws_alb" | "aws_elb"
+            => Some("upcloud_loadbalancer"),
+        "aws_vpc"
+            => Some("upcloud_router"),
+        "aws_subnet"
+            => Some("upcloud_network"),
+        "aws_security_group"
+            => Some("upcloud_firewall_rules"),
+        "aws_db_instance" | "aws_rds_cluster" | "aws_rds_cluster_instance"
+            => Some("upcloud_managed_database_postgresql"),
+        "aws_elasticache_cluster" | "aws_elasticache_replication_group"
+            => Some("upcloud_managed_database_valkey"),
+        "aws_eks_cluster"
+            => Some("upcloud_kubernetes_cluster"),
+        "aws_eip"
+            => Some("upcloud_floating_ip_address"),
+        _ => None,
+    }
+}
+
+/// Map an AWS attribute name to its UpCloud equivalent for a given UpCloud type.
+/// Returns `None` for attributes with no direct equivalent (caller injects a TODO).
+fn upcloud_attr_for(upcloud_type: &str, aws_attr: &str) -> Option<&'static str> {
+    match (upcloud_type, aws_attr) {
+        // upcloud_server
+        ("upcloud_server", "id")         => Some("id"),
+        ("upcloud_server", "public_ip")  => Some("network_interface[0].ip_address"),
+        ("upcloud_server", "private_ip") => Some("network_interface[1].ip_address"),
+        // upcloud_loadbalancer
+        ("upcloud_loadbalancer", "id")       => Some("id"),
+        ("upcloud_loadbalancer", "dns_name") => Some("dns_name"),
+        // upcloud_router
+        ("upcloud_router", "id") => Some("id"),
+        // upcloud_network
+        ("upcloud_network", "id")         => Some("id"),
+        ("upcloud_network", "cidr_block") => Some("ip_network[0].address"),
+        // upcloud_firewall_rules
+        ("upcloud_firewall_rules", "id") => Some("id"),
+        // upcloud_managed_database_* (postgresql / valkey / mysql / opensearch share these)
+        (t, "id")       if t.starts_with("upcloud_managed_database") => Some("id"),
+        (t, "endpoint") if t.starts_with("upcloud_managed_database") => Some("service_host"),
+        (t, "address")  if t.starts_with("upcloud_managed_database") => Some("service_host"),
+        (t, "port")     if t.starts_with("upcloud_managed_database") => Some("service_port"),
+        (t, "username") if t.starts_with("upcloud_managed_database") => Some("service_username"),
+        (t, "password") if t.starts_with("upcloud_managed_database") => Some("service_password"),
+        (t, "primary_endpoint_address")
+                        if t.starts_with("upcloud_managed_database") => Some("service_host"),
+        // upcloud_kubernetes_cluster
+        ("upcloud_kubernetes_cluster", "id") => Some("id"),
+        // upcloud_floating_ip_address
+        ("upcloud_floating_ip_address", "id")            => Some("id"),
+        ("upcloud_floating_ip_address", "public_ip")     => Some("ip_address"),
+        ("upcloud_floating_ip_address", "allocation_id") => Some("id"),
+        _ => None,
+    }
+}
+
+/// Rewrite AWS resource references inside `output` and `locals` HCL blocks.
+///
+/// Patterns like `aws_instance.web.public_ip` are rewritten to their UpCloud
+/// equivalents (e.g. `upcloud_server.web.network_interface[0].ip_address`).
+/// When the attribute has no direct mapping a `<TODO: was .attr>` suffix is
+/// injected so it surfaces in the TODO review screen.  Unknown AWS resource
+/// types get a full `<TODO: was aws_type.name.attr>` replacement.
+fn rewrite_output_refs(s: &str) -> String {
+    let mut result = s.to_string();
+    let mut search_from = 0usize;
+
+    loop {
+        let Some(rel) = result[search_from..].find("aws_") else { break };
+        let start = search_from + rel;
+
+        if inside_todo_marker(&result, start) {
+            search_from = start + 4;
+            continue;
+        }
+
+        // Capture the full Terraform traversal: TYPE.NAME.ATTR[…].subattr…
+        // Valid chars: alphanumeric, '_', '.', '[', ']'
+        let end = result[start..]
+            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '[' && c != ']')
+            .map(|off| start + off)
+            .unwrap_or(result.len());
+
+        let candidate = &result[start..end];
+
+        // Need at least two dots: aws_TYPE.NAME.ATTR
+        if candidate.matches('.').count() < 2 {
+            search_from = end;
+            continue;
+        }
+
+        // Split into aws_type / resource_name / attr_path
+        let first_dot  = candidate.find('.').unwrap();
+        let second_dot = first_dot + 1
+            + candidate[first_dot + 1..].find('.').unwrap();
+        let aws_type      = &candidate[..first_dot];
+        let resource_name = &candidate[first_dot + 1..second_dot];
+        let attr_path     = &candidate[second_dot + 1..];
+
+        // The lookup key is just the first identifier segment (before '[' or '.')
+        let attr_key = attr_path
+            .split(|c: char| c == '[' || c == '.')
+            .next()
+            .unwrap_or(attr_path);
+
+        let new_ref = if let Some(upcloud_type) = upcloud_type_for_aws(aws_type) {
+            if let Some(upcloud_attr) = upcloud_attr_for(upcloud_type, attr_key) {
+                format!("{}.{}.{}", upcloud_type, resource_name, upcloud_attr)
+            } else {
+                format!(
+                    "{}.{}.<TODO: was .{}, check UpCloud provider docs>",
+                    upcloud_type, resource_name, attr_path,
+                )
+            }
+        } else {
+            format!("<TODO: was {}, no known UpCloud equivalent>", candidate)
+        };
+
+        let owned = candidate.to_string();
+        result = result.replacen(&owned, &new_ref, 1);
+        search_from = 0; // restart — string length may have changed
+    }
+
+    result
+}
+
+/// Extract the count value from generated upcloud_server HCL.
+/// Looks for a line like `  count    = 2`.
+fn extract_count_from_hcl(hcl: &str) -> Option<String> {
+    hcl.lines()
+        .find(|l| {
+            let t = l.trim_start();
+            t.starts_with("count") && t.contains('=')
+        })
+        .and_then(|l| l.split('=').nth(1))
+        .map(|v| v.trim().to_string())
+}
+
+/// Resolve `upcloud_server.<TODO>.id` in a `upcloud_firewall_rules` block using name-matching.
+///
+/// - If the SG name matches a server with no count: simple `upcloud_server.NAME.id`
+/// - If the SG name matches a server with count N: adds `count = N` and uses
+///   `upcloud_server.NAME[count.index].id`
+/// - If no match: returns the HCL unchanged (TODO stays for manual editing)
+fn resolve_firewall_server(
+    hcl: &str,
+    sg_name: &str,
+    server_info_map: &HashMap<String, Option<String>>,
+) -> String {
+    match server_info_map.get(sg_name) {
+        None => hcl.to_string(),
+        Some(None) => hcl.replace(
+            "upcloud_server.<TODO>.id",
+            &format!("upcloud_server.{}.id", sg_name),
+        ),
+        Some(Some(n)) => {
+            // Replace the server_id reference with an indexed one
+            let mut s = hcl.replace(
+                "upcloud_server.<TODO>.id",
+                &format!("upcloud_server.{}[count.index].id", sg_name),
+            );
+            // Insert `count = N` on the line before `server_id`
+            s = s.replacen(
+                "  server_id =",
+                &format!("  count     = {}\n  server_id =", n),
+                1,
+            );
+            s
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::types::{MigrationResult, MigrationStatus};
+
+    fn make_result(
+        resource_type: &str,
+        resource_name: &str,
+        upcloud_type: &str,
+        upcloud_hcl: Option<&str>,
+        snippet: Option<&str>,
+    ) -> MigrationResult {
+        MigrationResult {
+            resource_type: resource_type.to_string(),
+            resource_name: resource_name.to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Native,
+            score: 0,
+            upcloud_type: upcloud_type.to_string(),
+            upcloud_hcl: upcloud_hcl.map(str::to_string),
+            snippet: snippet.map(str::to_string),
+            parent_resource: None,
+            notes: vec![],
+            source_hcl: None,
+        }
+    }
+
+    fn run_generate(results: &[MigrationResult], test_name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("upcloud_gen_test_{}", test_name));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = vec![];
+        generate_files(results, &[], &dir, "fi-hel2", &mut log).unwrap();
+        let content = std::fs::read_to_string(dir.join("test.tf"))
+            .expect("generate_files must have created test.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+        content
+    }
+
+    #[test]
+    fn login_key_ternary_expression_is_not_mangled() {
+        // Snippet uses unquoted HCL expression (the fixed map_key_pair format).
+        // generate_files must extract the expression and replace the quoted TODO
+        // placeholder including its surrounding quotes, producing keys = [expr].
+        let key_pair = make_result(
+            "aws_key_pair",
+            "main",
+            "login block (server resource)",
+            None,
+            Some(
+                r#"login {
+  user = "root"
+  keys = [var.ssh_public_key != "" ? var.ssh_public_key : "ssh-rsa PLACEHOLDER"]  # was aws_key_pair.main
+}"#,
+            ),
+        );
+        let server = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  hostname = "web"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 50
+  }
+
+  network_interface {
+    type = "public"
+  }
+
+  login {
+    user = "root"
+    keys = ["<TODO: SSH public key for aws_key_pair.main>"]
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let output = run_generate(&[key_pair, server], "ternary_login");
+        assert!(
+            output.contains("keys = [var.ssh_public_key"),
+            "ternary expression should appear unquoted in keys\n{output}"
+        );
+        assert!(
+            !output.contains(r#"keys = ["var.ssh_public_key"#),
+            "ternary expression must not be wrapped in extra quotes\n{output}"
+        );
+    }
+
+    #[test]
+    fn counted_network_ref_in_counted_server_uses_count_index() {
+        let network = make_result(
+            "aws_subnet",
+            "public",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "public" {
+  count = 2
+  name  = "public-${count.index + 1}"
+  zone  = "__ZONE__"
+
+  ip_network {
+    address = "10.0.${count.index + 1}.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let server = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  count    = 2
+  hostname = "web-${count.index + 1}"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 50
+  }
+
+  network_interface {
+    type = "public"
+  }
+
+  network_interface {
+    type    = "private"
+    network = "<TODO: upcloud_network reference>"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let output = run_generate(&[network, server], "counted_net_counted_srv");
+        assert!(
+            output.contains("upcloud_network.public[count.index].id"),
+            "counted server + counted network should use [count.index]\n{output}"
+        );
+    }
+
+    #[test]
+    fn counted_network_ref_in_uncounted_server_uses_zero_index() {
+        let network = make_result(
+            "aws_subnet",
+            "public",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "public" {
+  count = 2
+  name  = "public-${count.index + 1}"
+  zone  = "__ZONE__"
+
+  ip_network {
+    address = "10.0.${count.index + 1}.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let server = make_result(
+            "aws_instance",
+            "database",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "database" {
+  hostname = "database"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-2GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 50
+  }
+
+  network_interface {
+    type = "public"
+  }
+
+  network_interface {
+    type    = "private"
+    network = "<TODO: upcloud_network reference>"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let output = run_generate(&[network, server], "counted_net_uncounted_srv");
+        assert!(
+            output.contains("upcloud_network.public[0].id"),
+            "non-counted server + counted network should use [0]\n{output}"
+        );
+    }
+
+    #[test]
+    fn backend_member_ip_ref_for_counted_server_uses_zero_index() {
+        let server = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  count    = 2
+  hostname = "web-${count.index + 1}"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 50
+  }
+
+  network_interface {
+    type = "public"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let backend = make_result(
+            "aws_lb_target_group",
+            "web",
+            "upcloud_loadbalancer_backend",
+            Some(
+                r#"resource "upcloud_loadbalancer_backend" "web" {
+  loadbalancer = upcloud_loadbalancer.<TODO>.id
+  name         = "web"
+
+  properties {
+    health_check_type = "http"
+  }
+}
+
+resource "upcloud_loadbalancer_static_backend_member" "web_member" {
+  backend      = upcloud_loadbalancer_backend.web.id
+  name         = "web-member"
+  weight       = 100
+  max_sessions = 1000
+  enabled      = true
+  ip           = "<TODO: server IP>"
+  port         = 80
+}
+"#,
+            ),
+            None,
+        );
+        let output = run_generate(&[server, backend], "backend_counted_srv");
+        assert!(
+            output.contains("upcloud_server.web[0].network_interface[0].ip_address"),
+            "backend member ip should use [0] for counted server\n{output}"
+        );
+        assert!(
+            !output.contains("upcloud_server.web.network_interface"),
+            "should not reference non-indexed counted server\n{output}"
+        );
+    }
+
+    #[test]
+    fn extract_count_finds_count_line() {
+        let hcl = "resource \"upcloud_server\" \"web\" {\n  count    = 2\n  hostname = \"web\"\n}\n";
+        assert_eq!(extract_count_from_hcl(hcl), Some("2".to_string()));
+    }
+
+    #[test]
+    fn extract_count_returns_none_when_absent() {
+        let hcl = "resource \"upcloud_server\" \"web\" {\n  hostname = \"web\"\n}\n";
+        assert_eq!(extract_count_from_hcl(hcl), None);
+    }
+
+    #[test]
+    fn firewall_rule_with_unresolved_todo_is_skipped_even_with_other_servers() {
+        // aws_security_group "lb" → upcloud_firewall_rules "lb", but there is no
+        // upcloud_server named "lb". Even though other servers exist (web, app),
+        // the rule must be dropped entirely — not emitted with a broken <TODO>.
+        let lb_fw = make_result(
+            "aws_security_group",
+            "lb",
+            "upcloud_firewall_rules",
+            Some(
+                "resource \"upcloud_firewall_rules\" \"lb\" {\n  \
+                 server_id = upcloud_server.<TODO>.id\n}\n",
+            ),
+            None,
+        );
+        let web = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                "resource \"upcloud_server\" \"web\" {\n  \
+                 hostname = \"web\"\n  zone = \"__ZONE__\"\n  plan = \"1xCPU-1GB\"\n}\n",
+            ),
+            None,
+        );
+        let app = make_result(
+            "aws_instance",
+            "app",
+            "upcloud_server",
+            Some(
+                "resource \"upcloud_server\" \"app\" {\n  \
+                 hostname = \"app\"\n  zone = \"__ZONE__\"\n  plan = \"1xCPU-1GB\"\n}\n",
+            ),
+            None,
+        );
+        let output = run_generate(&[lb_fw, web, app], "fw_lb_skip");
+        assert!(
+            !output.contains("upcloud_firewall_rules"),
+            "lb firewall rule must be skipped when no server named 'lb' exists\n{output}"
+        );
+        assert!(
+            !output.contains("upcloud_server.<TODO>"),
+            "no unresolved TODO must appear in output\n{output}"
+        );
+        // The server resources must still be present
+        assert!(output.contains("upcloud_server\" \"web\""), "{output}");
+        assert!(output.contains("upcloud_server\" \"app\""), "{output}");
+    }
+
+    #[test]
+    fn resolve_firewall_no_match_leaves_todo() {
+        let hcl = "resource \"upcloud_firewall_rules\" \"lb\" {\n  server_id = upcloud_server.<TODO>.id\n}\n";
+        let map = HashMap::new();
+        let out = resolve_firewall_server(hcl, "lb", &map);
+        assert!(out.contains("upcloud_server.<TODO>.id"), "{out}");
+    }
+
+    #[test]
+    fn resolve_firewall_single_server_no_count() {
+        let hcl = "resource \"upcloud_firewall_rules\" \"redis\" {\n  server_id = upcloud_server.<TODO>.id\n}\n";
+        let mut map = HashMap::new();
+        map.insert("redis".to_string(), None);
+        let out = resolve_firewall_server(hcl, "redis", &map);
+        assert!(out.contains("upcloud_server.redis.id"), "{out}");
+        assert!(!out.contains("<TODO>"), "{out}");
+        assert!(!out.contains("count"), "{out}");
+    }
+
+    #[test]
+    fn resolve_firewall_counted_server_injects_count_and_index() {
+        let hcl = "resource \"upcloud_firewall_rules\" \"web\" {\n  server_id = upcloud_server.<TODO>.id\n}\n";
+        let mut map = HashMap::new();
+        map.insert("web".to_string(), Some("2".to_string()));
+        let out = resolve_firewall_server(hcl, "web", &map);
+        assert!(out.contains("count     = 2"), "{out}");
+        assert!(out.contains("upcloud_server.web[count.index].id"), "{out}");
+        assert!(!out.contains("<TODO>"), "{out}");
+    }
+
+    // ── remove_todo_interpolations ────────────────────────────────────────────
+
+    #[test]
+    fn todo_interpolation_stripped_from_heredoc() {
+        let input = "proxy_pass http://${<TODO: remove AWS resource ref>[0].private_ip}:3000;";
+        let out = remove_todo_interpolations(input.to_string());
+        assert_eq!(out, "proxy_pass http://<TODO: remove AWS resource ref>:3000;");
+    }
+
+    #[test]
+    fn todo_interpolation_with_space_after_brace() {
+        let input = "url: '${ <TODO: remove AWS resource ref>}';";
+        let out = remove_todo_interpolations(input.to_string());
+        assert_eq!(out, "url: '<TODO: remove AWS resource ref>';");
+    }
+
+    #[test]
+    fn valid_interpolations_are_not_touched() {
+        let input = "hostname = \"web-${count.index + 1}\"";
+        let out = remove_todo_interpolations(input.to_string());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn multiple_todo_interpolations_all_replaced() {
+        let input =
+            "a=${<TODO: remove AWS resource ref>.x} b=${<TODO: remove AWS resource ref>.y}";
+        let out = remove_todo_interpolations(input.to_string());
+        assert_eq!(
+            out,
+            "a=<TODO: remove AWS resource ref> b=<TODO: remove AWS resource ref>"
+        );
+    }
+
+    // ── End-to-end: user_data with AWS cross-refs ─────────────────────────────
+    //
+    // Ensures that when user_data heredocs contain ${aws_*.*.attr} references,
+    // the generated output strips the invalid `${...}` wrapper and the result
+    // is parseable by hcl-rs (i.e. `terraform validate`-able syntax).
+
+    #[test]
+    fn user_data_with_aws_refs_produces_valid_hcl() {
+        use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
+
+        // A server whose user_data references a cross-resource AWS IP (common
+        // pattern for nginx reverse-proxy configurations).
+        let tf_source = r#"
+resource "aws_instance" "web" {
+  instance_type = "t3.micro"
+  user_data = <<-EOF
+#!/bin/bash
+proxy_pass http://${aws_instance.app[0].private_ip}:3000;
+redis_url="${aws_instance.redis.private_ip}:6379"
+db_host="${aws_instance.database.private_ip}"
+EOF
+}
+
+resource "aws_instance" "app" {
+  instance_type = "t3.small"
+}
+"#;
+
+        let dir = std::env::temp_dir().join("upcloud_e2e_userdata");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tf_path = dir.join("main.tf");
+        std::fs::write(&tf_path, tf_source).unwrap();
+
+        let parsed = parse_tf_file(&tf_path).expect("source terraform should parse");
+        let results: Vec<MigrationResult> =
+            parsed.resources.iter().map(|r| map_resource(r)).collect();
+
+        let out_dir = dir.join("out");
+        let mut log = vec![];
+        generate_files(&results, &[], &out_dir, "fi-hel2", &mut log).unwrap();
+        let output =
+            std::fs::read_to_string(out_dir.join("main.tf"))
+            .expect("generate_files must produce main.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // No "${<TODO:...>" must remain — those are invalid HCL.
+        assert!(
+            !output.contains("${<TODO:"),
+            "no invalid ${{<TODO:}} interpolations must remain in output\n{output}"
+        );
+
+        // The TODO text should still appear so the user knows what to fix.
+        assert!(
+            output.contains("<TODO: remove AWS resource ref>"),
+            "TODO placeholder must still be visible in output\n{output}"
+        );
+
+        // The generated file must be parseable by hcl-rs (i.e. valid HCL syntax).
+        hcl::from_str::<hcl::Body>(&output)
+            .expect("generated output must be valid HCL");
+    }
+
+    // ── End-to-end: test-fixtures/webapp-e2e.tf ───────────────────────────────
+    //
+    // Full pipeline test: parse HCL → map resources → generate UpCloud Terraform.
+    // The fixture covers all mapped resource types and includes the ternary
+    // public_key expression that previously triggered a missing-closing-quote bug.
+    #[test]
+    fn webapp_terraform_example_end_to_end() {
+        use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
+
+        let tf_path = std::path::PathBuf::from("test-fixtures/webapp-e2e.tf");
+        let parsed = parse_tf_file(&tf_path).expect("test-fixtures/webapp-e2e.tf should parse");
+        let results: Vec<MigrationResult> = parsed.resources.iter().map(|r| map_resource(r)).collect();
+
+        let out_dir = std::env::temp_dir().join("upcloud_e2e_webapp");
+        let mut log = vec![];
+        generate_files(&results, &[], &out_dir, "fi-hel2", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("webapp-e2e.tf"))
+            .expect("generate_files must produce webapp-e2e.tf");
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        // No unresolved server_id TODOs in the entire output.
+        assert!(
+            !output.contains("upcloud_server.<TODO>"),
+            "no unresolved server_id TODO should remain in output\n{output}"
+        );
+
+        // LB security group must be dropped — 'lb' is not a server name.
+        assert!(
+            !output.contains("upcloud_firewall_rules\" \"lb\""),
+            "firewall_rules for 'lb' SG must be skipped (LB uses built-in security)\n{output}"
+        );
+
+        // Server-attached firewall rules must be present with resolved server_id.
+        assert!(
+            output.contains("upcloud_firewall_rules\" \"web\""),
+            "firewall_rules for 'web' must be generated\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.web[count.index].id"),
+            "web firewall server_id must use count.index (web has count=2)\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_firewall_rules\" \"app\""),
+            "firewall_rules for 'app' must be generated\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.app[count.index].id"),
+            "app firewall server_id must use count.index (app has count=2)\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_firewall_rules\" \"database\""),
+            "firewall_rules for 'database' must be generated\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.database.id"),
+            "database firewall server_id must be resolved (no count)\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_firewall_rules\" \"redis\""),
+            "firewall_rules for 'redis' must be generated\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.redis.id"),
+            "redis firewall server_id must be resolved (no count)\n{output}"
+        );
+
+        // Login block: ternary else-branch closing `"` must not be stripped.
+        assert!(
+            output.contains(r#"placeholder-key"]"#),
+            "ternary else-branch closing quote must be intact in login block\n{output}"
+        );
+
+        // Server resources.
+        assert!(output.contains("resource \"upcloud_server\" \"web\""), "{output}");
+        assert!(output.contains("resource \"upcloud_server\" \"app\""), "{output}");
+        assert!(output.contains("resource \"upcloud_server\" \"database\""), "{output}");
+        assert!(output.contains("resource \"upcloud_server\" \"redis\""), "{output}");
+
+        // Networking: VPC → router, subnet → network.
+        assert!(output.contains("resource \"upcloud_router\" \"main_router\""), "{output}");
+        assert!(output.contains("resource \"upcloud_network\" \"public\""), "{output}");
+
+        // Load balancer and its components.
+        assert!(output.contains("resource \"upcloud_loadbalancer\" \"main\""), "{output}");
+        assert!(output.contains("type   = \"public\""), "LB must have public networks block\n{output}");
+        assert!(output.contains("resource \"upcloud_loadbalancer_backend\" \"web\""), "{output}");
+        assert!(output.contains("resource \"upcloud_loadbalancer_frontend\" \"http\""), "{output}");
+    }
+
+    // ── Zone substitution ─────────────────────────────────────────────────────
+
+    #[test]
+    fn zone_placeholder_replaced_in_output() {
+        let server = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  hostname = "web"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 25
+  }
+
+  network_interface {
+    type = "public"
+  }
+}
+"#,
+            ),
+            None,
+        );
+
+        let dir = std::env::temp_dir().join("upcloud_gen_test_zone_pl_waw1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = vec![];
+        generate_files(&[server], &[], &dir, "pl-waw1", &mut log).unwrap();
+        let content = std::fs::read_to_string(dir.join("test.tf"))
+            .expect("generate_files must produce test.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            content.contains("zone     = \"pl-waw1\""),
+            "zone placeholder must be replaced with the requested zone\n{content}"
+        );
+        assert!(
+            !content.contains("__ZONE__"),
+            "no __ZONE__ placeholders must remain in output\n{content}"
+        );
+        // Output must still be valid HCL regardless of zone.
+        hcl::from_str::<hcl::Body>(&content).expect("output must be valid HCL");
+    }
+
+    // ── Passthrough blocks (variable / output / locals) ───────────────────────
+
+    #[test]
+    fn variables_are_passed_through_unchanged() {
+        use crate::terraform::parser::parse_tf_file;
+        use crate::migration::mapper::map_resource;
+        use crate::terraform::types::PassthroughBlock;
+
+        let tf_source = r#"
+variable "db_username" {
+  description = "Database username"
+  type        = string
+}
+
+variable "db_password" {
+  description = "Database password"
+  type        = string
+  sensitive   = true
+}
+
+resource "aws_instance" "web" {
+  instance_type = "t3.micro"
+}
+"#;
+        let dir = std::env::temp_dir().join("upcloud_e2e_vars");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tf_path = dir.join("main.tf");
+        std::fs::write(&tf_path, tf_source).unwrap();
+
+        let parsed = parse_tf_file(&tf_path).expect("should parse");
+        assert_eq!(parsed.passthroughs.len(), 2, "should find 2 variable blocks");
+
+        let results: Vec<MigrationResult> =
+            parsed.resources.iter().map(|r| map_resource(r)).collect();
+        let pts: Vec<PassthroughBlock> = parsed.passthroughs.clone();
+
+        let out_dir = dir.join("out");
+        let mut log = vec![];
+        generate_files(&results, &pts, &out_dir, "fi-hel2", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("main.tf"))
+            .expect("generate_files must produce main.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(output.contains("variable \"db_username\""), "db_username variable must appear\n{output}");
+        assert!(output.contains("variable \"db_password\""), "db_password variable must appear\n{output}");
+        assert!(output.contains("sensitive   = true"), "variable body must be preserved\n{output}");
+        // Non-AWS names must not get a NOTE comment.
+        assert!(!output.contains("NOTE: Variable name 'db_username'"), "{output}");
+
+        // Must still be valid HCL.
+        hcl::from_str::<hcl::Body>(&output).expect("output with variables must be valid HCL");
+    }
+
+    #[test]
+    fn aws_prefixed_variable_gets_review_comment_not_todo() {
+        use crate::terraform::types::{PassthroughBlock, PassthroughKind};
+        use std::path::PathBuf;
+
+        let pt = PassthroughBlock {
+            name: Some("aws_region".to_string()),
+            raw_hcl: "variable \"aws_region\" {\n  default = \"us-east-1\"\n}".to_string(),
+            source_file: PathBuf::from("test.tf"),
+            kind: PassthroughKind::Variable,
+        };
+
+        let dir = std::env::temp_dir().join("upcloud_e2e_awsvar");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_dir = dir.join("out");
+        let mut log = vec![];
+        generate_files(&[], &[pt], &out_dir, "fi-hel2", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("test.tf"))
+            .expect("generate_files must produce test.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Must have the review comment (but NOT a <TODO:> in the name — that breaks HCL).
+        assert!(output.contains("# NOTE: Variable name 'aws_region'"), "{output}");
+        assert!(!output.contains("<TODO:"), "must not inject TODO into variable name\n{output}");
+        // The variable block itself must still be present with the original name.
+        assert!(output.contains("variable \"aws_region\""), "{output}");
+
+        // Must be parseable.
+        hcl::from_str::<hcl::Body>(&output).expect("output must be valid HCL");
+    }
+
+    #[test]
+    fn locals_block_passed_through() {
+        use crate::terraform::parser::parse_tf_file;
+        use crate::migration::mapper::map_resource;
+        use crate::terraform::types::PassthroughBlock;
+
+        let tf_source = r#"
+locals {
+  common_tags = {
+    Project = "webapp"
+    Env     = "prod"
+  }
+}
+
+resource "aws_instance" "web" {
+  instance_type = "t3.micro"
+}
+"#;
+        let dir = std::env::temp_dir().join("upcloud_e2e_locals");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tf_path = dir.join("main.tf");
+        std::fs::write(&tf_path, tf_source).unwrap();
+
+        let parsed = parse_tf_file(&tf_path).expect("should parse");
+        let pts: Vec<PassthroughBlock> = parsed.passthroughs.clone();
+        let results: Vec<MigrationResult> =
+            parsed.resources.iter().map(|r| map_resource(r)).collect();
+
+        let out_dir = dir.join("out");
+        let mut log = vec![];
+        generate_files(&results, &pts, &out_dir, "fi-hel2", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("main.tf"))
+            .expect("generate_files must produce main.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(output.contains("locals {"), "locals block must appear\n{output}");
+        assert!(output.contains("common_tags"), "{output}");
+        hcl::from_str::<hcl::Body>(&output).expect("output must be valid HCL");
+    }
+
+    // ── rewrite_output_refs ───────────────────────────────────────────────────
+
+    #[test]
+    fn output_known_type_and_attr_rewritten() {
+        let hcl = "output \"ip\" {\n  value = aws_instance.web.public_ip\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        assert!(
+            rewritten.contains("upcloud_server.web.network_interface[0].ip_address"),
+            "public_ip should map to network_interface[0].ip_address\n{rewritten}"
+        );
+        assert!(!rewritten.contains("aws_instance"), "no AWS ref should remain\n{rewritten}");
+    }
+
+    #[test]
+    fn output_known_type_unknown_attr_gets_todo() {
+        let hcl = "output \"arn\" {\n  value = aws_instance.web.arn\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        assert!(
+            rewritten.contains("upcloud_server.web.<TODO: was .arn"),
+            "unknown attr should get TODO with original attr name\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn output_unknown_type_gets_full_todo() {
+        let hcl = "output \"x\" {\n  value = aws_cloudfront_distribution.cdn.domain_name\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        assert!(
+            rewritten.contains("<TODO: was aws_cloudfront_distribution.cdn.domain_name"),
+            "unknown AWS type should get full TODO replacement\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn output_db_endpoint_rewritten() {
+        let hcl = "output \"db_host\" {\n  value = aws_db_instance.main.endpoint\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        assert!(
+            rewritten.contains("upcloud_managed_database_postgresql.main.service_host"),
+            "db endpoint should map to service_host\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn output_lb_dns_name_rewritten() {
+        let hcl = "output \"lb\" {\n  value = aws_lb.main.dns_name\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        assert!(
+            rewritten.contains("upcloud_loadbalancer.main.dns_name"),
+            "lb dns_name should map directly\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn output_id_passthrough_rewritten() {
+        // .id is the same in both providers — just the type prefix changes
+        let hcl = "output \"net_id\" {\n  value = aws_subnet.public.id\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        assert!(
+            rewritten.contains("upcloud_network.public.id"),
+            ".id should rewrite type but keep .id\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn output_ref_inside_existing_todo_not_double_rewritten() {
+        // refs already inside <TODO:> markers must not be rewritten again
+        let hcl = "output \"x\" {\n  value = \"<TODO: was aws_instance.web.arn>\"\n}";
+        let rewritten = rewrite_output_refs(hcl);
+        // Should be unchanged — the aws_instance ref is inside a TODO marker
+        assert_eq!(rewritten, hcl, "refs inside TODO markers must not be rewritten");
+    }
+
+    #[test]
+    fn variable_block_not_rewritten() {
+        use crate::terraform::types::{PassthroughBlock, PassthroughKind};
+        use std::path::PathBuf;
+
+        let var_hcl = "variable \"instance_type\" {\n  default = \"t3.micro\"\n}";
+        let pt = PassthroughBlock {
+            name: Some("instance_type".to_string()),
+            raw_hcl: var_hcl.to_string(),
+            source_file: PathBuf::from("vars.tf"),
+            kind: PassthroughKind::Variable,
+        };
+        let dir = std::env::temp_dir().join("upcloud_rewrite_var_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_dir = dir.join("out");
+        let mut log = vec![];
+        generate_files(&[], &[pt], &out_dir, "fi-hel2", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("vars.tf")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // Variables are passed through unchanged — no rewriting
+        assert!(output.contains(var_hcl), "variable HCL must be unchanged\n{output}");
+    }
+
+    #[test]
+    fn output_block_refs_rewritten_in_generated_file() {
+        use crate::terraform::parser::parse_tf_file;
+        use crate::migration::mapper::map_resource;
+
+        let tf_source = r#"
+resource "aws_instance" "web" {
+  instance_type = "t3.micro"
+}
+
+output "server_ip" {
+  value = aws_instance.web.public_ip
+}
+
+output "server_id" {
+  value = aws_instance.web.id
+}
+"#;
+        let dir = std::env::temp_dir().join("upcloud_output_rewrite_e2e");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tf_path = dir.join("main.tf");
+        std::fs::write(&tf_path, tf_source).unwrap();
+
+        let parsed = parse_tf_file(&tf_path).expect("should parse");
+        let results: Vec<crate::migration::types::MigrationResult> =
+            parsed.resources.iter().map(|r| map_resource(r)).collect();
+
+        let out_dir = dir.join("out");
+        let mut log = vec![];
+        generate_files(&results, &parsed.passthroughs, &out_dir, "fi-hel1", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("main.tf"))
+            .expect("generate_files must produce main.tf");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            output.contains("upcloud_server.web.network_interface[0].ip_address"),
+            "server_ip output should be rewritten\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.web.id"),
+            "server_id output should be rewritten\n{output}"
+        );
+        assert!(!output.contains("aws_instance.web"), "no AWS resource traversals in output\n{output}");
+    }
+}
+
