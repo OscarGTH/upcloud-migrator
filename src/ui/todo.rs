@@ -227,14 +227,26 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     f.render_widget(detail, layout[0]);
 
     // ── Input field ───────────────────────────────────────────────────────────
-    let cursor = if (app.tick / 4) % 2 == 0 { "█" } else { " " };
-    let input_text = format!("{}{}", app.todo_input, cursor);
+    let (input_text, input_border_style, input_title) = if app.todo_input_active {
+        let cursor = if (app.tick / 4) % 2 == 0 { "█" } else { " " };
+        (
+            format!("{}{}", app.todo_input, cursor),
+            theme::accent(),
+            " REPLACEMENT VALUE — typing ",
+        )
+    } else {
+        (
+            app.todo_input.clone(),
+            theme::dim(),
+            " REPLACEMENT VALUE — [Enter] to edit ",
+        )
+    };
 
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(theme::accent())
-        .title(Span::styled(" REPLACEMENT VALUE ", theme::primary_bold()));
+        .border_style(input_border_style)
+        .title(Span::styled(input_title, theme::primary_bold()));
 
     let input = Paragraph::new(Span::styled(input_text, theme::primary()))
         .block(input_block);
@@ -242,17 +254,18 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // ── Hints ─────────────────────────────────────────────────────────────────
     let has_key = app.api_key.is_some();
-    // When the user is typing, show a condensed hint so they know how to cancel.
-    let hints = if !app.todo_input.is_empty() {
+    let hints = if app.todo_input_active {
+        // Typing mode — show editing hints only.
         Paragraph::new(Line::from(vec![
             Span::styled("[Enter]", theme::accent_bold()),
             Span::styled(" apply  ", theme::dim()),
             Span::styled("[Esc]", theme::accent_bold()),
-            Span::styled(" cancel input  ", theme::dim()),
+            Span::styled(" cancel  ", theme::dim()),
             Span::styled("[Tab]", theme::accent_bold()),
-            Span::styled(" Generator  ", theme::dim()),
+            Span::styled(" Generator", theme::dim()),
         ]))
     } else {
+        // Browse mode — show navigation and command hints.
         Paragraph::new(Line::from(vec![
             Span::styled("[↑↓]", theme::accent_bold()),
             Span::styled(" nav  ", theme::dim()),
@@ -261,7 +274,7 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("[A]", if has_key { theme::accent_bold() } else { theme::dim() }),
             Span::styled(" AI suggest  ", theme::dim()),
             Span::styled("[Enter]", theme::accent_bold()),
-            Span::styled(" apply  ", theme::dim()),
+            Span::styled(" edit  ", theme::dim()),
             Span::styled("[S]", theme::accent_bold()),
             Span::styled(" skip  ", theme::dim()),
             Span::styled("[Tab]", theme::accent_bold()),

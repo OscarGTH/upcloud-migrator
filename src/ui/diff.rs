@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::migration::generator::SKIPPED_SENTINEL;
 use crate::migration::types::MigrationStatus;
 use super::theme;
 
@@ -161,21 +162,41 @@ fn render_generated_panel(f: &mut Frame, app: &App, area: ratatui::layout::Rect)
             out
         }
         Some(hcl) => {
-            let mut out = Vec::new();
-            // Prepend the resource type comment that generator writes
-            out.push(Line::from(vec![
-                Span::styled(
-                    format!("# {} {}", result.resource_type, result.resource_name),
-                    theme::dim(),
-                ),
-            ]));
-            for note in &result.notes {
-                out.push(Line::from(Span::styled(format!("# NOTE: {}", note), theme::dim())));
+            // Prefer the resolved HCL (post-generation, with TODOs resolved) if available.
+            let key = (result.resource_type.clone(), result.resource_name.clone());
+            let resolved = app.resolved_hcl_map.get(&key).map(|s| s.as_str());
+
+            // If this resource was skipped during generation, show a note instead of HCL.
+            if resolved == Some(SKIPPED_SENTINEL) {
+                vec![
+                    Line::from(Span::styled("  — SKIPPED —", theme::dim())),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "  This resource was not written to the output.",
+                        theme::muted(),
+                    )),
+                    Line::from(Span::styled(
+                        "  UpCloud manages its access control separately.",
+                        theme::muted(),
+                    )),
+                ]
+            } else {
+                let display_hcl = resolved.unwrap_or(hcl.as_str());
+                let mut out = Vec::new();
+                out.push(Line::from(vec![
+                    Span::styled(
+                        format!("# {} {}", result.resource_type, result.resource_name),
+                        theme::dim(),
+                    ),
+                ]));
+                for note in &result.notes {
+                    out.push(Line::from(Span::styled(format!("# NOTE: {}", note), theme::dim())));
+                }
+                for line in display_hcl.lines() {
+                    out.push(colorize_generated_line(line));
+                }
+                out
             }
-            for line in hcl.lines() {
-                out.push(colorize_generated_line(line));
-            }
-            out
         }
     };
 

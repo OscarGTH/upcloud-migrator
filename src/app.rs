@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+use std::collections::HashMap;
+
 use crate::ai::ChatMessage;
+use crate::migration::generator::ResolvedHclMap;
 use crate::migration::mapper::map_resource;
 use crate::migration::scorer::compute_overall_score;
 use crate::migration::types::MigrationResult;
@@ -40,7 +43,7 @@ pub enum AppMessage {
     FileFound(String),
     ScanComplete(Vec<MigrationResult>, Vec<PassthroughBlock>, f64),
     GenerateLog(String),
-    GenerateDone(usize),
+    GenerateDone(usize, ResolvedHclMap),
     AiSuggestion(usize, String),
     AiError(usize, String),
     ChatResponse(String),
@@ -87,7 +90,9 @@ pub struct App {
     pub gen_log: Vec<String>,
     pub is_generating: bool,
     pub gen_complete: bool,
+    pub gen_complete_tick: u64,
     pub gen_files_count: usize,
+    pub resolved_hcl_map: ResolvedHclMap,
 
     // File browser state
     pub fb_cwd: PathBuf,
@@ -102,6 +107,7 @@ pub struct App {
     pub todos: Vec<TodoItem>,
     pub todo_idx: usize,
     pub todo_input: String,
+    pub todo_input_active: bool,
     pub api_key: Option<String>,
 
     // Chat / AI advisor state
@@ -148,7 +154,9 @@ impl App {
             gen_log: Vec::new(),
             is_generating: false,
             gen_complete: false,
+            gen_complete_tick: 0,
             gen_files_count: 0,
+            resolved_hcl_map: HashMap::new(),
             fb_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             fb_entries: Vec::new(),
             fb_state: ListState::default(),
@@ -157,6 +165,7 @@ impl App {
             todos: Vec::new(),
             todo_idx: 0,
             todo_input: String::new(),
+            todo_input_active: false,
             api_key: std::env::var("LLM_API_KEY").ok(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
@@ -229,8 +238,13 @@ impl App {
 
     async fn handle_splash_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
-            KeyCode::Char('f') | KeyCode::Char('F') => {
+            // Quit only when the input is empty; otherwise the char goes into the path.
+            KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') | KeyCode::Char('Q') if self.input_buf.is_empty() => {
+                self.should_quit = true;
+            }
+            // File browser shortcut only when input is empty.
+            KeyCode::Char('f') | KeyCode::Char('F') if self.input_buf.is_empty() => {
                 self.fb_load_dir(None);
                 self.view = View::FileBrowser;
             }
@@ -450,6 +464,31 @@ impl App {
     }
 
     async fn handle_generator_key(&mut self, code: KeyCode) {
+        // When the output directory input is active, ALL keys go to the input field.
+        // Commands are blocked to prevent 'q', 'd', 't', etc. from firing while typing.
+        if self.gen_step == GenStep::AskOutputDir {
+            match code {
+                KeyCode::Char(c) => { self.input_buf.push(c); }
+                KeyCode::Backspace => { self.input_buf.pop(); }
+                KeyCode::Enter => {
+                    if !self.input_buf.trim().is_empty() {
+                        let out = PathBuf::from(self.input_buf.trim());
+                        self.output_path = Some(out.clone());
+                        self.input_buf.clear();
+                        self.gen_step = GenStep::Generating;
+                        self.start_generation(out).await;
+                    }
+                }
+                KeyCode::Esc => {
+                    // Cancel back to zone selection.
+                    self.input_buf.clear();
+                    self.gen_step = GenStep::AskZone;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Tab => self.view = View::Resources,
@@ -486,47 +525,34 @@ impl App {
                 }
             }
 
-            // Output dir text input
-            KeyCode::Char(c) if self.gen_step == GenStep::AskOutputDir => {
-                self.input_buf.push(c);
-            }
-            KeyCode::Backspace if self.gen_step == GenStep::AskOutputDir => {
-                self.input_buf.pop();
+            KeyCode::Enter if self.gen_step == GenStep::AskZone => {
+                self.target_zone = ZONES[self.zone_idx].slug.to_string();
+                self.gen_step = GenStep::AskOutputDir;
             }
 
-            KeyCode::Enter => {
-                match self.gen_step {
-                    GenStep::AskZone => {
-                        self.target_zone = ZONES[self.zone_idx].slug.to_string();
-                        self.gen_step = GenStep::AskOutputDir;
-                    }
-                    GenStep::AskOutputDir => {
-                        if !self.input_buf.trim().is_empty() {
-                            let out = PathBuf::from(self.input_buf.trim());
-                            self.output_path = Some(out.clone());
-                            self.input_buf.clear();
-                            self.gen_step = GenStep::Generating;
-                            self.start_generation(out).await;
-                        }
-                    }
-                    _ => {}
-                }
-            }
             _ => {}
         }
     }
 
     async fn handle_todo_key(&mut self, code: KeyCode) {
-        // When the user has started typing, route most keys to the text input.
-        // Only Tab/BackTab (navigation) and Esc (cancel input) bypass the input field.
-        if !self.todo_input.is_empty() {
+        // When in text-input mode, ALL keys go to the input field.
+        // Esc cancels; Enter applies. Tab still navigates away.
+        if self.todo_input_active {
             match code {
-                KeyCode::Esc => { self.todo_input.clear(); }
-                KeyCode::Tab | KeyCode::BackTab => self.view = View::Generator,
+                KeyCode::Esc => {
+                    self.todo_input.clear();
+                    self.todo_input_active = false;
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.todo_input_active = false;
+                    self.view = View::Generator;
+                }
                 KeyCode::Backspace => { self.todo_input.pop(); }
                 KeyCode::Char(c) => { self.todo_input.push(c); }
-                // Apply on Enter even while typing
-                KeyCode::Enter => self.apply_todo_resolution().await,
+                KeyCode::Enter => {
+                    self.apply_todo_resolution().await;
+                    self.todo_input_active = false;
+                }
                 _ => {}
             }
             return;
@@ -541,6 +567,7 @@ impl App {
                 if !self.todos.is_empty() {
                     self.todo_idx = (self.todo_idx + 1) % self.todos.len();
                     self.todo_input.clear();
+                    self.todo_input_active = false;
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -551,6 +578,7 @@ impl App {
                         self.todo_idx - 1
                     };
                     self.todo_input.clear();
+                    self.todo_input_active = false;
                 }
             }
             // [N] jump to next pending (unresolved/unskipped) todo
@@ -563,6 +591,7 @@ impl App {
                         if self.todos[idx].status == TodoStatus::Pending {
                             self.todo_idx = idx;
                             self.todo_input.clear();
+                            self.todo_input_active = false;
                             break;
                         }
                     }
@@ -594,6 +623,7 @@ impl App {
                 if let Some(item) = self.todos.get_mut(self.todo_idx) {
                     item.status = TodoStatus::Skipped;
                     self.todo_input.clear();
+                    self.todo_input_active = false;
                     // Advance to next pending
                     if self.todo_idx + 1 < self.todos.len() {
                         self.todo_idx += 1;
@@ -601,12 +631,11 @@ impl App {
                 }
             }
 
-            // Apply resolution on Enter
-            KeyCode::Enter => self.apply_todo_resolution().await,
-
-            // Begin text input with any other printable char
-            KeyCode::Char(c) => { self.todo_input.push(c); }
-            KeyCode::Backspace => { self.todo_input.pop(); }
+            // Enter activates the text input field (insert mode).
+            // A second Enter (when active) applies the resolution — handled in the active block above.
+            KeyCode::Enter => {
+                self.todo_input_active = true;
+            }
 
             _ => {}
         }
@@ -625,6 +654,7 @@ impl App {
                 item.resolution = Some(res.clone());
                 item.status = TodoStatus::Resolved;
                 self.todo_input.clear();
+                self.todo_input_active = false;
                 // Advance to next pending
                 let next = (self.todo_idx + 1).min(self.todos.len().saturating_sub(1));
                 if next > self.todo_idx || self.todos.len() == 1 {
@@ -651,11 +681,13 @@ impl App {
             AppMessage::GenerateLog(line) => {
                 self.gen_log.push(line);
             }
-            AppMessage::GenerateDone(count) => {
+            AppMessage::GenerateDone(count, resolved_map) => {
                 self.is_generating = false;
                 self.gen_complete = true;
+                self.gen_complete_tick = self.tick;
                 self.gen_step = GenStep::Done;
                 self.gen_files_count = count;
+                self.resolved_hcl_map = resolved_map;
             }
             AppMessage::AiSuggestion(idx, suggestion) => {
                 if let Some(item) = self.todos.get_mut(idx) {
@@ -743,11 +775,11 @@ impl App {
         tokio::spawn(async move {
             let mut log: Vec<String> = Vec::new();
             match crate::migration::generator::generate_files(&results, &passthroughs, &output_dir, source_dir.as_deref(), &zone, &mut log) {
-                Ok(count) => {
+                Ok((count, resolved_map)) => {
                     for line in log {
                         let _ = tx.send(AppMessage::GenerateLog(line)).await;
                     }
-                    let _ = tx.send(AppMessage::GenerateDone(count)).await;
+                    let _ = tx.send(AppMessage::GenerateDone(count, resolved_map)).await;
                 }
                 Err(e) => {
                     let _ = tx.send(AppMessage::Error(format!("Generation failed: {}", e))).await;

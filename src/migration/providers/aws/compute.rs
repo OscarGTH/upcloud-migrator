@@ -1,20 +1,25 @@
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
+/// Map instance_type (e.g. t3.micro) → UpCloud plan slug. Returns None for unknown types.
+pub fn aws_instance_type_to_upcloud_plan(instance_type: &str) -> Option<&'static str> {
+    match instance_type {
+        "t2.micro" | "t3.micro" => Some("1xCPU-1GB"),
+        "t2.small" | "t3.small" => Some("1xCPU-2GB"),
+        "t2.medium" | "t3.medium" => Some("2xCPU-4GB"),
+        "t2.large" | "t3.large" => Some("2xCPU-8GB"),
+        "t2.xlarge" | "t3.xlarge" => Some("4xCPU-8GB"),
+        "t2.2xlarge" | "t3.2xlarge" => Some("6xCPU-16GB"),
+        "m5.large" | "m5.xlarge" => Some("4xCPU-8GB"),
+        "m5.2xlarge" => Some("6xCPU-16GB"),
+        "c5.large" | "c5.xlarge" => Some("4xCPU-8GB"),
+        _ => None,
+    }
+}
+
 /// Map instance_type (e.g. t3.micro) → UpCloud plan slug
 fn map_instance_type(instance_type: &str) -> &'static str {
-    match instance_type {
-        "t2.micro" | "t3.micro" => "1xCPU-1GB",
-        "t2.small" | "t3.small" => "1xCPU-2GB",
-        "t2.medium" | "t3.medium" => "2xCPU-4GB",
-        "t2.large" | "t3.large" => "2xCPU-8GB",
-        "t2.xlarge" | "t3.xlarge" => "4xCPU-8GB",
-        "t2.2xlarge" | "t3.2xlarge" => "6xCPU-16GB",
-        "m5.large" | "m5.xlarge" => "4xCPU-8GB",
-        "m5.2xlarge" => "6xCPU-16GB",
-        "c5.large" | "c5.xlarge" => "4xCPU-8GB",
-        _ => "2xCPU-4GB",
-    }
+    aws_instance_type_to_upcloud_plan(instance_type).unwrap_or("2xCPU-4GB")
 }
 
 /// Map AWS region → UpCloud zone
@@ -30,9 +35,16 @@ fn map_region(region: &str) -> &'static str {
     }
 }
 
+/// Returns true when `instance_type` is a Terraform variable/expression rather than a literal.
+/// A literal is a plain string like "t3.micro"; expressions include var refs and interpolations.
+fn is_instance_type_expression(s: &str) -> bool {
+    s.starts_with("var.") || s.starts_with("${") || s.starts_with("local.")
+}
+
 pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     let instance_type = res.attributes.get("instance_type").map(|s| s.trim_matches('"')).unwrap_or("t3.micro");
-    let plan = map_instance_type(instance_type);
+    let is_expr = is_instance_type_expression(instance_type);
+    let plan = if is_expr { "" } else { map_instance_type(instance_type) };
     let zone = res.attributes.get("availability_zone")
         .map(|az| map_region(az.trim_matches('"')))
         .unwrap_or("__ZONE__");
@@ -79,11 +91,17 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     // metadata must be true when using cloud-init / user_data (provider docs requirement).
     let metadata_line = if has_user_data { "\n  metadata  = true" } else { "" };
 
+    // For expression plans (var.xxx) the value must not be quoted.
+    let plan_line = if is_expr {
+        format!("  plan     = {}\n", instance_type)
+    } else {
+        format!("  plan     = \"{}\"\n", plan)
+    };
+
     let hcl = format!(
         r#"resource "upcloud_server" "{name}" {{
 {count_line}  zone     = "{zone}"
-  plan     = "{plan}"
-  firewall = true{metadata}
+{plan_line}  firewall = true{metadata}
 
   template {{
     storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
@@ -105,7 +123,7 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         name = res.name,
         count_line = count_line,
         zone = zone,
-        plan = plan,
+        plan_line = plan_line,
         metadata = metadata_line,
         login = login_block,
         tags = tags,
@@ -113,27 +131,31 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     );
 
     let mut notes = vec![
-        format!("instance_type '{}' → plan '{}'", instance_type, plan),
+        if is_expr {
+            format!("instance_type '{}' is a variable — update its default in variables.tf to an UpCloud plan.", instance_type)
+        } else {
+            format!("instance_type '{}' → plan '{}'", instance_type, plan)
+        },
         "AMI → Ubuntu 24.04 LTS (update if needed: upctl storage list --public --template)".into(),
     ];
     if let Some(ref n) = count_attr {
-        notes.push(format!("count = {} propagated — hostname uses count.index suffix.", n));
+        notes.push(format!("count = {} propagated.", n));
     }
     if key_ref.is_some() {
-        notes.push("login block generated — SSH key will be auto-resolved from aws_key_pair if public_key is set.".into());
+        notes.push("SSH key auto-resolved from aws_key_pair.".into());
     } else {
-        notes.push("login block generated with placeholder — paste your SSH public key.".into());
+        notes.push("login block added — paste your SSH public key.".into());
     }
-    notes.push("Private network_interface.network will be auto-resolved if a subnet exists.".into());
+    notes.push("Private network auto-resolved from subnet.".into());
     if let Some(ud) = res.attributes.get("user_data") {
-        notes.push("user_data propagated — review any AWS-specific references (private IPs, data sources, instance metadata).".into());
+        notes.push("user_data propagated — review AWS-specific refs (IPs, metadata).".into());
         if ud.contains("base64encode(") {
-            notes.push("user_data uses base64encode() — UpCloud cloud-init expects plain text, not base64. Remove the base64encode() wrapper.".into());
+            notes.push("user_data: remove base64encode() — UpCloud cloud-init expects plain text.".into());
         }
         if ud.contains("templatefile(") {
-            notes.push("user_data uses templatefile() — review template variables for AWS-specific references (IPs, ARNs, region, etc.).".into());
+            notes.push("user_data uses templatefile() — review vars for AWS-specific refs.".into());
         } else if ud.trim_start().starts_with("file(") || ud.contains(" file(") {
-            notes.push("user_data references an external file — the script itself is not scanned for AWS-specific references.".into());
+            notes.push("user_data is an external file — not scanned for AWS refs.".into());
         }
     }
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::migration::providers::aws::database::{extract_parameter_blocks, is_valid_pg_property};
 use crate::migration::types::{MigrationResult, MigrationStatus};
+use crate::migration::var_detector::{analyze_variable, apply_conversion_to_hcl, build_var_annotation, build_var_usage_map, extract_variable_info, VarKind};
 use crate::terraform::types::{PassthroughBlock, PassthroughKind};
 use crate::zones::zone_to_objstorage_region;
 
@@ -11,6 +12,15 @@ use crate::zones::zone_to_objstorage_region;
 /// Used to skip values that the mapper could not resolve at mapping time.
 const TODO_PLACEHOLDER_PREFIX: &str = "<TODO";
 
+/// Sentinel stored in `resolved_hcl_map` for resources that were intentionally
+/// skipped during generation (e.g. firewall rules with no resolvable server_id).
+/// The diff view uses this to show a "skipped" note instead of partial HCL.
+pub const SKIPPED_SENTINEL: &str = "\x00SKIPPED";
+
+
+/// Resolved HCL map: maps `(resource_type, resource_name)` to the fully-resolved HCL string
+/// (zone injected, cross-references resolved, AWS refs sanitised).
+pub type ResolvedHclMap = HashMap<(String, String), String>;
 
 pub fn generate_files(
     results: &[MigrationResult],
@@ -19,8 +29,10 @@ pub fn generate_files(
     source_dir: Option<&Path>,
     zone: &str,
     log: &mut Vec<String>,
-) -> Result<usize> {
+) -> Result<(usize, ResolvedHclMap)> {
     std::fs::create_dir_all(output_dir)?;
+
+    let mut resolved_hcl_map: ResolvedHclMap = HashMap::new();
 
     let objstorage_region = zone_to_objstorage_region(zone);
 
@@ -69,6 +81,19 @@ pub fn generate_files(
         .map(|r| {
             let count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl);
             (r.resource_name.clone(), count)
+        })
+        .collect();
+
+    // Build sg_to_server_map: SG resource_name → server resource_name.
+    // Derived from vpc_security_group_ids / security_groups references in aws_instance source HCL.
+    // This lets us resolve firewall server_id even when SG and server names differ.
+    let sg_to_server_map: HashMap<String, String> = results.iter()
+        .filter(|r| r.resource_type == "aws_instance")
+        .filter_map(|r| r.source_hcl.as_deref().map(|hcl| (&r.resource_name, hcl)))
+        .flat_map(|(server_name, hcl)| {
+            extract_sg_refs_from_instance_hcl(hcl)
+                .into_iter()
+                .map(move |sg_name| (sg_name, server_name.clone()))
         })
         .collect();
 
@@ -255,6 +280,14 @@ pub fn generate_files(
         passthrough_map.entry(basename).or_default().push(pt);
     }
 
+    // Build a usage map so the variable detector can score each variable by where it is referenced.
+    // Gather all source HCL from mapped resources (best-effort — not every resource has source_hcl).
+    let source_hcl_refs: Vec<&str> = results
+        .iter()
+        .filter_map(|r| r.source_hcl.as_deref())
+        .collect();
+    let var_usage_map = build_var_usage_map(&source_hcl_refs);
+
     // Write provider config
     let provider_path = output_dir.join("providers.tf");
     let provider_hcl = r#"terraform {
@@ -294,12 +327,16 @@ provider "upcloud" {
                 let mut resolved = resolve(hcl, &result.resource_name);
 
                 // Name-based firewall server_id resolution (runs after generic resolve).
-                // Matches the SG resource name against server names; injects count when
-                // the matched server itself uses count.
+                // First try the vpc_security_group_ids lookup (sg_to_server_map), then fall
+                // back to name-matching (SG name == server name, which is rarely true).
                 if result.upcloud_type == "upcloud_firewall_rules" {
+                    let effective_server = sg_to_server_map
+                        .get(&result.resource_name)
+                        .map(|s| s.as_str())
+                        .unwrap_or(&result.resource_name);
                     resolved = resolve_firewall_server(
                         &resolved,
-                        &result.resource_name,
+                        effective_server,
                         &server_info_map,
                     );
                     // If server_id is still unresolved after name-based resolution, the
@@ -307,16 +344,20 @@ provider "upcloud" {
                     // a load balancer). UpCloud LBs have built-in security and don't use
                     // upcloud_firewall_rules, so skip the resource entirely.
                     if resolved.contains("upcloud_server.<TODO>.id") {
-                        log.push(format!(
-                            "  [SKIP] {} {} (server_id unresolved — \
-                             no server resource named '{}'; if this SG guards a database, \
-                             cache, or LB, UpCloud manages their access control separately \
-                             and upcloud_firewall_rules is not needed)",
-                            result.resource_type, result.resource_name, result.resource_name
-                        ));
+                        // Store a sentinel so the diff view knows this resource was skipped.
+                        resolved_hcl_map.insert(
+                            (result.resource_type.clone(), result.resource_name.clone()),
+                            SKIPPED_SENTINEL.to_string(),
+                        );
                         continue;
                     }
                 }
+
+                // Store the resolved HCL for the diff view.
+                resolved_hcl_map.insert(
+                    (result.resource_type.clone(), result.resource_name.clone()),
+                    resolved.clone(),
+                );
 
                 content.push_str(&format!(
                     "# {} {}\n",
@@ -352,9 +393,34 @@ provider "upcloud" {
                     ));
                 }
                 // Rewrite AWS resource references inside output/locals blocks.
-                // Variables don't reference other resources so they pass through as-is.
+                // Variables: run multi-signal detection and auto-convert instance types / regions.
                 let hcl = if pt.kind == PassthroughKind::Output || pt.kind == PassthroughKind::Locals {
                     rewrite_output_refs(&pt.raw_hcl)
+                } else if pt.kind == PassthroughKind::Variable {
+                    let var_name = pt.name.as_deref().unwrap_or("");
+                    let (default_val, description) = extract_variable_info(&pt.raw_hcl);
+                    let usage_attrs = var_usage_map
+                        .get(var_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let rewritten = if let Some(mut conv) = analyze_variable(
+                        var_name,
+                        default_val.as_deref(),
+                        description.as_deref(),
+                        &usage_attrs,
+                    ) {
+                        // For region variables, always use the zone the user selected in the app
+                        // rather than the geographically closest zone from the detector.
+                        if conv.kind == VarKind::Region && conv.converted_value.is_some() {
+                            conv.converted_value = Some(zone.to_string());
+                        }
+                        let annotation = build_var_annotation(var_name, &conv);
+                        let converted_hcl = apply_conversion_to_hcl(&pt.raw_hcl, &conv);
+                        format!("{}{}", annotation, converted_hcl)
+                    } else {
+                        pt.raw_hcl.clone()
+                    };
+                    rewritten
                 } else {
                     pt.raw_hcl.clone()
                 };
@@ -367,8 +433,13 @@ provider "upcloud" {
         match std::fs::write(&out_path, &content) {
             Ok(_) => {
                 log.push(format!("  [OK] {}", filename));
-                if let Err(e) = hcl::from_str::<hcl::Body>(&content) {
-                    log.push(format!("  [HCL ERR] {} — {}", filename, e));
+                // Only validate HCL when there are no TODO placeholders — TODOs intentionally
+                // produce invalid HCL (e.g. `= upcloud_server.web.<TODO: ...>`), so any parse
+                // error there is expected and not worth surfacing to the user.
+                if !content.contains(TODO_PLACEHOLDER_PREFIX) {
+                    if let Err(e) = hcl::from_str::<hcl::Body>(&content) {
+                        log.push(format!("  [HCL ERR] {} — {}", filename, e));
+                    }
                 }
                 total += 1;
             }
@@ -471,7 +542,7 @@ provider "upcloud" {
         }
     }
 
-    Ok(total)
+    Ok((total, resolved_hcl_map))
 }
 
 /// The two forms a `keys = [...]` value can take in a generated login block.
@@ -736,10 +807,6 @@ fn upcloud_attr_for(upcloud_type: &str, aws_attr: &str) -> Option<&'static str> 
     }
 }
 
-/// Rewrite AWS resource references inside `output` and `locals` HCL blocks.
-///
-/// Patterns like `aws_instance.web.public_ip` are rewritten to their UpCloud
-/// equivalents (e.g. `upcloud_server.web.network_interface[0].ip_address`).
 /// When the attribute has no direct mapping a `<TODO: was .attr>` suffix is
 /// injected so it surfaces in the TODO review screen.  Unknown AWS resource
 /// types get a full `<TODO: was aws_type.name.attr>` replacement.
@@ -816,6 +883,29 @@ fn extract_count_from_hcl(hcl: &str) -> Option<String> {
         })
         .and_then(|l| l.split('=').nth(1))
         .map(|v| v.trim().to_string())
+}
+
+/// Scan an `aws_instance` source HCL block and return all security group resource names
+/// referenced in `vpc_security_group_ids` or `security_groups` attributes.
+/// E.g. `vpc_security_group_ids = [aws_security_group.docker_demo.id]` → `["docker_demo"]`
+fn extract_sg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    const PREFIX: &str = "aws_security_group.";
+    for line in hcl.lines() {
+        let mut search = line;
+        while let Some(pos) = search.find(PREFIX) {
+            let after = &search[pos + PREFIX.len()..];
+            let end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
+            let name = &after[..end];
+            if !name.is_empty() {
+                refs.push(name.to_string());
+            }
+            search = &search[pos + 1..];
+        }
+    }
+    refs
 }
 
 /// Resolve `upcloud_server.<TODO>.id` in a `upcloud_firewall_rules` block using name-matching.
@@ -1192,6 +1282,28 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
         let map = HashMap::new();
         let out = resolve_firewall_server(hcl, "lb", &map);
         assert!(out.contains("upcloud_server.<TODO>.id"), "{out}");
+    }
+
+    #[test]
+    fn sg_to_server_map_resolves_mismatched_names() {
+        // docker_demo SG is attached to docker_server instance via vpc_security_group_ids.
+        let instance_hcl = concat!(
+            "resource \"aws_instance\" \"docker_server\" {\n",
+            "  vpc_security_group_ids = [aws_security_group.docker_demo.id]\n",
+            "}\n"
+        );
+        let refs = extract_sg_refs_from_instance_hcl(instance_hcl);
+        assert!(refs.contains(&"docker_demo".to_string()), "should extract SG name: {refs:?}");
+
+        // When the sg_to_server_map is used, the firewall rule should resolve to docker_server.
+        let fw_hcl = "resource \"upcloud_firewall_rules\" \"docker_demo\" {\n  server_id = upcloud_server.<TODO>.id\n}\n";
+        let mut server_map = HashMap::new();
+        server_map.insert("docker_server".to_string(), None);
+        // effective_server comes from sg_to_server_map lookup
+        let effective_server = "docker_server";
+        let out = resolve_firewall_server(fw_hcl, effective_server, &server_map);
+        assert!(out.contains("upcloud_server.docker_server.id"), "should resolve to docker_server: {out}");
+        assert!(!out.contains("<TODO>"), "no TODO should remain: {out}");
     }
 
     #[test]
@@ -1649,10 +1761,12 @@ resource "aws_instance" "web" {
     }
 
     #[test]
-    fn variable_block_not_rewritten() {
+    fn variable_block_rewritten_with_annotation() {
         use crate::terraform::types::{PassthroughBlock, PassthroughKind};
         use std::path::PathBuf;
 
+        // instance_type name alone scores 1 (name keyword) — below threshold.
+        // But adding default "t3.micro" gives +5 → total 6 (MEDIUM confidence).
         let var_hcl = "variable \"instance_type\" {\n  default = \"t3.micro\"\n}";
         let pt = PassthroughBlock {
             name: Some("instance_type".to_string()),
@@ -1660,15 +1774,28 @@ resource "aws_instance" "web" {
             source_file: PathBuf::from("vars.tf"),
             kind: PassthroughKind::Variable,
         };
-        let dir = std::env::temp_dir().join("upcloud_rewrite_var_test");
+        let dir = std::env::temp_dir().join("upcloud_rewrite_var_test2");
         std::fs::create_dir_all(&dir).unwrap();
         let out_dir = dir.join("out");
         let mut log = vec![];
         generate_files(&[], &[pt], &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("vars.tf")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        // Variables are passed through unchanged — no rewriting
-        assert!(output.contains(var_hcl), "variable HCL must be unchanged\n{output}");
+        // t3.micro should be rewritten to the UpCloud plan equivalent
+        assert!(
+            output.contains("default = \"1xCPU-1GB\""),
+            "instance type default must be rewritten to UpCloud plan\n{output}"
+        );
+        // An AUTO-CONVERTED annotation comment must be prepended
+        assert!(
+            output.contains("AUTO-CONVERTED"),
+            "annotation comment must be present\n{output}"
+        );
+        // Other parts of the variable block must be preserved
+        assert!(
+            output.contains("variable \"instance_type\""),
+            "variable name must be preserved\n{output}"
+        );
     }
 
     #[test]

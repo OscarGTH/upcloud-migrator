@@ -98,17 +98,16 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
         parent_resource: vpc_name,
         notes: {
             let mut n = vec![
-                "AWS Subnet → standalone upcloud_network (UpCloud networks have exactly one ip_network block).".into(),
-                "NOTE: In UpCloud, ALL upcloud_network resources are private SDN networks — this will appear under 'Private networks' in the UpCloud Hub regardless of what the subnet was named. Public internet access in UpCloud comes from network_interface { type = \"public\" } on the server, not from this resource.".into(),
+                "AWS Subnet → upcloud_network (private SDN; public internet via server network_interface type=public).".into(),
             ];
             let is_public = res.attributes.get("map_public_ip_on_launch")
                 .map(|v| v.trim_matches('"') == "true")
                 .unwrap_or(false);
             if is_public {
-                n.push("map_public_ip_on_launch = true detected — in UpCloud this is already handled by network_interface { type = \"public\" } on the server. This upcloud_network is for internal (private) communication only.".into());
+                n.push("map_public_ip_on_launch ignored — public access is via server network_interface type=public.".into());
             }
             if let Some(ref c) = count_attr {
-                n.push(format!("count = {} propagated — name uses count.index suffix.", c));
+                n.push(format!("count = {} propagated.", c));
             }
             n
         },
@@ -155,11 +154,11 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
         "Security groups → UpCloud Firewall Rules (attached per-server, not per-network)".into(),
     ];
     if rules.is_empty() {
-        notes.push("No ingress/egress rules detected — add firewall_rule blocks manually.".into());
+        notes.push("No ingress/egress rules — add firewall_rule blocks manually.".into());
     } else {
         notes.push(format!("{} rule(s) auto-generated from source ingress/egress blocks.", rules.len()));
     }
-    notes.push("Set server_id to the target upcloud_server resource name.".into());
+    notes.push("server_id auto-resolved from vpc_security_group_ids on the instance.".into());
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -497,7 +496,7 @@ pub fn map_route_table(res: &TerraformResource) -> MigrationResult {
         parent_resource: None,
         notes: vec![
             "Route tables map to static_route blocks inside upcloud_router — not a standalone resource.".into(),
-            "Add the snippet below to your upcloud_router resource, then fill in the nexthop IP.".into(),
+            "A static_route snippet has been written to MIGRATION_NOTES.md — add it to your upcloud_router and fill in the nexthop IP.".into(),
         ],
         source_hcl: None,
     }
