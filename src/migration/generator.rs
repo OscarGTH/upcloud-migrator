@@ -16,6 +16,7 @@ pub fn generate_files(
     results: &[MigrationResult],
     passthroughs: &[PassthroughBlock],
     output_dir: &Path,
+    source_dir: Option<&Path>,
     zone: &str,
     log: &mut Vec<String>,
 ) -> Result<usize> {
@@ -442,6 +443,34 @@ provider "upcloud" {
         total += 1;
     }
 
+    // ── Copy non-.tf files (scripts, JSON, YAML, etc.) from source dir ────────
+    if let Some(src) = source_dir {
+        for entry in walkdir::WalkDir::new(src).follow_links(true) {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("tf") {
+                continue; // already handled via HCL generation
+            }
+            let rel = match path.strip_prefix(src) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let dest = output_dir.join(rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(path, &dest)?;
+            log.push(format!("  [COPY] {}", rel.display()));
+            total += 1;
+        }
+    }
+
     Ok(total)
 }
 
@@ -854,7 +883,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("upcloud_gen_test_{}", test_name));
         std::fs::create_dir_all(&dir).unwrap();
         let mut log = vec![];
-        generate_files(results, &[], &dir, "fi-hel2", &mut log).unwrap();
+        generate_files(results, &[], &dir, None, "fi-hel2", &mut log).unwrap();
         let content = std::fs::read_to_string(dir.join("test.tf"))
             .expect("generate_files must have created test.tf");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1261,7 +1290,7 @@ resource "aws_instance" "app" {
 
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&results, &[], &out_dir, "fi-hel2", &mut log).unwrap();
+        generate_files(&results, &[], &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output =
             std::fs::read_to_string(out_dir.join("main.tf"))
             .expect("generate_files must produce main.tf");
@@ -1300,7 +1329,7 @@ resource "aws_instance" "app" {
 
         let out_dir = std::env::temp_dir().join("upcloud_e2e_webapp");
         let mut log = vec![];
-        generate_files(&results, &[], &out_dir, "fi-hel2", &mut log).unwrap();
+        generate_files(&results, &[], &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("webapp-e2e.tf"))
             .expect("generate_files must produce webapp-e2e.tf");
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -1405,7 +1434,7 @@ resource "aws_instance" "app" {
         let dir = std::env::temp_dir().join("upcloud_gen_test_zone_pl_waw1");
         std::fs::create_dir_all(&dir).unwrap();
         let mut log = vec![];
-        generate_files(&[server], &[], &dir, "pl-waw1", &mut log).unwrap();
+        generate_files(&[server], &[], &dir, None, "pl-waw1", &mut log).unwrap();
         let content = std::fs::read_to_string(dir.join("test.tf"))
             .expect("generate_files must produce test.tf");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1460,7 +1489,7 @@ resource "aws_instance" "web" {
 
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&results, &pts, &out_dir, "fi-hel2", &mut log).unwrap();
+        generate_files(&results, &pts, &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("main.tf"))
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1491,7 +1520,7 @@ resource "aws_instance" "web" {
         std::fs::create_dir_all(&dir).unwrap();
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&[], &[pt], &out_dir, "fi-hel2", &mut log).unwrap();
+        generate_files(&[], &[pt], &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("test.tf"))
             .expect("generate_files must produce test.tf");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1536,7 +1565,7 @@ resource "aws_instance" "web" {
 
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&results, &pts, &out_dir, "fi-hel2", &mut log).unwrap();
+        generate_files(&results, &pts, &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("main.tf"))
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1635,7 +1664,7 @@ resource "aws_instance" "web" {
         std::fs::create_dir_all(&dir).unwrap();
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&[], &[pt], &out_dir, "fi-hel2", &mut log).unwrap();
+        generate_files(&[], &[pt], &out_dir, None, "fi-hel2", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("vars.tf")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         // Variables are passed through unchanged — no rewriting
@@ -1671,7 +1700,7 @@ output "server_id" {
 
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&results, &parsed.passthroughs, &out_dir, "fi-hel1", &mut log).unwrap();
+        generate_files(&results, &parsed.passthroughs, &out_dir, None, "fi-hel1", &mut log).unwrap();
         let output = std::fs::read_to_string(out_dir.join("main.tf"))
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);

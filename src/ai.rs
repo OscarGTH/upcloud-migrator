@@ -79,12 +79,12 @@ pub async fn chat_with_tf(
 /// Call an OpenAI-compatible LLM API to suggest a replacement value for a TODO placeholder.
 ///
 /// Configuration via environment variables:
-///   LLM_API_URL  — base URL, e.g. https://llm-proxy.edgez.live  (default: https://llm-proxy.edgez.live)
+///   LLM_API_URL  — base URL, e.g. https://your-ai-provider-url
 ///   LLM_API_KEY  — API key
 ///   LLM_MODEL    — model name (default: claude-latest)
 pub async fn get_todo_suggestion(item: &TodoItem, api_key: &str) -> Result<String> {
     let api_url = std::env::var("LLM_API_URL")
-        .unwrap_or_else(|_| "https://llm-proxy.edgez.live".to_string());
+        .unwrap_or_else(|_| "https://your-ai-provider-url".to_string());
     let model = std::env::var("LLM_MODEL")
         .unwrap_or_else(|_| "claude-latest".to_string());
 

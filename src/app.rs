@@ -738,10 +738,11 @@ impl App {
         let results = self.migration_results.clone();
         let passthroughs = self.passthroughs.clone();
         let zone = self.target_zone.clone();
+        let source_dir = self.scan_path.clone();
 
         tokio::spawn(async move {
             let mut log: Vec<String> = Vec::new();
-            match crate::migration::generator::generate_files(&results, &passthroughs, &output_dir, &zone, &mut log) {
+            match crate::migration::generator::generate_files(&results, &passthroughs, &output_dir, source_dir.as_deref(), &zone, &mut log) {
                 Ok(count) => {
                     for line in log {
                         let _ = tx.send(AppMessage::GenerateLog(line)).await;
