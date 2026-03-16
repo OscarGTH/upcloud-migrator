@@ -435,6 +435,71 @@ mod tests {
         assert!(hcl.contains("resource \"upcloud_floating_ip_address\" \"my_ip\""), "{hcl}");
         assert!(hcl.contains("zone = \"__ZONE__\""), "{hcl}");
     }
+
+    // ── map_eip_association ───────────────────────────────────────────────────
+
+    #[test]
+    fn eip_association_generates_mac_address_snippet() {
+        let res = make_res("aws_eip_association", "assoc", &[
+            ("allocation_id", "aws_eip.my_ip.id"),
+            ("instance_id", "aws_instance.web.id"),
+        ]);
+        let r = map_eip_association(&res);
+        assert_eq!(r.upcloud_type, "mac_address on upcloud_floating_ip_address");
+        assert!(r.upcloud_hcl.is_none(), "no standalone HCL resource");
+        let snippet = r.snippet.unwrap();
+        assert!(snippet.contains("mac_address"), "{snippet}");
+        assert!(snippet.contains("my_ip"), "should reference the EIP resource name\n{snippet}");
+        assert!(snippet.contains("upcloud_server.web"), "{snippet}");
+    }
+
+    #[test]
+    fn eip_association_without_refs_has_todo_snippet() {
+        let res = make_res("aws_eip_association", "a", &[]);
+        let snippet = map_eip_association(&res).snippet.unwrap();
+        assert!(snippet.contains("<TODO>"), "{snippet}");
+        assert!(snippet.contains("mac_address"), "{snippet}");
+    }
+}
+
+pub fn map_eip_association(res: &TerraformResource) -> MigrationResult {
+    // aws_eip_association links an EIP to an instance/interface.
+    // UpCloud equivalent: set mac_address on upcloud_floating_ip_address.
+    let eip_name = res.attributes.get("allocation_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_eip.") { v.split('.').nth(1).map(str::to_string) } else { None }
+    });
+    let instance_name = res.attributes.get("instance_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_instance.") { v.split('.').nth(1).map(str::to_string) } else { None }
+    });
+
+    let snippet = match (&eip_name, &instance_name) {
+        (Some(eip), Some(inst)) => format!(
+            "# In resource \"upcloud_floating_ip_address\" \"{eip}\" add:\nmac_address = upcloud_server.{inst}.network_interface[0].mac_address"
+        ),
+        (Some(eip), None) => format!(
+            "# In resource \"upcloud_floating_ip_address\" \"{eip}\" add:\nmac_address = upcloud_server.<TODO>.network_interface[0].mac_address"
+        ),
+        _ => "# Set mac_address on the upcloud_floating_ip_address to attach it:\nmac_address = upcloud_server.<TODO>.network_interface[0].mac_address".into(),
+    };
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        score: 55,
+        upcloud_type: "mac_address on upcloud_floating_ip_address".into(),
+        upcloud_hcl: None,
+        snippet: Some(snippet),
+        parent_resource: eip_name,
+        notes: vec![
+            "EIP associations → set mac_address on upcloud_floating_ip_address to attach to a server.".into(),
+            "mac_address references the server's network_interface[0].mac_address output.".into(),
+        ],
+        source_hcl: None,
+    }
 }
 
 pub fn map_nat_gateway(res: &TerraformResource) -> MigrationResult {
@@ -506,8 +571,8 @@ pub fn map_eip(res: &TerraformResource) -> MigrationResult {
     let hcl = format!(
         r#"resource "upcloud_floating_ip_address" "{name}" {{
   zone = "__ZONE__"
-  # Attach to a server after creation:
-  # macaddress = upcloud_server.<name>.network_interface[0].mac_address
+  # To attach to a server, set:
+  # mac_address = upcloud_server.<name>.network_interface[0].mac_address
 }}
 "#,
         name = res.name,
@@ -523,7 +588,7 @@ pub fn map_eip(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec!["EIP → UpCloud Floating IP. Update macaddress to attach it to a server.".into()],
+        notes: vec!["EIP → upcloud_floating_ip_address. Set mac_address to attach it to a server's network interface.".into()],
         source_hcl: None,
     }
 }

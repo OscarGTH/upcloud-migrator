@@ -109,6 +109,32 @@ mod tests {
         assert!(r.upcloud_hcl.is_none());
     }
 
+    // ── map_volume_attachment ─────────────────────────────────────────────────
+
+    #[test]
+    fn volume_attachment_generates_storage_devices_snippet() {
+        let res = make_res("aws_volume_attachment", "attach", &[
+            ("volume_id", "aws_ebs_volume.data.id"),
+            ("instance_id", "aws_instance.web.id"),
+        ]);
+        let r = map_volume_attachment(&res);
+        assert_eq!(r.upcloud_type, "storage_devices block in upcloud_server");
+        assert!(r.upcloud_hcl.is_none(), "no standalone HCL resource");
+        let snippet = r.snippet.unwrap();
+        assert!(snippet.contains("storage_devices"), "{snippet}");
+        assert!(snippet.contains("upcloud_storage.data.id"), "{snippet}");
+        assert!(snippet.contains("upcloud_server\" \"web\""), "{snippet}");
+    }
+
+    #[test]
+    fn volume_attachment_without_refs_has_todo_snippet() {
+        let res = make_res("aws_volume_attachment", "a", &[]);
+        let snippet = map_volume_attachment(&res).snippet.unwrap();
+        assert!(snippet.contains("storage_devices"), "{snippet}");
+        assert!(snippet.contains("<TODO: storage>"), "{snippet}");
+        assert!(snippet.contains("<TODO: server>"), "{snippet}");
+    }
+
     // ── map_efs_file_system ───────────────────────────────────────────────────
 
     #[test]
@@ -121,6 +147,43 @@ mod tests {
         assert!(hcl.contains("zone              = \"__ZONE__\""), "{hcl}");
         assert!(hcl.contains("name              = \"shared\""), "{hcl}");
         assert!(hcl.contains("configured_status = \"started\""), "{hcl}");
+    }
+}
+
+pub fn map_volume_attachment(res: &TerraformResource) -> MigrationResult {
+    // aws_volume_attachment → storage_devices block inside upcloud_server.
+    // There is no standalone UpCloud resource for volume attachment.
+    let volume_name = res.attributes.get("volume_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_ebs_volume.") { v.split('.').nth(1).map(str::to_string) } else { None }
+    });
+    let instance_name = res.attributes.get("instance_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_instance.") { v.split('.').nth(1).map(str::to_string) } else { None }
+    });
+
+    let storage_ref = volume_name.as_deref().unwrap_or("<TODO: storage>").to_string();
+    let server_ref  = instance_name.as_deref().unwrap_or("<TODO: server>").to_string();
+
+    let snippet = format!(
+        "# Add inside resource \"upcloud_server\" \"{server_ref}\" {{\n  storage_devices {{\n    storage = upcloud_storage.{storage_ref}.id\n    type    = \"disk\"\n  }}"
+    );
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        score: 60,
+        upcloud_type: "storage_devices block in upcloud_server".into(),
+        upcloud_hcl: None,
+        snippet: Some(snippet),
+        parent_resource: instance_name,
+        notes: vec![
+            "EBS volume attachments → add a storage_devices block inside the upcloud_server resource.".into(),
+            format!("Add the snippet to upcloud_server.{server_ref} to attach upcloud_storage.{storage_ref}."),
+        ],
+        source_hcl: None,
     }
 }
 

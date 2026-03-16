@@ -8,6 +8,7 @@ pub fn compute_overall_score(results: &[MigrationResult]) -> f64 {
     total / results.len() as f64
 }
 
+#[allow(dead_code)]
 pub struct StatusBreakdown {
     pub native: usize,
     pub compatible: usize,
@@ -16,6 +17,7 @@ pub struct StatusBreakdown {
     pub unknown: usize,
 }
 
+#[allow(dead_code)]
 impl StatusBreakdown {
     pub fn from_results(results: &[MigrationResult]) -> Self {
         let mut b = StatusBreakdown {
@@ -39,6 +41,7 @@ impl StatusBreakdown {
 
 }
 
+#[allow(dead_code)]
 pub fn top_blockers(results: &[MigrationResult]) -> Vec<(String, usize)> {
     use std::collections::HashMap;
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -53,6 +56,7 @@ pub fn top_blockers(results: &[MigrationResult]) -> Vec<(String, usize)> {
     sorted
 }
 
+#[allow(dead_code)]
 pub fn migration_recommendation(score: f64) -> &'static str {
     match score as u8 {
         90..=100 => "Excellent! Nearly full automation possible. Ready to migrate.",

@@ -24,7 +24,6 @@ pub enum View {
     FileBrowser,
     Scanner,
     Resources,
-    Summary,
     Generator,
     DiffReview,
     TodoReview,
@@ -80,8 +79,6 @@ pub struct App {
     pub resources_focus_preview: bool,
     /// Scroll offset for the right preview panel
     pub preview_scroll: usize,
-    /// Scroll offset for the summary right panel (resources needing attention)
-    pub summary_scroll: usize,
 
     // Generator state
     pub gen_step: GenStep,
@@ -147,7 +144,6 @@ impl App {
             table_state,
             resources_focus_preview: false,
             preview_scroll: 0,
-            summary_scroll: 0,
             gen_step: GenStep::AskZone,
             target_zone: "de-fra1".into(),
             zone_idx: find_zone_idx("de-fra1"),
@@ -228,7 +224,6 @@ impl App {
             View::FileBrowser => self.handle_filebrowser_key(code).await,
             View::Scanner => self.handle_scanner_key(code),
             View::Resources => self.handle_resources_key(code).await,
-            View::Summary => self.handle_summary_key(code).await,
             View::Generator => self.handle_generator_key(code).await,
             View::DiffReview => self.handle_diff_key(code).await,
             View::TodoReview => self.handle_todo_key(code).await,
@@ -364,17 +359,7 @@ impl App {
     async fn handle_resources_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
-            KeyCode::Char('s') | KeyCode::Char('S') => self.view = View::Summary,
-            KeyCode::Char('g') | KeyCode::Char('G') => {
-                self.view = View::Generator;
-                self.input_buf.clear();
-                self.output_path = None;
-                self.gen_step = GenStep::AskZone;
-                self.gen_complete = false;
-                self.zone_idx = find_zone_idx(&self.target_zone);
-            }
-            KeyCode::Tab => self.view = View::Summary,
-            KeyCode::BackTab => {
+            KeyCode::Char('g') | KeyCode::Char('G') | KeyCode::Tab => {
                 self.view = View::Generator;
                 self.input_buf.clear();
                 self.output_path = None;
@@ -433,36 +418,6 @@ impl App {
         }
     }
 
-    async fn handle_summary_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
-            KeyCode::Char('g') | KeyCode::Char('G') => {
-                self.view = View::Generator;
-                self.input_buf.clear();
-                self.output_path = None;
-                self.gen_step = GenStep::AskZone;
-                self.gen_complete = false;
-                self.zone_idx = find_zone_idx(&self.target_zone);
-            }
-            KeyCode::Tab => {
-                self.view = View::Generator;
-                self.input_buf.clear();
-                self.output_path = None;
-                self.gen_step = GenStep::AskZone;
-                self.gen_complete = false;
-                self.zone_idx = find_zone_idx(&self.target_zone);
-            }
-            KeyCode::BackTab => self.view = View::Resources,
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                self.summary_scroll = self.summary_scroll.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                self.summary_scroll = self.summary_scroll.saturating_add(1);
-            }
-            _ => {}
-        }
-    }
-
     async fn handle_generator_key(&mut self, code: KeyCode) {
         // When the output directory input is active, ALL keys go to the input field.
         // Commands are blocked to prevent 'q', 'd', 't', etc. from firing while typing.
@@ -491,8 +446,7 @@ impl App {
 
         match code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
-            KeyCode::Tab => self.view = View::Resources,
-            KeyCode::BackTab => self.view = View::Summary,
+            KeyCode::Tab | KeyCode::BackTab => self.view = View::Resources,
             KeyCode::Char('t') | KeyCode::Char('T') if self.gen_complete => {
                 if let Some(output_dir) = &self.output_path {
                     self.todos = scan_output_todos(output_dir);

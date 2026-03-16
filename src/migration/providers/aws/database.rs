@@ -96,11 +96,11 @@ fn map_engine(engine: &str) -> (&'static str, &'static str) {
 
 fn map_instance_class(class: &str) -> &'static str {
     match class {
-        c if c.contains("micro") || c.contains("small") => "1x1",
-        c if c.contains("medium") => "2x2",
-        c if c.contains("xlarge") => "4x8", // must precede "large" — xlarge contains "large"
-        c if c.contains("large") => "4x4",
-        _ => "2x2",
+        c if c.contains("micro") || c.contains("small") => "1x1xCPU-2GB-25GB",
+        c if c.contains("medium") => "2x2xCPU-4GB-50GB",
+        c if c.contains("xlarge") => "4x8xCPU-16GB-200GB", // must precede "large" — xlarge contains "large"
+        c if c.contains("large") => "4x4xCPU-8GB-100GB",
+        _ => "2x2xCPU-4GB-50GB",
     }
 }
 
@@ -159,11 +159,11 @@ mod tests {
     #[test]
     fn rds_instance_class_maps_to_plan() {
         let cases = [
-            ("db.t3.micro",  "1x1"),
-            ("db.t3.small",  "1x1"),
-            ("db.t3.medium", "2x2"),
-            ("db.r5.large",  "4x4"),
-            ("db.r5.xlarge", "4x8"),
+            ("db.t3.micro",  "1x1xCPU-2GB-25GB"),
+            ("db.t3.small",  "1x1xCPU-2GB-25GB"),
+            ("db.t3.medium", "2x2xCPU-4GB-50GB"),
+            ("db.r5.large",  "4x4xCPU-8GB-100GB"),
+            ("db.r5.xlarge", "4x8xCPU-16GB-200GB"),
         ];
         for (class, expected_plan) in &cases {
             let res = make_res("aws_db_instance", "db", &[
@@ -247,6 +247,24 @@ fn param_group_resource_name(attr_value: &str) -> Option<String> {
     }
 }
 
+/// Extract the resource name from a `db_subnet_group_name` or `subnet_group_name` attribute.
+/// Handles references like `aws_db_subnet_group.NAME.name` → `NAME`,
+/// `aws_elasticache_subnet_group.NAME.name` → `NAME`, or a plain string name.
+fn subnet_group_resource_name(attr_value: &str) -> Option<String> {
+    let v = attr_value.trim_matches('"');
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() >= 2
+        && (parts[0] == "aws_db_subnet_group" || parts[0] == "aws_elasticache_subnet_group")
+    {
+        Some(parts[1].to_string())
+    } else if !v.is_empty() && !v.contains('.') && !v.contains('$') {
+        // Plain name literal (e.g. "my-subnet-group")
+        Some(v.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
     let engine = res.attributes.get("engine").map(|e| e.trim_matches('"')).unwrap_or("postgres");
     let (upcloud_type, engine_short) = map_engine(engine);
@@ -263,6 +281,12 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
         .map(|group_name| format!("\n    # __DB_PROPS:{}:{}__", engine_short, group_name))
         .unwrap_or_default();
 
+    // Embed the subnet group name so the generator can resolve it to the right network.
+    let network_uuid_placeholder = res.attributes.get("db_subnet_group_name")
+        .and_then(|v| subnet_group_resource_name(v))
+        .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
+        .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
+
     let hcl = format!(
         r#"resource "{upcloud_type}" "{name}" {{
   name  = "{name}-db"
@@ -276,7 +300,7 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
     family = "IPv4"
     name   = "private"
     type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
+    uuid   = "{network_uuid_placeholder}"
   }}
 
   properties {{
@@ -287,8 +311,15 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
         upcloud_type = upcloud_type,
         name = res.name,
         plan = plan,
+        network_uuid_placeholder = network_uuid_placeholder,
         param_group_marker = param_group_marker,
     );
+
+    let network_note = if network_uuid_placeholder.contains("subnet_group=") {
+        "network.uuid resolved from db_subnet_group — verify the network is correct.".into()
+    } else {
+        "Set network.uuid to the upcloud_network resource in the same zone.".into()
+    };
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -301,11 +332,11 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("engine '{}' → UpCloud Managed {}", engine, engine_short),
+            format!("engine '{}' → {}", engine, upcloud_type),
             "Migrate DB parameters and connection strings manually".into(),
-            "Set network.uuid to the upcloud_network resource in the same zone.".into(),
+            network_note,
         ],
-            source_hcl: None,
+        source_hcl: None,
     }
 }
 
@@ -318,10 +349,15 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
         .map(|group_name| format!("\n    # __DB_PROPS:{}:{}__", engine_short, group_name))
         .unwrap_or_default();
 
+    let network_uuid_placeholder = res.attributes.get("db_subnet_group_name")
+        .and_then(|v| subnet_group_resource_name(v))
+        .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
+        .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
+
     let hcl = format!(
         r#"resource "{upcloud_type}" "{name}" {{
   name  = "{name}-cluster"
-  plan  = "2x2"
+  plan  = "2x2xCPU-4GB-50GB"
   title = "{name}"
   zone  = "__ZONE__"
 
@@ -329,7 +365,7 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
     family = "IPv4"
     name   = "private"
     type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
+    uuid   = "{network_uuid_placeholder}"
   }}
 
   properties {{
@@ -339,6 +375,7 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
 "#,
         upcloud_type = upcloud_type,
         name = res.name,
+        network_uuid_placeholder = network_uuid_placeholder,
         param_group_marker = param_group_marker,
     );
 
@@ -523,13 +560,32 @@ pub fn map_elasticache_parameter_group(res: &TerraformResource) -> MigrationResu
     }
 }
 
+/// Map an ElastiCache node_type to the closest UpCloud Valkey plan.
+/// Valkey plans don't include a disk-size suffix.
+fn map_elasticache_node_type(node_type: &str) -> &'static str {
+    match node_type {
+        t if t.contains("micro") || t.contains("small") => "1x1xCPU-2GB",
+        t if t.contains("medium") => "2x2xCPU-4GB",
+        t if t.contains("xlarge") => "4x8xCPU-16GB", // must precede "large"
+        t if t.contains("large") => "4x4xCPU-8GB",
+        _ => "1x1xCPU-2GB",
+    }
+}
+
 pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
     let engine = res.attributes.get("engine").map(|e| e.trim_matches('"')).unwrap_or("redis");
+    let node_type = res.attributes.get("node_type").map(|v| v.trim_matches('"')).unwrap_or("");
+    let plan = map_elasticache_node_type(node_type);
+
+    let network_uuid_placeholder = res.attributes.get("subnet_group_name")
+        .and_then(|v| subnet_group_resource_name(v))
+        .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
+        .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
 
     let hcl = format!(
         r#"resource "upcloud_managed_database_valkey" "{name}" {{
   name  = "{name}-cache"
-  plan  = "1x1"
+  plan  = "{plan}"
   title = "{name}"
   zone  = "__ZONE__"
 
@@ -537,7 +593,7 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
     family = "IPv4"
     name   = "private"
     type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
+    uuid   = "{network_uuid_placeholder}"
   }}
 
   properties {{
@@ -546,7 +602,17 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
 }}
 "#,
         name = res.name,
+        plan = plan,
+        network_uuid_placeholder = network_uuid_placeholder,
     );
+
+    let mut notes = vec![
+        format!("ElastiCache ({}) → UpCloud Managed Valkey (Redis-compatible)", engine),
+        "Update connection strings to point to UpCloud Valkey endpoint".into(),
+    ];
+    if !node_type.is_empty() {
+        notes.push(format!("node_type '{}' → plan '{}'", node_type, plan));
+    }
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -558,10 +624,7 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec![
-            format!("ElastiCache ({}) → UpCloud Managed Valkey (Redis-compatible)", engine),
-            "Update connection strings to point to UpCloud Valkey endpoint".into(),
-        ],
-            source_hcl: None,
+        notes,
+        source_hcl: None,
     }
 }

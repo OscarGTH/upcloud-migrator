@@ -5,7 +5,6 @@ pub mod generator;
 pub mod resources;
 pub mod scanner;
 pub mod splash;
-pub mod summary;
 pub mod theme;
 pub mod todo;
 
@@ -18,7 +17,6 @@ pub fn render(f: &mut Frame, app: &App) {
         View::FileBrowser => filebrowser::render(f, app),
         View::Scanner => scanner::render(f, app),
         View::Resources => resources::render(f, app),
-        View::Summary => summary::render(f, app),
         View::Generator => generator::render(f, app),
         View::DiffReview => diff::render(f, app),
         View::TodoReview => todo::render(f, app),

@@ -36,6 +36,7 @@ fn map_aws(res: &TerraformResource) -> MigrationResult {
 
         // Storage
         "aws_ebs_volume" => aws::storage::map_ebs_volume(res),
+        "aws_volume_attachment" => aws::storage::map_volume_attachment(res),
         "aws_s3_bucket" => aws::storage::map_s3_bucket(res),
         "aws_s3_bucket_policy" | "aws_s3_bucket_acl" => aws::storage::map_s3_bucket_policy(res),
         "aws_efs_file_system" => aws::storage::map_efs_file_system(res),
@@ -48,11 +49,15 @@ fn map_aws(res: &TerraformResource) -> MigrationResult {
         "aws_nat_gateway" => aws::network::map_nat_gateway(res),
         "aws_route_table" | "aws_route_table_association" => aws::network::map_route_table(res),
         "aws_eip" => aws::network::map_eip(res),
+        "aws_eip_association" => aws::network::map_eip_association(res),
 
         // Load Balancers
         "aws_lb" | "aws_alb" => aws::loadbalancer::map_lb(res),
         "aws_lb_target_group" | "aws_alb_target_group" => aws::loadbalancer::map_lb_target_group(res),
         "aws_lb_listener" | "aws_alb_listener" => aws::loadbalancer::map_lb_listener(res),
+        "aws_lb_target_group_attachment" | "aws_alb_target_group_attachment" => {
+            aws::loadbalancer::map_lb_target_group_attachment(res)
+        }
         "aws_acm_certificate" => aws::loadbalancer::map_acm_certificate(res),
 
         // Databases
@@ -66,9 +71,9 @@ fn map_aws(res: &TerraformResource) -> MigrationResult {
         "aws_elasticache_subnet_group" => aws::database::map_elasticache_subnet_group(res),
         "aws_elasticache_parameter_group" => aws::database::map_elasticache_parameter_group(res),
 
-        // Kubernetes
-        "aws_eks_cluster" => aws::kubernetes::map_eks_cluster(res),
-        "aws_eks_node_group" => aws::kubernetes::map_eks_node_group(res),
+        // Kubernetes (not supported in this MVP)
+        "aws_eks_cluster" | "aws_eks_node_group" | "aws_eks_fargate_profile"
+        | "aws_eks_addon" => unsupported(res, "(EKS not supported — use upcloud_kubernetes_cluster manually)"),
 
         // Unsupported
         "aws_iam_role"

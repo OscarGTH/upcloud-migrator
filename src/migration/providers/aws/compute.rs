@@ -4,15 +4,38 @@ use crate::terraform::types::TerraformResource;
 /// Map instance_type (e.g. t3.micro) → UpCloud plan slug. Returns None for unknown types.
 pub fn aws_instance_type_to_upcloud_plan(instance_type: &str) -> Option<&'static str> {
     match instance_type {
-        "t2.micro" | "t3.micro" => Some("1xCPU-1GB"),
-        "t2.small" | "t3.small" => Some("1xCPU-2GB"),
-        "t2.medium" | "t3.medium" => Some("2xCPU-4GB"),
-        "t2.large" | "t3.large" => Some("2xCPU-8GB"),
-        "t2.xlarge" | "t3.xlarge" => Some("4xCPU-8GB"),
-        "t2.2xlarge" | "t3.2xlarge" => Some("6xCPU-16GB"),
-        "m5.large" | "m5.xlarge" => Some("4xCPU-8GB"),
-        "m5.2xlarge" => Some("6xCPU-16GB"),
-        "c5.large" | "c5.xlarge" => Some("4xCPU-8GB"),
+        // T-series (burstable)
+        "t2.nano"  | "t3.nano"    => Some("1xCPU-1GB"),
+        "t2.micro" | "t3.micro"   => Some("1xCPU-1GB"),
+        "t2.small" | "t3.small"   => Some("1xCPU-2GB"),
+        "t2.medium"| "t3.medium"  => Some("2xCPU-4GB"),
+        "t2.large" | "t3.large"   => Some("2xCPU-8GB"),
+        "t2.xlarge"| "t3.xlarge"  => Some("6xCPU-16GB"),  // 4 vCPU 16 GB
+        "t2.2xlarge"|"t3.2xlarge" => Some("8xCPU-32GB"),  // 8 vCPU 32 GB
+
+        // M-series (general purpose)
+        "m5.large"               => Some("2xCPU-8GB"),   // 2 vCPU 8 GB
+        "m5.xlarge"              => Some("6xCPU-16GB"),  // 4 vCPU 16 GB
+        "m5.2xlarge"             => Some("8xCPU-32GB"),  // 8 vCPU 32 GB
+        "m5.4xlarge"             => Some("16xCPU-64GB"), // 16 vCPU 64 GB
+        "m6i.large"              => Some("2xCPU-8GB"),
+        "m6i.xlarge"             => Some("6xCPU-16GB"),
+        "m6i.2xlarge"            => Some("8xCPU-32GB"),
+        "m6i.4xlarge"            => Some("16xCPU-64GB"),
+
+        // C-series (compute optimized)
+        "c5.large"               => Some("2xCPU-4GB"),   // 2 vCPU 4 GB
+        "c5.xlarge"              => Some("4xCPU-8GB"),   // 4 vCPU 8 GB
+        "c5.2xlarge"             => Some("6xCPU-16GB"),  // 8 vCPU 16 GB
+        "c6i.large"              => Some("2xCPU-4GB"),
+        "c6i.xlarge"             => Some("4xCPU-8GB"),
+        "c6i.2xlarge"            => Some("6xCPU-16GB"),
+
+        // R-series (memory optimized) — map by RAM, upscaling CPU if needed
+        "r5.large"               => Some("2xCPU-8GB"),   // 2 vCPU 16 GB → nearest
+        "r5.xlarge"              => Some("6xCPU-16GB"),  // 4 vCPU 32 GB → nearest
+        "r5.2xlarge"             => Some("8xCPU-32GB"),  // 8 vCPU 64 GB → nearest
+
         _ => None,
     }
 }
@@ -71,6 +94,17 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         None => "\n  login {\n    user = \"root\"\n    keys = [\"<TODO: paste SSH public key>\"]\n  }\n".to_string(),
     };
 
+    // Extract subnet name from subnet_id to generate a network-specific placeholder.
+    // aws_subnet.NAME.id → upcloud_network.NAME (same name in our mapping).
+    let subnet_name = res.attributes.get("subnet_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_subnet.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
+
     // Propagate count if set (e.g. count = 2)
     let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
     let count_line = match &count_attr {
@@ -98,14 +132,19 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         format!("  plan     = \"{}\"\n", plan)
     };
 
-    let hcl = format!(
+    // Use root_block_device.volume_size if set; fall back to 50 GiB.
+    let root_size = res.attributes.get("root_block_device.volume_size")
+        .and_then(|v| v.trim_matches('"').parse::<u32>().ok())
+        .unwrap_or(50);
+
+    let mut hcl = format!(
         r#"resource "upcloud_server" "{name}" {{
 {count_line}  zone     = "{zone}"
 {plan_line}  firewall = true{metadata}
 
   template {{
     storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
-    size    = 50
+    size    = {root_size}
   }}
 
   network_interface {{
@@ -124,11 +163,21 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         count_line = count_line,
         zone = zone,
         plan_line = plan_line,
+        root_size = root_size,
         metadata = metadata_line,
         login = login_block,
         tags = tags,
         user_data = user_data_line,
     );
+
+    // Replace the generic network placeholder with a subnet-specific one so the
+    // generator can resolve each server to the correct upcloud_network resource.
+    if let Some(ref name) = subnet_name {
+        hcl = hcl.replace(
+            r#"network = "<TODO: upcloud_network reference>""#,
+            &format!("network = \"<TODO: upcloud_network.{} reference>\"", name),
+        );
+    }
 
     let mut notes = vec![
         if is_expr {
@@ -146,7 +195,11 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     } else {
         notes.push("login block added — paste your SSH public key.".into());
     }
-    notes.push("Private network auto-resolved from subnet.".into());
+    if let Some(ref name) = subnet_name {
+        notes.push(format!("Private network resolved from subnet_id → upcloud_network.{}.", name));
+    } else {
+        notes.push("Private network interface resolved from the first upcloud_network resource.".into());
+    }
     if let Some(ud) = res.attributes.get("user_data") {
         notes.push("user_data propagated — review AWS-specific refs (IPs, metadata).".into());
         if ud.contains("base64encode(") {

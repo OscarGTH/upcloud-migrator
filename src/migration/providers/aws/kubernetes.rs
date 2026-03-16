@@ -1,4 +1,6 @@
+#[cfg(test)]
 use crate::migration::types::{MigrationResult, MigrationStatus};
+#[cfg(test)]
 use crate::terraform::types::TerraformResource;
 
 #[cfg(test)]
@@ -119,6 +121,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
     let k8s_version = res.attributes.get("version").map(|v| v.trim_matches('"')).unwrap_or("1.28");
 
@@ -155,6 +158,7 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
     }
 }
 
+#[cfg(test)]
 pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
     let instance_types = res.attributes.get("instance_types")
         .map(|t| {

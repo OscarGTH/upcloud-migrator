@@ -148,7 +148,7 @@ fn score_instance_type(
     let mut converted_value = None;
     let original_default = default_val.map(str::to_string);
 
-    // Signal 1: default matches AWS instance type
+    // Signal 1: default matches AWS EC2 instance type (e.g. t3.small)
     if let Some(dv) = default_val {
         if let Some(plan) = aws_instance_type_to_upcloud_plan(dv) {
             score += 5;
@@ -157,19 +157,38 @@ fn score_instance_type(
         }
     }
 
-    // Signal 2: used as instance_type / instance_types attribute
+    // Signal 1b: default matches an RDS instance class (db.t3.medium) or
+    // ElastiCache node type (cache.t3.micro) — these use different UpCloud plan
+    // formats than EC2 server plans.
+    if converted_value.is_none() {
+        if let Some(dv) = default_val {
+            if let Some(plan) = rds_or_cache_class_to_upcloud_plan(dv) {
+                score += 5;
+                signals.push(format!("default '{}' is an AWS RDS/ElastiCache instance class", dv));
+                converted_value = Some(plan.to_string());
+            }
+        }
+    }
+
+    // Signal 2: used as instance_type / instance_types / instance_class / node_type attribute
     if usage_attrs.iter().any(|a| a == "instance_type") {
         score += 5;
         signals.push("referenced as 'instance_type' attribute in a resource".to_string());
     } else if usage_attrs.iter().any(|a| a == "instance_types") {
         score += 3;
         signals.push("referenced as 'instance_types' attribute in a resource".to_string());
+    } else if usage_attrs.iter().any(|a| a == "instance_class") {
+        score += 5;
+        signals.push("referenced as 'instance_class' attribute in a resource (RDS)".to_string());
+    } else if usage_attrs.iter().any(|a| a == "node_type") {
+        score += 5;
+        signals.push("referenced as 'node_type' attribute in a resource (ElastiCache)".to_string());
     }
 
     // Signal 3: description keywords
     if let Some(desc) = description {
         let dl = desc.to_lowercase();
-        let kw = ["instance type", "machine type", "server size", "ec2 instance", "instance class", "compute type"];
+        let kw = ["instance type", "machine type", "server size", "ec2 instance", "instance class", "compute type", "node type"];
         if kw.iter().any(|k| dl.contains(k)) {
             score += 2;
             signals.push("description mentions instance/machine type".to_string());
@@ -178,13 +197,49 @@ fn score_instance_type(
 
     // Signal 4: variable name keywords
     let nl = name.to_lowercase();
-    if nl.contains("instance_type") || nl.contains("machine_type") || nl.contains("server_size") {
+    if nl.contains("instance_type") || nl.contains("machine_type") || nl.contains("server_size")
+        || nl.contains("instance_class") || nl.contains("node_type")
+    {
         score += 1;
         signals.push("variable name suggests instance type".to_string());
     }
 
     if score == 0 { return None; }
     Some(VarConversion { kind: VarKind::InstanceType, confidence: score.min(10), converted_value, original_default, signals })
+}
+
+/// Map an AWS RDS instance class or ElastiCache node type to the corresponding UpCloud
+/// managed database plan. Returns `None` for unrecognised patterns.
+///
+/// RDS classes use the `db.` prefix and map to plans with a storage component
+/// (e.g. `2x2xCPU-4GB-50GB`). ElastiCache node types use the `cache.` prefix
+/// and map to plans without storage (e.g. `2x2xCPU-4GB`).
+fn rds_or_cache_class_to_upcloud_plan(class: &str) -> Option<&'static str> {
+    let (is_rds, stripped) = if let Some(s) = class.strip_prefix("db.") {
+        (true, s)
+    } else if let Some(s) = class.strip_prefix("cache.") {
+        (false, s)
+    } else {
+        return None;
+    };
+
+    // Match on the size portion (after stripping vendor-specific prefix like "t3.", "r6g.", etc.)
+    let size = stripped.rsplit('.').next().unwrap_or(stripped);
+    match size {
+        "nano" | "micro" | "small" => {
+            if is_rds { Some("1x1xCPU-2GB-25GB") } else { Some("1x1xCPU-2GB") }
+        }
+        "medium" | "large" => {
+            if is_rds { Some("2x2xCPU-4GB-50GB") } else { Some("2x2xCPU-4GB") }
+        }
+        "xlarge" => {
+            if is_rds { Some("4x4xCPU-8GB-100GB") } else { Some("4x4xCPU-8GB") }
+        }
+        s if s.ends_with("xlarge") => {
+            if is_rds { Some("4x8xCPU-16GB-200GB") } else { Some("4x8xCPU-16GB") }
+        }
+        _ => None,
+    }
 }
 
 fn score_region(
@@ -597,5 +652,74 @@ mod tests {
         // Description must be untouched; only the default line is rewritten.
         assert!(out.contains("description = \"default is us-east-1\""), "description unchanged\n{out}");
         assert!(out.contains("default = \"us-nyc1\""), "default rewritten\n{out}");
+    }
+
+    // ── RDS instance class / ElastiCache node type detection ─────────────────
+
+    #[test]
+    fn rds_instance_class_detected_and_converted() {
+        let conv = analyze_variable(
+            "db_instance_class",
+            Some("db.t3.medium"),
+            Some("RDS instance class for PostgreSQL"),
+            &[String::from("instance_class")],
+        ).unwrap();
+        assert_eq!(conv.kind, VarKind::InstanceType);
+        assert!(conv.confidence >= 8, "confidence too low: {}", conv.confidence);
+        assert_eq!(conv.converted_value.as_deref(), Some("2x2xCPU-4GB-50GB"));
+    }
+
+    #[test]
+    fn cache_node_type_detected_and_converted() {
+        let conv = analyze_variable(
+            "cache_node_type",
+            Some("cache.t3.micro"),
+            Some("ElastiCache node type"),
+            &[String::from("node_type")],
+        ).unwrap();
+        assert_eq!(conv.kind, VarKind::InstanceType);
+        assert!(conv.confidence >= 8, "confidence too low: {}", conv.confidence);
+        assert_eq!(conv.converted_value.as_deref(), Some("1x1xCPU-2GB"));
+    }
+
+    #[test]
+    fn rds_xlarge_maps_to_correct_plan() {
+        let conv = analyze_variable(
+            "db_class",
+            Some("db.m5.xlarge"),
+            None,
+            &[String::from("instance_class")],
+        ).unwrap();
+        assert_eq!(conv.converted_value.as_deref(), Some("4x4xCPU-8GB-100GB"));
+    }
+
+    #[test]
+    fn rds_2xlarge_maps_to_correct_plan() {
+        let conv = analyze_variable(
+            "db_class",
+            Some("db.r5.2xlarge"),
+            None,
+            &[String::from("instance_class")],
+        ).unwrap();
+        assert_eq!(conv.converted_value.as_deref(), Some("4x8xCPU-16GB-200GB"));
+    }
+
+    #[test]
+    fn cache_xlarge_maps_to_correct_plan() {
+        let conv = analyze_variable(
+            "redis_node_type",
+            Some("cache.r6g.xlarge"),
+            None,
+            &[String::from("node_type")],
+        ).unwrap();
+        assert_eq!(conv.converted_value.as_deref(), Some("4x4xCPU-8GB"));
+    }
+
+    #[test]
+    fn rds_class_name_only_below_threshold() {
+        // Variable named "db_class" with no default and no usage signals
+        // should not reach the threshold
+        let result = analyze_variable("db_class", None, None, &[]);
+        assert!(result.is_none(), "name-only RDS variable should not convert: {:?}", result);
     }
 }

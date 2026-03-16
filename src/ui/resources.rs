@@ -72,9 +72,7 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled(" scroll preview  ", theme::dim()),
             Span::styled("[←/h]", theme::accent_bold()),
             Span::styled(" back to list  ", theme::dim()),
-            Span::styled("[S]", theme::accent_bold()),
-            Span::styled(" summary  ", theme::dim()),
-            Span::styled("[G]", theme::accent_bold()),
+            Span::styled("[G/Tab]", theme::accent_bold()),
             Span::styled(" generate  ", theme::dim()),
             Span::styled("[Q]", theme::accent_bold()),
             Span::styled(" quit", theme::dim()),
@@ -82,15 +80,11 @@ pub fn render(f: &mut Frame, app: &App) {
     } else {
         Paragraph::new(Line::from(vec![
             Span::styled("[↑↓]", theme::accent_bold()),
-            Span::styled(" scroll list  ", theme::dim()),
+            Span::styled(" scroll  ", theme::dim()),
             Span::styled("[→/l]", theme::accent_bold()),
             Span::styled(" focus preview  ", theme::dim()),
-            Span::styled("[S]", theme::accent_bold()),
-            Span::styled(" summary  ", theme::dim()),
-            Span::styled("[G]", theme::accent_bold()),
+            Span::styled("[G/Tab]", theme::accent_bold()),
             Span::styled(" generate  ", theme::dim()),
-            Span::styled("[Tab]", theme::accent_bold()),
-            Span::styled(" →summary  ", theme::dim()),
             Span::styled("[Q]", theme::accent_bold()),
             Span::styled(" quit", theme::dim()),
         ]))
