@@ -68,6 +68,20 @@ mod tests {
         assert!(hcl.contains("maxiops"), "{hcl}");
     }
 
+    #[test]
+    fn ebs_with_count_propagates_count_and_indexed_title() {
+        let res = make_res("aws_ebs_volume", "web_data", &[
+            ("type", "gp3"),
+            ("size", "50"),
+            ("count", "var.web_server_count"),
+        ]);
+        let r = map_ebs_volume(&res);
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(hcl.contains("count = var.web_server_count"), "count should be propagated\n{hcl}");
+        assert!(hcl.contains("web_data-${count.index + 1}"), "title should use count.index\n{hcl}");
+        assert!(r.notes.iter().any(|n| n.contains("count")), "should note count propagation\n{:?}", r.notes);
+    }
+
     // ── map_s3_bucket ─────────────────────────────────────────────────────────
 
     #[test]
@@ -153,13 +167,20 @@ mod tests {
 pub fn map_volume_attachment(res: &TerraformResource) -> MigrationResult {
     // aws_volume_attachment → storage_devices block inside upcloud_server.
     // There is no standalone UpCloud resource for volume attachment.
+    // Strip any index expressions (e.g. `web_data[count.index]` → `web_data`) from references.
     let volume_name = res.attributes.get("volume_id").and_then(|v| {
         let v = v.trim_matches('"');
-        if v.starts_with("aws_ebs_volume.") { v.split('.').nth(1).map(str::to_string) } else { None }
+        if !v.starts_with("aws_ebs_volume.") { return None; }
+        let rest = &v["aws_ebs_volume.".len()..];
+        let base = rest.split(|c: char| c == '.' || c == '[').next().unwrap_or(rest);
+        if base.is_empty() { None } else { Some(base.to_string()) }
     });
     let instance_name = res.attributes.get("instance_id").and_then(|v| {
         let v = v.trim_matches('"');
-        if v.starts_with("aws_instance.") { v.split('.').nth(1).map(str::to_string) } else { None }
+        if !v.starts_with("aws_instance.") { return None; }
+        let rest = &v["aws_instance.".len()..];
+        let base = rest.split(|c: char| c == '.' || c == '[').next().unwrap_or(rest);
+        if base.is_empty() { None } else { Some(base.to_string()) }
     });
 
     let storage_ref = volume_name.as_deref().unwrap_or("<TODO: storage>").to_string();
@@ -197,18 +218,38 @@ pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
         _ => "maxiops",
     };
 
+    // Propagate count if the source EBS volume used it (e.g. count = var.web_server_count)
+    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
+    let count_line = match &count_attr {
+        Some(n) => format!("  count = {}\n", n),
+        None    => String::new(),
+    };
+    // When count is set the title must be unique per instance
+    let title_val = if count_attr.is_some() {
+        format!("{}-${{count.index + 1}}", res.name)
+    } else {
+        res.name.to_string()
+    };
+
     let hcl = format!(
         r#"resource "upcloud_storage" "{name}" {{
-  title = "{name}"
+{count_line}  title = "{title}"
   size  = {size}
   tier  = "{tier}"
   zone  = "__ZONE__"
 }}
 "#,
         name = res.name,
+        count_line = count_line,
+        title = title_val,
         size = size,
         tier = upcloud_tier,
     );
+
+    let mut notes = vec![format!("EBS type '{}' → UpCloud tier '{}'", tier, upcloud_tier)];
+    if let Some(ref n) = count_attr {
+        notes.push(format!("count = {} propagated.", n));
+    }
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -220,8 +261,8 @@ pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec![format!("EBS type '{}' → UpCloud tier '{}'", tier, upcloud_tier)],
-            source_hcl: None,
+        notes,
+        source_hcl: None,
     }
 }
 

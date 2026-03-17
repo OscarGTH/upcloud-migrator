@@ -135,6 +135,52 @@ pub fn generate_files(
         .filter(|(_, subnets)| !subnets.is_empty())
         .collect();
 
+    // Build storage_count_map and storage_inject_map:
+    // For aws_volume_attachment resources, inject storage_devices blocks directly
+    // into the matching server's HCL (via the __STORAGE_END_<name>__ sentinel).
+    let storage_count_map: HashMap<String, bool> = results.iter()
+        .filter(|r| r.upcloud_type == "upcloud_storage")
+        .map(|r| {
+            let has_count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl).is_some();
+            (r.resource_name.clone(), has_count)
+        })
+        .collect();
+
+    // storage_inject_map: server_resource_name → Vec<storage_devices block>
+    let mut storage_inject_map: HashMap<String, Vec<String>> = HashMap::new();
+    for r in results.iter().filter(|r| r.resource_type == "aws_volume_attachment") {
+        let server_name = match r.parent_resource.as_deref() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        // Parse the storage resource name from the snippet line: "storage = upcloud_storage.NAME.id"
+        let storage_name = r.snippet.as_deref().and_then(|s| {
+            s.lines()
+                .find(|l| l.trim().starts_with("storage = upcloud_storage."))
+                .and_then(|l| l.trim().strip_prefix("storage = upcloud_storage."))
+                .and_then(|s| s.split('.').next())
+                .map(str::to_string)
+        });
+        let storage_name = match storage_name {
+            Some(n) => n,
+            None => continue,
+        };
+        let server_has_count = server_info_map.get(&server_name).map(|c| c.is_some()).unwrap_or(false);
+        let storage_has_count = storage_count_map.get(&storage_name).copied().unwrap_or(false);
+        let storage_ref = if storage_has_count && server_has_count {
+            format!("upcloud_storage.{}[count.index].id", storage_name)
+        } else if storage_has_count {
+            format!("upcloud_storage.{}[0].id", storage_name)
+        } else {
+            format!("upcloud_storage.{}.id", storage_name)
+        };
+        let block = format!(
+            "  storage_devices {{\n    storage = {}\n    type    = \"disk\"\n  }}\n",
+            storage_ref
+        );
+        storage_inject_map.entry(server_name).or_default().push(block);
+    }
+
     // Apply zone substitution and cross-resolve TODO placeholders
     let resolve = |hcl: &str, _resource_name: &str| -> String {
         let mut s = hcl
@@ -197,7 +243,14 @@ pub fn generate_files(
                     .find(|sn| network_names.contains(sn))
                     .or_else(|| network_names.first());
                 if let Some(net_name) = net {
-                    s = s.replace(&placeholder, &format!("upcloud_network.{}.id", net_name));
+                    // If the resolved network has count, must index it (e.g. database[0])
+                    let net_has_count = network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
+                    let net_ref = if net_has_count {
+                        format!("upcloud_network.{}[0].id", net_name)
+                    } else {
+                        format!("upcloud_network.{}.id", net_name)
+                    };
+                    s = s.replace(&placeholder, &net_ref);
                 }
             }
         }
@@ -342,6 +395,26 @@ pub fn generate_files(
         // Make sure files with only passthroughs (no resources) still appear in the output.
         file_map.entry(basename.clone()).or_default();
         passthrough_map.entry(basename).or_default().push(pt);
+    }
+
+    // Detect whether ssh_public_key variable needs to be synthesized.
+    // This happens when any server uses var.ssh_public_key (key_name was a variable reference)
+    // but the source code doesn't already declare that variable.
+    let needs_ssh_public_key = results.iter()
+        .any(|r| r.upcloud_hcl.as_deref().unwrap_or("").contains("var.ssh_public_key"))
+        && !passthroughs.iter()
+            .any(|p| p.kind == PassthroughKind::Variable && p.name.as_deref() == Some("ssh_public_key"));
+    let ssh_var_target_file: String = if needs_ssh_public_key {
+        passthrough_map.iter()
+            .filter(|(_, pts)| pts.iter().any(|p| p.kind == PassthroughKind::Variable))
+            .map(|(name, _)| name.clone())
+            .next()
+            .unwrap_or_else(|| "variables.tf".to_string())
+    } else {
+        String::new()
+    };
+    if needs_ssh_public_key && !ssh_var_target_file.is_empty() {
+        file_map.entry(ssh_var_target_file.clone()).or_default();
     }
 
     // Build a usage map so the variable detector can score each variable by where it is referenced.
@@ -587,6 +660,36 @@ provider "upcloud" {
             }
         }
 
+        // Synthesize ssh_public_key variable if it is needed and this is the target file.
+        if needs_ssh_public_key && filename == &ssh_var_target_file {
+            content.push_str(concat!(
+                "variable \"ssh_public_key\" {\n",
+                "  description = \"SSH public key for server access (replaces AWS key_name)\"\n",
+                "  type        = string\n",
+                "}\n\n",
+            ));
+            log.push("  [SYNTH] variable \"ssh_public_key\" added to variables.tf".to_string());
+        }
+
+        // Inject storage_devices blocks into servers that have volume attachments.
+        // The compute mapper leaves a sentinel comment inside each server block:
+        //   # __STORAGE_END_<server_name>__
+        // We replace it with the actual storage_devices block(s).
+        for (server_name, blocks) in &storage_inject_map {
+            let sentinel = format!("  # __STORAGE_END_{}__\n", server_name);
+            if content.contains(&sentinel) {
+                let injection: String = blocks.join("");
+                content = content.replace(&sentinel, &injection);
+                log.push(format!("  [INJECT] storage_devices → upcloud_server.{}", server_name));
+            }
+        }
+        // Remove any uninjected sentinels (servers with no attachments)
+        let content_cleaned: String = content.lines()
+            .filter(|l| !l.trim_start().starts_with("# __STORAGE_END_"))
+            .map(|l| { let mut s = l.to_string(); s.push('\n'); s })
+            .collect();
+        content = content_cleaned;
+
         match std::fs::write(&out_path, &content) {
             Ok(_) => {
                 log.push(format!("  [OK] {}", filename));
@@ -612,6 +715,9 @@ provider "upcloud" {
         .filter(|r| {
             r.status == MigrationStatus::Partial
                 && (r.snippet.is_some() || !r.notes.is_empty())
+                // Volume attachments with a resolved parent_resource were auto-injected into
+                // the server's storage_devices block — no manual action needed.
+                && !(r.resource_type == "aws_volume_attachment" && r.parent_resource.is_some())
         })
         .collect();
 
@@ -903,6 +1009,15 @@ fn inside_todo_marker(s: &str, pos: usize) -> bool {
 }
 
 /// Map an AWS resource type name to its UpCloud equivalent.
+/// Some AWS resource types get a suffix appended to their name in the UpCloud mapping.
+/// E.g. aws_vpc "main" → upcloud_router "main_router".
+fn upcloud_resource_name_for(aws_type: &str, resource_name: &str) -> String {
+    match aws_type {
+        "aws_vpc" => format!("{}_router", resource_name),
+        _ => resource_name.to_string(),
+    }
+}
+
 fn upcloud_type_for_aws(aws_type: &str) -> Option<&'static str> {
     match aws_type {
         "aws_instance" | "aws_launch_template" | "aws_launch_configuration"
@@ -1010,12 +1125,13 @@ fn rewrite_output_refs(s: &str) -> String {
             .unwrap_or(attr_path);
 
         let new_ref = if let Some(upcloud_type) = upcloud_type_for_aws(aws_type) {
+            let upcloud_name = upcloud_resource_name_for(aws_type, resource_name);
             if let Some(upcloud_attr) = upcloud_attr_for(upcloud_type, attr_key) {
-                format!("{}.{}.{}", upcloud_type, resource_name, upcloud_attr)
+                format!("{}.{}.{}", upcloud_type, upcloud_name, upcloud_attr)
             } else {
                 format!(
                     "{}.{}.<TODO: was .{}, check UpCloud provider docs>",
-                    upcloud_type, resource_name, attr_path,
+                    upcloud_type, upcloud_name, attr_path,
                 )
             }
         } else {
@@ -2342,6 +2458,130 @@ output "server_id" {
         assert!(
             !output.contains("subnet_group="),
             "all subnet_group placeholders must be resolved\n{output}"
+        );
+    }
+
+    // ── Router name fix (vpc → vpc_router) ────────────────────────────────────
+
+    #[test]
+    fn rewrite_output_refs_appends_router_suffix_for_vpc() {
+        let input = r#"output "vpc_id" {
+  value = aws_vpc.main.id
+}"#;
+        let result = rewrite_output_refs(input);
+        assert!(
+            result.contains("upcloud_router.main_router.id"),
+            "aws_vpc.main.id must map to upcloud_router.main_router.id\n{result}"
+        );
+        assert!(!result.contains("upcloud_router.main.id"), "must not use bare 'main'\n{result}");
+    }
+
+    // ── DB network [0] index for counted network ───────────────────────────────
+
+    #[test]
+    fn subnet_group_resolution_uses_index_for_counted_network() {
+        // When the target network has count=2, the DB network uuid must use [0].
+        let pg = make_result(
+            "aws_db_instance",
+            "main",
+            "upcloud_managed_database_postgresql",
+            Some("resource \"upcloud_managed_database_postgresql\" \"main\" {\n  \
+                  network {\n    uuid = \"<TODO: upcloud_network UUID subnet_group=main>\"\n  }\n}\n"),
+            None,
+        );
+        // Subnet group "main" maps to subnet "database"
+        let sg_result = make_result(
+            "aws_db_subnet_group",
+            "main",
+            "upcloud_db_subnet_group_placeholder",
+            None,
+            None,
+        );
+        // Network "database" has count (2 instances) — note count in HCL
+        let db_net = make_result(
+            "aws_subnet",
+            "database",
+            "upcloud_network",
+            Some("resource \"upcloud_network\" \"database\" {\n  count = 2\n  zone = \"__ZONE__\"\n}\n"),
+            None,
+        );
+
+        let mut results = vec![pg, db_net];
+        // Add a fake subnet_group result so source_hcl maps it
+        let mut sg_with_hcl = sg_result;
+        sg_with_hcl.source_hcl = Some(
+            r#"resource "aws_db_subnet_group" "main" {
+  subnet_ids = [aws_subnet.database[0].id, aws_subnet.database[1].id]
+}"#.to_string()
+        );
+        results.push(sg_with_hcl);
+
+        let out_dir = std::env::temp_dir().join("upcloud_gen_db_idx_test");
+        let mut log = vec![];
+        generate_files(&results, &[], &out_dir, None, "fi-hel1", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("test.tf")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        assert!(
+            output.contains("upcloud_network.database[0].id"),
+            "counted database network must be indexed with [0]\n{output}\nlog: {:?}", log
+        );
+    }
+
+    // ── Storage injection ──────────────────────────────────────────────────────
+
+    #[test]
+    fn volume_attachment_injects_storage_devices_into_server() {
+        use crate::migration::providers::aws::{compute::map_instance, storage::map_ebs_volume};
+        use crate::terraform::types::TerraformResource;
+        use std::path::PathBuf;
+
+        let make = |rt: &str, name: &str, attrs: &[(&str, &str)]| TerraformResource {
+            resource_type: rt.to_string(),
+            name: name.to_string(),
+            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            source_file: PathBuf::from("main.tf"),
+            raw_hcl: String::new(),
+        };
+
+        // web server with count
+        let web_res = make("aws_instance", "web", &[
+            ("instance_type", "t3.micro"),
+            ("count", "2"),
+            ("subnet_id", "aws_subnet.private.id"),
+        ]);
+        let mut web_result = map_instance(&web_res);
+        web_result.source_hcl = Some(web_result.upcloud_hcl.clone().unwrap());
+
+        // EBS volume with count
+        let vol_res = make("aws_ebs_volume", "data", &[("type", "gp3"), ("size", "50"), ("count", "2")]);
+        let vol_result = map_ebs_volume(&vol_res);
+
+        // Attachment
+        let att_res = make("aws_volume_attachment", "data", &[
+            ("volume_id", "aws_ebs_volume.data[count.index].id"),
+            ("instance_id", "aws_instance.web[count.index].id"),
+        ]);
+        use crate::migration::providers::aws::storage::map_volume_attachment;
+        let att_result = map_volume_attachment(&att_res);
+
+        let out_dir = std::env::temp_dir().join("upcloud_storage_inject_test");
+        let mut log = vec![];
+        generate_files(&[web_result, vol_result, att_result], &[], &out_dir, None, "fi-hel1", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("main.tf")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        assert!(
+            output.contains("storage_devices {"),
+            "storage_devices block must be injected into server\n{output}\nlog: {:?}", log
+        );
+        assert!(
+            output.contains("upcloud_storage.data[count.index].id"),
+            "storage ref must use count.index\n{output}"
+        );
+        assert!(
+            !output.contains("__STORAGE_END_"),
+            "sentinel must be removed after injection\n{output}"
         );
     }
 }

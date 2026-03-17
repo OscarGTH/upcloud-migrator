@@ -7,7 +7,7 @@ pub fn aws_instance_type_to_upcloud_plan(instance_type: &str) -> Option<&'static
         // T-series (burstable)
         "t2.nano"  | "t3.nano"    => Some("1xCPU-1GB"),
         "t2.micro" | "t3.micro"   => Some("1xCPU-1GB"),
-        "t2.small" | "t3.small"   => Some("1xCPU-2GB"),
+        "t2.small" | "t3.small"   => Some("2xCPU-2GB"),
         "t2.medium"| "t3.medium"  => Some("2xCPU-4GB"),
         "t2.large" | "t3.large"   => Some("2xCPU-8GB"),
         "t2.xlarge"| "t3.xlarge"  => Some("6xCPU-16GB"),  // 4 vCPU 16 GB
@@ -88,22 +88,45 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     });
 
     let login_block = match &key_ref {
+        Some(kref) if kref.starts_with("var.") || kref.starts_with("local.") || kref.starts_with("${") => {
+            // Variable expression for key_name — can't look up the literal key.
+            // Reference a new variable that the user should add to variables.tf.
+            format!(
+                "\n  login {{\n    user = \"root\"\n    keys = [var.ssh_public_key]\n    # NOTE: was key_name = {kref} — add variable \"ssh_public_key\" (type = string) to variables.tf\n  }}\n"
+            )
+        }
         Some(kref) => format!(
             "\n  login {{\n    user = \"root\"\n    keys = [\"<TODO: SSH public key for aws_key_pair.{kref}>\"]\n  }}\n"
         ),
         None => "\n  login {\n    user = \"root\"\n    keys = [\"<TODO: paste SSH public key>\"]\n  }\n".to_string(),
     };
 
-    // Extract subnet name from subnet_id to generate a network-specific placeholder.
-    // aws_subnet.NAME.id → upcloud_network.NAME (same name in our mapping).
-    let subnet_name = res.attributes.get("subnet_id").and_then(|v| {
+    // Extract subnet name and optional index expression from subnet_id.
+    // Handles:
+    //   aws_subnet.public[0].id            → name="public", idx=Some("0")
+    //   aws_subnet.private[count.index % 2].id → name="private", idx=Some("count.index % 2")
+    //   aws_subnet.NAME.id                 → name="NAME",   idx=None
+    let subnet_parse: Option<(String, Option<String>)> = res.attributes.get("subnet_id").and_then(|v| {
         let v = v.trim_matches('"');
-        if v.starts_with("aws_subnet.") {
-            v.split('.').nth(1).map(str::to_string)
+        if !v.starts_with("aws_subnet.") { return None; }
+        let rest = &v["aws_subnet.".len()..];
+        if let Some(bracket_pos) = rest.find('[') {
+            let base = &rest[..bracket_pos];
+            if base.is_empty() { return None; }
+            let after = &rest[bracket_pos + 1..];
+            let close_pos = after.find(']')?;
+            let idx_expr = after[..close_pos].trim().to_string();
+            Some((base.to_string(), Some(idx_expr)))
         } else {
-            None
+            let base = rest.split('.').next().unwrap_or(rest);
+            if base.is_empty() { return None; }
+            Some((base.to_string(), None))
         }
     });
+    let (subnet_name, subnet_index_expr) = match subnet_parse {
+        Some((name, idx)) => (Some(name), idx),
+        None => (None, None),
+    };
 
     // Propagate count if set (e.g. count = 2)
     let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
@@ -118,8 +141,29 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     // the content, so HCL's indentation-stripping leaves nested bash heredoc
     // closers (like `HTML` or `NGINX`) at column 0 where bash expects them.
     let has_user_data = res.attributes.contains_key("user_data");
-    let user_data_line = res.attributes.get("user_data")
-        .map(|v| format!("\n  user_data = {}", normalize_heredoc(v)))
+    let user_data_raw = res.attributes.get("user_data").map(|v| v.as_str());
+    // Scan user_data for AWS-specific patterns that won't work on UpCloud
+    let aws_ud_patterns: &[(&str, &str)] = &[
+        ("ec2-metadata", "ec2-metadata CLI (instance metadata service)"),
+        ("169.254.169.254", "AWS metadata endpoint (169.254.169.254)"),
+        ("aws-cli", "aws CLI commands"),
+    ];
+    let ud_warnings: Vec<&str> = user_data_raw
+        .map(|ud| {
+            aws_ud_patterns.iter()
+                .filter(|(pat, _)| ud.contains(pat))
+                .map(|(_, desc)| *desc)
+                .collect()
+        })
+        .unwrap_or_default();
+    let ud_warning_comment = if ud_warnings.is_empty() {
+        String::new()
+    } else {
+        let items: String = ud_warnings.iter().map(|w| format!("#   - {}\n", w)).collect();
+        format!("  # WARNING: user_data contains AWS-specific commands that won't work on UpCloud:\n{}  # Review and update the user_data script before applying.\n", items)
+    };
+    let user_data_line = user_data_raw
+        .map(|v| format!("\n{}  user_data = {}", ud_warning_comment, normalize_heredoc(v)))
         .unwrap_or_default();
 
     // metadata must be true when using cloud-init / user_data (provider docs requirement).
@@ -136,6 +180,10 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     let root_size = res.attributes.get("root_block_device.volume_size")
         .and_then(|v| v.trim_matches('"').parse::<u32>().ok())
         .unwrap_or(50);
+
+    // Storage sentinel: the generator replaces this with storage_devices blocks
+    // injected from aws_volume_attachment resources targeting this server.
+    let storage_sentinel = format!("  # __STORAGE_END_{}__\n", res.name);
 
     let mut hcl = format!(
         r#"resource "upcloud_server" "{name}" {{
@@ -157,7 +205,7 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
   }}{login}  labels = {{
     Name = "{tags}"
   }}{user_data}
-}}
+{sentinel}}}
 "#,
         name = res.name,
         count_line = count_line,
@@ -168,15 +216,28 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         login = login_block,
         tags = tags,
         user_data = user_data_line,
+        sentinel = storage_sentinel,
     );
 
-    // Replace the generic network placeholder with a subnet-specific one so the
-    // generator can resolve each server to the correct upcloud_network resource.
-    if let Some(ref name) = subnet_name {
-        hcl = hcl.replace(
-            r#"network = "<TODO: upcloud_network reference>""#,
-            &format!("network = \"<TODO: upcloud_network.{} reference>\"", name),
-        );
+    // Replace the private network placeholder with the correct reference.
+    // When the subnet_id is known with an index expression, generate the reference directly.
+    // Otherwise use a typed placeholder so the generator can resolve it with count context.
+    match (&subnet_name, &subnet_index_expr) {
+        (Some(name), Some(expr)) => {
+            // Direct reference — no TODO needed
+            hcl = hcl.replace(
+                r#"network = "<TODO: upcloud_network reference>""#,
+                &format!("network = upcloud_network.{}[{}].id", name, expr),
+            );
+        }
+        (Some(name), None) => {
+            // Name known but no index — use typed placeholder for generator resolution
+            hcl = hcl.replace(
+                r#"network = "<TODO: upcloud_network reference>""#,
+                &format!(r#"network = "<TODO: upcloud_network.{} reference>""#, name),
+            );
+        }
+        _ => {} // keep generic placeholder
     }
 
     let mut notes = vec![
@@ -190,18 +251,34 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     if let Some(ref n) = count_attr {
         notes.push(format!("count = {} propagated.", n));
     }
-    if key_ref.is_some() {
-        notes.push("SSH key auto-resolved from aws_key_pair.".into());
-    } else {
-        notes.push("login block added — paste your SSH public key.".into());
+    match &key_ref {
+        Some(kref) if kref.starts_with("var.") || kref.starts_with("local.") || kref.starts_with("${") => {
+            notes.push(format!("key_name = {} is a variable — login.keys set to var.ssh_public_key; add that variable to variables.tf.", kref));
+        }
+        Some(_) => {
+            notes.push("SSH key auto-resolved from aws_key_pair.".into());
+        }
+        None => {
+            notes.push("login block added — paste your SSH public key.".into());
+        }
     }
-    if let Some(ref name) = subnet_name {
-        notes.push(format!("Private network resolved from subnet_id → upcloud_network.{}.", name));
-    } else {
-        notes.push("Private network interface resolved from the first upcloud_network resource.".into());
+    match (&subnet_name, &subnet_index_expr) {
+        (Some(name), Some(expr)) => {
+            notes.push(format!("Private network: upcloud_network.{}[{}].id (direct reference).", name, expr));
+        }
+        (Some(name), None) => {
+            notes.push(format!("Private network resolved from subnet_id → upcloud_network.{}.", name));
+        }
+        _ => {
+            notes.push("Private network interface resolved from the first upcloud_network resource.".into());
+        }
     }
     if let Some(ud) = res.attributes.get("user_data") {
-        notes.push("user_data propagated — review AWS-specific refs (IPs, metadata).".into());
+        if ud_warnings.is_empty() {
+            notes.push("user_data propagated — review AWS-specific refs (IPs, metadata).".into());
+        } else {
+            notes.push(format!("user_data propagated — WARNING: contains AWS-specific patterns: {}.", ud_warnings.join(", ")));
+        }
         if ud.contains("base64encode(") {
             notes.push("user_data: remove base64encode() — UpCloud cloud-init expects plain text.".into());
         }
@@ -848,7 +925,101 @@ mod tests {
         );
         assert!(
             hcl.contains("<TODO: upcloud_network reference>"),
-            "private interface should have network TODO\n{hcl}"
+            "private interface should have network TODO when no subnet_id\n{hcl}"
+        );
+    }
+
+    #[test]
+    fn instance_with_indexed_subnet_generates_direct_network_ref() {
+        // aws_subnet.public[0].id → direct upcloud_network.public[0].id reference
+        let res = make_res("aws_instance", "bastion", &[
+            ("instance_type", "t3.micro"),
+            ("subnet_id", "aws_subnet.public[0].id"),
+        ]);
+        let hcl = map_instance(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("network = upcloud_network.public[0].id"),
+            "should directly resolve indexed subnet ref\n{hcl}"
+        );
+        assert!(!hcl.contains("<TODO: upcloud_network"), "no TODO should remain\n{hcl}");
+    }
+
+    #[test]
+    fn instance_with_count_modulo_subnet_preserves_expression() {
+        // aws_subnet.private[count.index % 2].id → upcloud_network.private[count.index % 2].id
+        let res = make_res("aws_instance", "web", &[
+            ("instance_type", "t3.micro"),
+            ("count", "2"),
+            ("subnet_id", "aws_subnet.private[count.index % 2].id"),
+        ]);
+        let hcl = map_instance(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("network = upcloud_network.private[count.index % 2].id"),
+            "should preserve count.index % 2 expression\n{hcl}"
+        );
+    }
+
+    #[test]
+    fn instance_with_plain_subnet_uses_typed_placeholder() {
+        // aws_subnet.private.id → typed TODO placeholder for generator resolution
+        let res = make_res("aws_instance", "app", &[
+            ("instance_type", "t3.micro"),
+            ("subnet_id", "aws_subnet.private.id"),
+        ]);
+        let hcl = map_instance(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains(r#"network = "<TODO: upcloud_network.private reference>""#),
+            "plain subnet should use typed placeholder\n{hcl}"
+        );
+    }
+
+    #[test]
+    fn instance_t3_small_maps_to_2cpu_2gb() {
+        let res = make_res("aws_instance", "web", &[("instance_type", "t3.small")]);
+        let hcl = map_instance(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("2xCPU-2GB"), "t3.small should map to 2xCPU-2GB\n{hcl}");
+    }
+
+    #[test]
+    fn instance_with_variable_key_name_uses_var_ssh_public_key() {
+        let res = make_res("aws_instance", "web", &[
+            ("instance_type", "t3.micro"),
+            ("key_name", "var.key_name"),
+        ]);
+        let hcl = map_instance(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("keys = [var.ssh_public_key]"),
+            "variable key_name should use [var.ssh_public_key]\n{hcl}"
+        );
+        assert!(!hcl.contains("<TODO: SSH public key for aws_key_pair.var"), "should not embed var ref in TODO\n{hcl}");
+    }
+
+    #[test]
+    fn instance_user_data_with_ec2_metadata_gets_warning() {
+        let ud = "<<-EOF\n#!/bin/bash\nec2-metadata --instance-id\nEOF";
+        let res = make_res("aws_instance", "web", &[
+            ("instance_type", "t3.micro"),
+            ("user_data", ud),
+        ]);
+        let r = map_instance(&res);
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("WARNING: user_data contains AWS-specific commands"),
+            "should warn about ec2-metadata\n{hcl}"
+        );
+        assert!(
+            r.notes.iter().any(|n| n.contains("WARNING")),
+            "note should mention the warning\n{:?}", r.notes
+        );
+    }
+
+    #[test]
+    fn instance_has_storage_sentinel_for_injection() {
+        let res = make_res("aws_instance", "web", &[("instance_type", "t3.micro")]);
+        let hcl = map_instance(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("# __STORAGE_END_web__"),
+            "server should have storage sentinel for injection\n{hcl}"
         );
     }
 

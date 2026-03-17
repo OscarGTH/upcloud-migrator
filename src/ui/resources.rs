@@ -217,26 +217,35 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // ── Notes ─────────────────────────────────────────────────────────────────
     for note in &r.notes {
-        // Word-wrap long notes manually at inner_w - 4 chars (for "  · " prefix)
+        // Word-wrap long notes manually at inner_w - 4 chars (for "  · " prefix).
+        // Work entirely in char indices to avoid panics on multi-byte characters (e.g. em dash).
         let note_width = inner_w.saturating_sub(4);
-        if note.len() <= note_width {
+        let note_chars: Vec<char> = note.chars().collect();
+        if note_chars.len() <= note_width {
             all_lines.push(Line::from(vec![
                 Span::styled("  · ", theme::dim()),
                 Span::styled(note.clone(), theme::muted()),
             ]));
         } else {
-            // First chunk with bullet
-            let mut pos = 0;
+            let mut pos = 0usize; // char position
             let mut first = true;
-            while pos < note.len() {
-                let end = (pos + note_width).min(note.len());
-                // Snap to word boundary
-                let chunk_end = if end < note.len() {
-                    note[pos..end].rfind(' ').map(|i| pos + i).unwrap_or(end)
+            while pos < note_chars.len() {
+                let end = (pos + note_width).min(note_chars.len());
+                // Snap to word boundary (char-based)
+                let chunk_end = if end < note_chars.len() {
+                    note_chars[pos..end]
+                        .iter()
+                        .rposition(|&c| c == ' ')
+                        .map(|i| pos + i)
+                        .unwrap_or(end)
                 } else {
                     end
                 };
-                let chunk = note[pos..chunk_end].trim_start().to_string();
+                let chunk: String = note_chars[pos..chunk_end]
+                    .iter()
+                    .collect::<String>()
+                    .trim_start()
+                    .to_string();
                 if first {
                     all_lines.push(Line::from(vec![
                         Span::styled("  · ", theme::dim()),
@@ -250,7 +259,7 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     ]));
                 }
                 pos = chunk_end;
-                if pos < note.len() && note.as_bytes()[pos] == b' ' {
+                if pos < note_chars.len() && note_chars[pos] == ' ' {
                     pos += 1;
                 }
             }

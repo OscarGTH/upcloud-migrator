@@ -416,24 +416,67 @@ mod tests {
     // ── map_route_table ───────────────────────────────────────────────────────
 
     #[test]
-    fn route_table_produces_snippet() {
+    fn route_table_with_no_raw_hcl_is_automatic() {
+        // When raw_hcl is empty (no custom routes detected), UpCloud handles routing
         let res = make_res("aws_route_table", "rt", &[]);
+        let r = map_route_table(&res);
+        // No snippet — UpCloud Router handles default routes automatically
+        assert!(r.snippet.is_none(), "default-only route table should not generate snippet");
+        assert!(r.notes.iter().any(|n| n.contains("automatically")), "should note automatic routing\n{:?}", r.notes);
+    }
+
+    #[test]
+    fn route_table_with_default_only_route_is_automatic() {
+        let mut res = make_res("aws_route_table", "public", &[]);
+        res.raw_hcl = r#"resource "aws_route_table" "public" {
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+}"#.to_string();
+        let r = map_route_table(&res);
+        assert!(r.snippet.is_none(), "default-only route table should not generate snippet\n{:?}", r.notes);
+    }
+
+    #[test]
+    fn route_table_with_custom_route_produces_snippet() {
+        let mut res = make_res("aws_route_table", "vpn", &[]);
+        res.raw_hcl = r#"resource "aws_route_table" "vpn" {
+  route {
+    cidr_block = "10.100.0.0/16"
+    gateway_id = aws_vpn_gateway.main.id
+  }
+}"#.to_string();
         let r = map_route_table(&res);
         let snippet = r.snippet.unwrap();
         assert!(snippet.contains("static_route"), "{snippet}");
-        assert!(snippet.contains("\"rt\""), "{snippet}");
+        assert!(snippet.contains("\"vpn\""), "{snippet}");
     }
 
     // ── map_eip ───────────────────────────────────────────────────────────────
 
     #[test]
-    fn eip_generates_floating_ip() {
+    fn eip_without_instance_generates_detached_floating_ip() {
         let res = make_res("aws_eip", "my_ip", &[]);
         let r = map_eip(&res);
         assert_eq!(r.upcloud_type, "upcloud_floating_ip_address");
         let hcl = r.upcloud_hcl.unwrap();
         assert!(hcl.contains("resource \"upcloud_floating_ip_address\" \"my_ip\""), "{hcl}");
         assert!(hcl.contains("zone = \"__ZONE__\""), "{hcl}");
+        // Comment mentions mac_address as guidance — but it must not be set as an attribute
+        assert!(!hcl.lines().any(|l| !l.trim().starts_with('#') && l.contains("mac_address")),
+            "detached EIP should not have mac_address attribute\n{hcl}");
+    }
+
+    #[test]
+    fn eip_with_instance_generates_attached_floating_ip() {
+        let res = make_res("aws_eip", "bastion", &[
+            ("instance", "aws_instance.bastion.id"),
+        ]);
+        let r = map_eip(&res);
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(hcl.contains("mac_address = upcloud_server.bastion.network_interface[0].mac_address"), "{hcl}");
+        assert!(!hcl.contains("zone"), "attached EIP does not need zone attr\n{hcl}");
     }
 
     // ── map_eip_association ───────────────────────────────────────────────────
@@ -540,43 +583,107 @@ pub fn map_internet_gateway(res: &TerraformResource) -> MigrationResult {
 pub fn map_route_table(res: &TerraformResource) -> MigrationResult {
     // Route tables and their associations have no standalone UpCloud resource.
     // Static routes are embedded as static_route blocks inside upcloud_router.
-    let snippet = format!(
-        r#"static_route {{
-  name    = "{name}"
-  nexthop = "<TODO: gateway IP address>"
-  route   = "0.0.0.0/0"
-}}"#,
-        name = res.name,
-    );
+    //
+    // If the route table only contains default routes (0.0.0.0/0), no action is needed —
+    // UpCloud Router provides internet routing and NAT automatically.
+    // Only generate a static_route snippet for non-default (custom) routes.
+    let has_custom_route = !res.raw_hcl.is_empty() && res.raw_hcl.lines().any(|line| {
+        let t = line.trim();
+        if !t.starts_with("cidr_block") { return false; }
+        // Extract the value: cidr_block = "X.X.X.X/Y"
+        let val = t.split('"').nth(1).unwrap_or("");
+        !val.is_empty() && val != "0.0.0.0/0" && !val.starts_with(':')
+    });
 
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Partial,
-        score: 45,
-        upcloud_type: "upcloud_router static_route".into(),
-        upcloud_hcl: None,
-        snippet: Some(snippet),
-        parent_resource: None,
-        notes: vec![
-            "Route tables map to static_route blocks inside upcloud_router — not a standalone resource.".into(),
-            "A static_route snippet has been written to MIGRATION_NOTES.md — add it to your upcloud_router and fill in the nexthop IP.".into(),
-        ],
-        source_hcl: None,
+    if has_custom_route {
+        let snippet = format!(
+            r#"static_route {{
+  name    = "{name}"
+  nexthop = "<TODO: nexthop IP address>"
+  route   = "<TODO: custom CIDR from aws_route_table>"
+}}"#,
+            name = res.name,
+        );
+        MigrationResult {
+            resource_type: res.resource_type.clone(),
+            resource_name: res.name.clone(),
+            source_file: res.source_file.display().to_string(),
+            status: MigrationStatus::Partial,
+            score: 45,
+            upcloud_type: "upcloud_router static_route".into(),
+            upcloud_hcl: None,
+            snippet: Some(snippet),
+            parent_resource: None,
+            notes: vec![
+                "Route table has custom routes → static_route block needed inside upcloud_router.".into(),
+                "Add the snippet to your upcloud_router resource and fill in the nexthop IP and CIDR.".into(),
+            ],
+            source_hcl: None,
+        }
+    } else {
+        // Only default routes (0.0.0.0/0) — UpCloud Router handles these automatically
+        MigrationResult {
+            resource_type: res.resource_type.clone(),
+            resource_name: res.name.clone(),
+            source_file: res.source_file.display().to_string(),
+            status: MigrationStatus::Partial,
+            score: 60,
+            upcloud_type: "upcloud_router (automatic routing)".into(),
+            upcloud_hcl: None,
+            snippet: None,
+            parent_resource: None,
+            notes: vec![
+                "Route table only contains default routes (0.0.0.0/0).".into(),
+                "UpCloud Router provides internet routing and NAT automatically — no action required.".into(),
+            ],
+            source_hcl: None,
+        }
     }
 }
 
 pub fn map_eip(res: &TerraformResource) -> MigrationResult {
-    let hcl = format!(
-        r#"resource "upcloud_floating_ip_address" "{name}" {{
+    // Check if the EIP is attached to an instance via the `instance` attribute.
+    // aws_eip.bastion { instance = aws_instance.bastion.id }
+    // → add mac_address = upcloud_server.bastion.network_interface[0].mac_address
+    let instance_ref = res.attributes.get("instance").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_instance.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
+
+    let (hcl, notes) = if let Some(ref inst) = instance_ref {
+        let h = format!(
+            r#"resource "upcloud_floating_ip_address" "{name}" {{
+  mac_address = upcloud_server.{inst}.network_interface[0].mac_address
+}}
+"#,
+            name = res.name,
+            inst = inst,
+        );
+        let n = vec![
+            format!("EIP → upcloud_floating_ip_address attached to upcloud_server.{}.", inst),
+            "mac_address auto-resolved from aws_eip.instance attribute.".into(),
+        ];
+        (h, n)
+    } else {
+        let h = format!(
+            r#"resource "upcloud_floating_ip_address" "{name}" {{
   zone = "__ZONE__"
   # To attach to a server, set:
   # mac_address = upcloud_server.<name>.network_interface[0].mac_address
 }}
 "#,
-        name = res.name,
-    );
+            name = res.name,
+        );
+        let n = vec![
+            "EIP → upcloud_floating_ip_address. Set mac_address to attach it to a server's network interface.".into(),
+            "Note: this EIP was not attached to an instance (e.g. NAT Gateway EIP) — attach manually if needed.".into(),
+        ];
+        (h, n)
+    };
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -588,7 +695,7 @@ pub fn map_eip(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec!["EIP → upcloud_floating_ip_address. Set mac_address to attach it to a server's network interface.".into()],
+        notes,
         source_hcl: None,
     }
 }

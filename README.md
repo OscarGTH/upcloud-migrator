@@ -30,6 +30,7 @@ Point it at an existing AWS Terraform project and it maps every resource, resolv
 | `aws_internet_gateway` | *(informational note — not needed)* |
 | `aws_nat_gateway` | *(informational note — not needed)* |
 | `aws_route_table` | `static_route` snippet for `upcloud_router` |
+| `aws_route_table_association` | *(informational note — handled with route_table)* |
 | `aws_eip` | `upcloud_floating_ip_address` |
 | `aws_eip_association` | `mac_address` snippet for floating IP |
 | `aws_instance` | `upcloud_server` |
@@ -46,6 +47,7 @@ Point it at an existing AWS Terraform project and it maps every resource, resolv
 | `aws_db_instance` | `upcloud_managed_database_postgresql` / `_mysql` |
 | `aws_rds_cluster` | `upcloud_managed_database_postgresql` / `_mysql` |
 | `aws_db_parameter_group` | `properties {}` block injection |
+| `aws_db_subnet_group` | *(informational note — network configured in managed DB)* |
 | `aws_elasticache_cluster` | `upcloud_managed_database_valkey` |
 | `variable` / `output` / `locals` | passed through with AWS refs rewritten |
 
@@ -68,7 +70,7 @@ The TUI walks you through four steps:
 After generation:
 
 - **`[D]` Diff** — step through every resource with AWS HCL on the left and generated UpCloud HCL on the right
-- **`[T]` TODOs** — review every unresolved `<TODO>` with AI-suggested completions (requires `ANTHROPIC_API_KEY`)
+- **`[T]` TODOs** — review every unresolved `<TODO>` with AI-suggested completions (requires env. vars `LLM_API_KEY`, `LLM_API_URL`, `LLM_MODEL`)
 
 ### Try it with the demo fixture
 
@@ -99,7 +101,9 @@ The `demo/` directory contains a realistic SaaS app: web + API servers, PostgreS
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Enables AI-powered TODO suggestions in the review screen |
+| `LLM_API_KEY` | Enables AI-powered TODO suggestions in the review screen |
+| `LLM_API_URL` | Enables AI-powered TODO suggestions in the review screen |
+| `LLM_MODEL` | Enables AI-powered TODO suggestions in the review screen |
 
 ---
 

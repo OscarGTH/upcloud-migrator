@@ -227,7 +227,22 @@ mod tests {
         assert!(hcl.contains("port         = 8080"), "{hcl}");
         assert!(hcl.contains("max_sessions = 1000"), "{hcl}");
         assert!(hcl.contains("weight       = 100"), "{hcl}");
+        // No count: should use a TODO for the IP
         assert!(hcl.contains("upcloud_server.app IP"), "{hcl}");
+    }
+
+    #[test]
+    fn lb_target_group_attachment_with_count_uses_count_index_ip() {
+        let res = make_res("aws_lb_target_group_attachment", "web", &[
+            ("target_group_arn", "aws_lb_target_group.web.arn"),
+            ("target_id", "aws_instance.web[count.index].id"),
+            ("port", "80"),
+            ("count", "var.web_server_count"),
+        ]);
+        let hcl = map_lb_target_group_attachment(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("count        = var.web_server_count"), "count should be propagated\n{hcl}");
+        assert!(hcl.contains("upcloud_server.web[count.index].network_interface[1].ip_address"), "should use private interface with count.index\n{hcl}");
+        assert!(hcl.contains("web-${count.index + 1}"), "name should be unique per index\n{hcl}");
     }
 
     #[test]
@@ -531,34 +546,69 @@ pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResul
     let target_id = res.attributes.get("target_id").map(|v| v.trim_matches('"').to_string());
     let port = res.attributes.get("port").map(|v| v.trim_matches('"').to_string()).unwrap_or_else(|| "80".to_string());
 
+    // Propagate count if the attachment has it (e.g. count = var.web_server_count)
+    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
+    let has_count = count_attr.is_some();
+
     let backend_ref = backend_name.as_deref().unwrap_or("<TODO: backend>");
 
-    // If target_id is an instance reference, generate a server IP placeholder.
-    let ip_value = match &target_id {
-        Some(id) if id.starts_with("aws_instance.") => {
-            let inst = id.split('.').nth(1).unwrap_or("server");
-            format!("<TODO: upcloud_server.{inst} IP>")
+    // Extract the base server name, stripping any index expression (e.g. "web[count.index]" → "web")
+    let server_name: Option<String> = target_id.as_deref().and_then(|id| {
+        if id.starts_with("aws_instance.") {
+            let rest = &id["aws_instance.".len()..];
+            let base = rest.split(|c| c == '.' || c == '[').next().unwrap_or(rest);
+            if base.is_empty() { None } else { Some(base.to_string()) }
+        } else {
+            None
         }
-        Some(id) if !id.is_empty() => id.clone(),
-        _ => "<TODO: server IP address>".into(),
+    });
+
+    // Build count + name lines.
+    let count_name_lines = if let Some(ref n) = count_attr {
+        format!("  count        = {}\n  name         = \"{}-${{count.index + 1}}\"\n", n, res.name)
+    } else {
+        format!("  name         = \"{}\"\n", res.name)
+    };
+
+    // Build the IP line.
+    // When the attachment has count and we know the server, reference it with count.index
+    // using network_interface[1] (private) for internal LB traffic.
+    // When no count, fall back to a TODO so the user fills in the actual IP.
+    let ip_line = match (&server_name, has_count) {
+        (Some(inst), true) => {
+            format!("  ip           = upcloud_server.{}[count.index].network_interface[1].ip_address\n", inst)
+        }
+        (Some(inst), false) => {
+            format!("  ip           = \"<TODO: upcloud_server.{} IP>\"\n", inst)
+        }
+        _ => "  ip           = \"<TODO: server IP address>\"\n".to_string(),
     };
 
     let hcl = format!(
-        r#"resource "upcloud_loadbalancer_static_backend_member" "{name}" {{
-  backend      = upcloud_loadbalancer_backend.{backend}.id
-  name         = "{name}"
-  ip           = "{ip}"
-  port         = {port}
-  weight       = 100
-  max_sessions = 1000
-  enabled      = true
-}}
-"#,
+        "resource \"upcloud_loadbalancer_static_backend_member\" \"{name}\" {{\n\
+         {count_name_lines}\
+         backend      = upcloud_loadbalancer_backend.{backend}.id\n\
+         {ip_line}\
+           port         = {port}\n\
+           weight       = 100\n\
+           max_sessions = 1000\n\
+           enabled      = true\n\
+         }}\n",
         name = res.name,
+        count_name_lines = count_name_lines,
         backend = backend_ref,
-        ip = ip_value,
+        ip_line = ip_line,
         port = port,
     );
+
+    let mut notes = vec![
+        "Target group attachment → static_backend_member.".into(),
+    ];
+    if has_count {
+        notes.push(format!("count propagated; IP references server's private interface (network_interface[1])."));
+    } else {
+        notes.push("Update ip to the server's actual IP or floating IP.".into());
+    }
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -570,9 +620,7 @@ pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResul
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: backend_name,
-        notes: vec![
-            "Target group attachment → static_backend_member. Update ip to the server's actual IP or floating IP.".into(),
-        ],
+        notes,
         source_hcl: None,
     }
 }
