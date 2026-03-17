@@ -32,7 +32,7 @@ pub async fn chat_with_tf(
     let system = format!(
         "You are an expert UpCloud Terraform advisor helping a team migrate from AWS to UpCloud.\n\
         You have full access to the generated UpCloud Terraform below.\n\
-        Be concise. Identify real issues.\n\n\
+        Be concise. Identify real issues. If there are TODOs, suggest appropriate values.\n\n\
         --- GENERATED TERRAFORM ---\n{tf}",
         tf = tf_context,
     );
