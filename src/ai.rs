@@ -9,13 +9,15 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    pub fn user(content: impl Into<String>) -> Self { Self { is_user: true,  content: content.into() } }
-    pub fn ai(content: impl Into<String>)   -> Self { Self { is_user: false, content: content.into() } }
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { is_user: true, content: content.into() }
+    }
+    pub fn ai(content: impl Into<String>) -> Self {
+        Self { is_user: false, content: content.into() }
+    }
 }
 
 /// Chat with the AI about generated UpCloud Terraform files.
-/// `tf_context` is the concatenated content of the output .tf files (may be truncated).
-/// `messages` is the full conversation history so far.
 pub async fn chat_with_tf(
     messages: &[ChatMessage],
     tf_context: &str,
@@ -30,16 +32,13 @@ pub async fn chat_with_tf(
     let system = format!(
         "You are an expert UpCloud Terraform advisor helping a team migrate from AWS to UpCloud.\n\
         You have full access to the generated UpCloud Terraform below.\n\
-        Be concise. Identify real issues. When the user asks to validate, check for:\n\
-        - Missing required attributes\n- Unresolved <TODO> placeholders\n\
-        - Incorrect resource references\n- UpCloud-specific constraints\n\n\
+        Be concise. Identify real issues.\n\n\
         --- GENERATED TERRAFORM ---\n{tf}",
         tf = tf_context,
     );
 
-    let mut api_msgs: Vec<serde_json::Value> = vec![
-        serde_json::json!({"role": "system", "content": system}),
-    ];
+    let mut api_msgs: Vec<serde_json::Value> =
+        vec![serde_json::json!({"role": "system", "content": system})];
     for msg in messages {
         api_msgs.push(serde_json::json!({
             "role": if msg.is_user { "user" } else { "assistant" },

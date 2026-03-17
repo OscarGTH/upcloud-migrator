@@ -199,7 +199,7 @@ mod tests {
         ]);
         let hcl = map_lb_listener(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_loadbalancer_frontend_tls_config"), "HTTPS listener must generate TLS config\n{hcl}");
-        assert!(hcl.contains("certificate_bundle_uuid"), "{hcl}");
+        assert!(hcl.contains("certificate_bundle "), "{hcl}");
         assert!(hcl.contains("upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id"), "{hcl}");
     }
 
@@ -243,6 +243,19 @@ mod tests {
         assert!(hcl.contains("count        = var.web_server_count"), "count should be propagated\n{hcl}");
         assert!(hcl.contains("upcloud_server.web[count.index].network_interface[1].ip_address"), "should use private interface with count.index\n{hcl}");
         assert!(hcl.contains("web-${count.index + 1}"), "name should be unique per index\n{hcl}");
+    }
+
+    #[test]
+    fn lb_target_group_attachment_with_literal_index_resolves_ip() {
+        let res = make_res("aws_lb_target_group_attachment", "web_1", &[
+            ("target_group_arn", "aws_lb_target_group.web.arn"),
+            ("target_id", "aws_instance.web[0].id"),
+            ("port", "8080"),
+        ]);
+        let hcl = map_lb_target_group_attachment(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("upcloud_server.web[0].network_interface[1].ip_address"),
+            "literal index should auto-resolve to indexed server private interface\n{hcl}");
+        assert!(!hcl.contains("<TODO"), "no TODOs should remain when index is known\n{hcl}");
     }
 
     #[test]
@@ -497,7 +510,7 @@ resource "upcloud_loadbalancer_frontend_rule" "{name}_redirect" {{
 resource "upcloud_loadbalancer_frontend_tls_config" "{name}_tls" {{
   frontend                = upcloud_loadbalancer_frontend.{name}.id
   name                    = "{name}-tls"
-  certificate_bundle_uuid = upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id
+  certificate_bundle = upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id
 }}
 "#,
             name = res.name,
@@ -552,16 +565,30 @@ pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResul
 
     let backend_ref = backend_name.as_deref().unwrap_or("<TODO: backend>");
 
-    // Extract the base server name, stripping any index expression (e.g. "web[count.index]" → "web")
-    let server_name: Option<String> = target_id.as_deref().and_then(|id| {
-        if id.starts_with("aws_instance.") {
-            let rest = &id["aws_instance.".len()..];
-            let base = rest.split(|c| c == '.' || c == '[').next().unwrap_or(rest);
-            if base.is_empty() { None } else { Some(base.to_string()) }
-        } else {
-            None
-        }
-    });
+    // Extract the base server name and optional literal numeric index.
+    // e.g. "aws_instance.web[0].id"           → name="web", literal_idx=Some("0")
+    // e.g. "aws_instance.web[count.index].id" → name="web", literal_idx=None (has_count handles it)
+    // e.g. "aws_instance.app.id"              → name="app", literal_idx=None
+    let (server_name, server_literal_index): (Option<String>, Option<String>) =
+        target_id.as_deref()
+        .map(|id| {
+            if id.starts_with("aws_instance.") {
+                let rest = &id["aws_instance.".len()..];
+                let base = rest.split(|c: char| c == '.' || c == '[').next().unwrap_or(rest);
+                if base.is_empty() { return (None, None); }
+                let literal_idx = rest.find('[').and_then(|bi| {
+                    let inner = &rest[bi + 1..];
+                    inner.find(']').and_then(|ei| {
+                        let s = &inner[..ei];
+                        if s.chars().all(|c| c.is_ascii_digit()) { Some(s.to_string()) } else { None }
+                    })
+                });
+                (Some(base.to_string()), literal_idx)
+            } else {
+                (None, None)
+            }
+        })
+        .unwrap_or((None, None));
 
     // Build count + name lines.
     let count_name_lines = if let Some(ref n) = count_attr {
@@ -570,15 +597,16 @@ pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResul
         format!("  name         = \"{}\"\n", res.name)
     };
 
-    // Build the IP line.
-    // When the attachment has count and we know the server, reference it with count.index
-    // using network_interface[1] (private) for internal LB traffic.
-    // When no count, fall back to a TODO so the user fills in the actual IP.
-    let ip_line = match (&server_name, has_count) {
-        (Some(inst), true) => {
+    // Build the IP line using network_interface[1] (private) for LB backend traffic.
+    // Priority: count.index > literal index > TODO.
+    let ip_line = match (&server_name, has_count, &server_literal_index) {
+        (Some(inst), true, _) => {
             format!("  ip           = upcloud_server.{}[count.index].network_interface[1].ip_address\n", inst)
         }
-        (Some(inst), false) => {
+        (Some(inst), false, Some(idx)) => {
+            format!("  ip           = upcloud_server.{}[{}].network_interface[1].ip_address\n", inst, idx)
+        }
+        (Some(inst), false, None) => {
             format!("  ip           = \"<TODO: upcloud_server.{} IP>\"\n", inst)
         }
         _ => "  ip           = \"<TODO: server IP address>\"\n".to_string(),
@@ -605,7 +633,9 @@ pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResul
         "Target group attachment → static_backend_member.".into(),
     ];
     if has_count {
-        notes.push(format!("count propagated; IP references server's private interface (network_interface[1])."));
+        notes.push("count propagated; IP references server's private interface (network_interface[1]).".into());
+    } else if server_literal_index.is_some() {
+        notes.push("IP auto-resolved from target_id index → network_interface[1] (private).".into());
     } else {
         notes.push("Update ip to the server's actual IP or floating IP.".into());
     }

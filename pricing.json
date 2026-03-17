@@ -1,0 +1,212 @@
+{
+  "_meta": {
+    "source": "https://upcloud.com/pricing",
+    "currency": "EUR",
+    "note": "Prices are estimates; verify at upcloud.com/pricing before production use"
+  },
+  "upcloud_server": {
+    "terraform_resource": "upcloud_server",
+    "plans": {
+      "developer": [
+        { "plan": "DEV-1xCPU-1GB-10GB", "memory_mb": 1024,  "cpu_cores": 1,  "storage_gb": 10,  "storage_type": "standard", "eur_monthly": 3.0,   "eur_hourly": 0.0045 },
+        { "plan": "DEV-1xCPU-1GB",      "memory_mb": 1024,  "cpu_cores": 1,  "storage_gb": 20,  "storage_type": "standard", "eur_monthly": 4.5,   "eur_hourly": 0.0067 },
+        { "plan": "DEV-1xCPU-2GB",      "memory_mb": 2048,  "cpu_cores": 1,  "storage_gb": 30,  "storage_type": "standard", "eur_monthly": 8.0,   "eur_hourly": 0.0119 },
+        { "plan": "DEV-1xCPU-4GB",      "memory_mb": 4096,  "cpu_cores": 1,  "storage_gb": 40,  "storage_type": "standard", "eur_monthly": 15.0,  "eur_hourly": 0.0223 },
+        { "plan": "DEV-2xCPU-4GB",      "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 60,  "storage_type": "standard", "eur_monthly": 18.0,  "eur_hourly": 0.0268 },
+        { "plan": "DEV-2xCPU-8GB",      "memory_mb": 8192,  "cpu_cores": 2,  "storage_gb": 80,  "storage_type": "standard", "eur_monthly": 25.0,  "eur_hourly": 0.0372 },
+        { "plan": "DEV-2xCPU-16GB",     "memory_mb": 16384, "cpu_cores": 2,  "storage_gb": 100, "storage_type": "standard", "eur_monthly": 35.0,  "eur_hourly": 0.0521 }
+      ],
+      "general_purpose": [
+        { "plan": "1xCPU-1GB",   "memory_mb": 1024,   "cpu_cores": 1,  "storage_gb": 25,   "storage_type": "maxiops", "eur_monthly": 7.5,    "eur_hourly": 0.0104 },
+        { "plan": "1xCPU-2GB",   "memory_mb": 2048,   "cpu_cores": 1,  "storage_gb": 50,   "storage_type": "maxiops", "eur_monthly": 15.0,   "eur_hourly": 0.0193 },
+        { "plan": "2xCPU-2GB",   "memory_mb": 2048,   "cpu_cores": 2,  "storage_gb": 60,   "storage_type": "maxiops", "eur_monthly": 20.0,   "eur_hourly": 0.027  },
+        { "plan": "2xCPU-4GB",   "memory_mb": 4096,   "cpu_cores": 2,  "storage_gb": 80,   "storage_type": "maxiops", "eur_monthly": 30.0,   "eur_hourly": 0.0387 },
+        { "plan": "4xCPU-8GB",   "memory_mb": 8192,   "cpu_cores": 4,  "storage_gb": 160,  "storage_type": "maxiops", "eur_monthly": 60.0,   "eur_hourly": 0.0774 },
+        { "plan": "6xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 6,  "storage_gb": 320,  "storage_type": "maxiops", "eur_monthly": 120.0,   "eur_hourly": 0.1429 },
+        { "plan": "8xCPU-32GB",  "memory_mb": 32768,  "cpu_cores": 8,  "storage_gb": 640,  "storage_type": "maxiops", "eur_monthly": 240.0,  "eur_hourly": 0.2857 },
+        { "plan": "12xCPU-48GB", "memory_mb": 49152,  "cpu_cores": 12, "storage_gb": 960,  "storage_type": "maxiops", "eur_monthly": 360.0,  "eur_hourly": 0.4286 },
+        { "plan": "16xCPU-64GB", "memory_mb": 65536,  "cpu_cores": 16, "storage_gb": 1280, "storage_type": "maxiops", "eur_monthly": 480.0,  "eur_hourly": 0.5714 },
+        { "plan": "24xCPU-96GB", "memory_mb": 98304,  "cpu_cores": 24, "storage_gb": 1920, "storage_type": "maxiops", "eur_monthly": 720.0,  "eur_hourly": 0.8571 },
+        { "plan": "32xCPU-128GB","memory_mb": 131072, "cpu_cores": 32, "storage_gb": 2048, "storage_type": "maxiops", "eur_monthly": 960.0,  "eur_hourly": 1.1429 },
+        { "plan": "38xCPU-192GB","memory_mb": 196608, "cpu_cores": 38, "storage_gb": 2048, "storage_type": "maxiops", "eur_monthly": 1280.0, "eur_hourly": 1.5238 },
+        { "plan": "48xCPU-256GB","memory_mb": 262144, "cpu_cores": 48, "storage_gb": 2048, "storage_type": "maxiops", "eur_monthly": 1705.0, "eur_hourly": 2.0297 },
+        { "plan": "64xCPU-384GB","memory_mb": 393216, "cpu_cores": 64, "storage_gb": 2048, "storage_type": "maxiops", "eur_monthly": 2403.0, "eur_hourly": 2.9642 },
+        { "plan": "80xCPU-512GB","memory_mb": 524288, "cpu_cores": 80, "storage_gb": 2048, "storage_type": "maxiops", "eur_monthly": 3190.0, "eur_hourly": 3.7976 },
+        { "plan": "2xCPU-8GB",   "memory_mb": 8192,   "cpu_cores": 2,  "storage_gb": 100,  "storage_type": "maxiops", "eur_monthly": 40.0,   "eur_hourly": 0.0595 },
+        { "plan": "2xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 2,  "storage_gb": 100,  "storage_type": "maxiops", "eur_monthly": 65.0,   "eur_hourly": 0.0967 },
+        { "plan": "4xCPU-32GB",  "memory_mb": 32768,  "cpu_cores": 4,  "storage_gb": 100,  "storage_type": "maxiops", "eur_monthly": 132.0,  "eur_hourly": 0.1964 },
+        { "plan": "4xCPU-64GB",  "memory_mb": 65536,  "cpu_cores": 4,  "storage_gb": 200,  "storage_type": "maxiops", "eur_monthly": 240.0,  "eur_hourly": 0.3571 },
+        { "plan": "8xCPU-12GB",  "memory_mb": 12288,  "cpu_cores": 8,  "storage_gb": 100,  "storage_type": "maxiops", "eur_monthly": 130.0,  "eur_hourly": 0.1935 },
+        { "plan": "8xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 8,  "storage_gb": 200,  "storage_type": "maxiops", "eur_monthly": 160.0,  "eur_hourly": 0.2381 },
+        { "plan": "6xCPU-128GB", "memory_mb": 131072, "cpu_cores": 6,  "storage_gb": 300,  "storage_type": "maxiops", "eur_monthly": 480.0,  "eur_hourly": 0.7143 },
+        { "plan": "8xCPU-192GB", "memory_mb": 196608, "cpu_cores": 8,  "storage_gb": 400,  "storage_type": "maxiops", "eur_monthly": 840.0,  "eur_hourly": 1.25   }
+      ],
+      "high_cpu": [],
+      "high_memory": [],
+      "cloud_native": [
+        { "plan": "CLOUDNATIVE-1xCPU-4GB",   "memory_mb": 4096,   "cpu_cores": 1,  "eur_monthly": 12.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-2xCPU-4GB",   "memory_mb": 4096,   "cpu_cores": 2,  "eur_monthly": 15.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-1xCPU-8GB",   "memory_mb": 8192,   "cpu_cores": 1,  "eur_monthly": 20.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-2xCPU-8GB",   "memory_mb": 8192,   "cpu_cores": 2,  "eur_monthly": 24.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-2xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 2,  "eur_monthly": 32.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-4xCPU-8GB",   "memory_mb": 8192,   "cpu_cores": 4,  "eur_monthly": 34.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-4xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 4,  "eur_monthly": 68.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-4xCPU-24GB",  "memory_mb": 16384,  "cpu_cores": 4,  "eur_monthly": 72.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-6xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 6,  "eur_monthly": 76.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-8xCPU-16GB",  "memory_mb": 16384,  "cpu_cores": 8,  "eur_monthly": 78.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-4xCPU-24GB",  "memory_mb": 24576,  "cpu_cores": 4,  "eur_monthly": 80.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-6xCPU-24GB",  "memory_mb": 24576,  "cpu_cores": 6,  "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-8xCPU-24GB",  "memory_mb": 24576,  "cpu_cores": 8,  "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-12xCPU-24GB", "memory_mb": 24576,  "cpu_cores": 12, "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-4xCPU-32GB",  "memory_mb": 32768,  "cpu_cores": 4,  "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-8xCPU-32GB",  "memory_mb": 32768,  "cpu_cores": 8,  "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-12xCPU-32GB", "memory_mb": 32768,  "cpu_cores": 12, "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-16xCPU-32GB", "memory_mb": 32768,  "cpu_cores": 16, "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-8xCPU-64GB",  "memory_mb": 65536,  "cpu_cores": 8,  "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-16xCPU-64GB", "memory_mb": 65536,  "cpu_cores": 16, "eur_monthly": 0.0, "eur_hourly": 0.0 },
+        { "plan": "CLOUDNATIVE-32xCPU-128GB","memory_mb": 131072, "cpu_cores": 32, "eur_monthly": 0.0, "eur_hourly": 0.0 }
+      ]
+    }
+  },
+  "upcloud_managed_database_postgresql": {
+    "terraform_resources": [
+      "upcloud_managed_database_postgresql",
+      "upcloud_managed_database_mysql"
+    ],
+    "plans": [
+      { "plan": "1x1xCPU-2GB-25GB",      "nodes": 1, "memory_mb": 2048,  "cpu_cores": 1,  "storage_gb": 25,   "eur_monthly": 30.0,   "eur_hourly": 0.0417 },
+      { "plan": "1x2xCPU-4GB-50GB",      "nodes": 1, "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 50,   "eur_monthly": 60.0,   "eur_hourly": 0.0833 },
+      { "plan": "1x2xCPU-4GB-100GB",     "nodes": 1, "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 100,  "eur_monthly": 100.0,  "eur_hourly": 0.1389 },
+      { "plan": "2x2xCPU-4GB-50GB",      "nodes": 2, "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 50,   "eur_monthly": 120.0,  "eur_hourly": 0.1667 },
+      { "plan": "2x2xCPU-4GB-100GB",     "nodes": 2, "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 100,  "eur_monthly": 175.0,  "eur_hourly": 0.2431 },
+      { "plan": "2x4xCPU-8GB-50GB",      "nodes": 2, "memory_mb": 8192,  "cpu_cores": 4,  "storage_gb": 50,   "eur_monthly": 200.0,  "eur_hourly": 0.2778 },
+      { "plan": "2x4xCPU-8GB-100GB",     "nodes": 2, "memory_mb": 8192,  "cpu_cores": 4,  "storage_gb": 100,  "eur_monthly": 280.0,  "eur_hourly": 0.3889 },
+      { "plan": "2x6xCPU-16GB-100GB",    "nodes": 2, "memory_mb": 16384, "cpu_cores": 6,  "storage_gb": 100,  "eur_monthly": 400.0,  "eur_hourly": 0.5556 },
+      { "plan": "2x6xCPU-16GB-250GB",    "nodes": 2, "memory_mb": 16384, "cpu_cores": 6,  "storage_gb": 250,  "eur_monthly": 600.0,  "eur_hourly": 0.8333 },
+      { "plan": "2x8xCPU-32GB-100GB",    "nodes": 2, "memory_mb": 32768, "cpu_cores": 8,  "storage_gb": 100,  "eur_monthly": 750.0,  "eur_hourly": 1.0417 },
+      { "plan": "2x8xCPU-32GB-250GB",    "nodes": 2, "memory_mb": 32768, "cpu_cores": 8,  "storage_gb": 250,  "eur_monthly": 1000.0, "eur_hourly": 1.3889 },
+      { "plan": "2x8xCPU-32GB-500GB",    "nodes": 2, "memory_mb": 32768, "cpu_cores": 8,  "storage_gb": 500,  "eur_monthly": 1400.0, "eur_hourly": 1.9444 },
+      { "plan": "2x16xCPU-64GB-1000GB",  "nodes": 2, "memory_mb": 65536, "cpu_cores": 16, "storage_gb": 1000, "eur_monthly": 1600.0, "eur_hourly": 2.2222 },
+      { "plan": "2x16xCPU-64GB-1500GB",  "nodes": 2, "memory_mb": 65536, "cpu_cores": 16, "storage_gb": 1500, "eur_monthly": 2200.0, "eur_hourly": 3.0556 },
+      { "plan": "2x20xCPU-128GB-2000GB", "nodes": 2, "memory_mb": 131072,"cpu_cores": 20, "storage_gb": 2000, "eur_monthly": 2800.0, "eur_hourly": 3.8889 },
+      { "plan": "3x2xCPU-4GB-100GB",     "nodes": 3, "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 100,  "eur_monthly": 280.0,  "eur_hourly": 0.3889 },
+      { "plan": "3x2xCPU-4GB-200GB",     "nodes": 3, "memory_mb": 4096,  "cpu_cores": 2,  "storage_gb": 200,  "eur_monthly": 380.0,  "eur_hourly": 0.5278 },
+      { "plan": "3x4xCPU-8GB-100GB",     "nodes": 3, "memory_mb": 8192,  "cpu_cores": 4,  "storage_gb": 100,  "eur_monthly": 400.0,  "eur_hourly": 0.5556 },
+      { "plan": "3x4xCPU-8GB-200GB",     "nodes": 3, "memory_mb": 8192,  "cpu_cores": 4,  "storage_gb": 200,  "eur_monthly": 560.0,  "eur_hourly": 0.7778 },
+      { "plan": "3x6xCPU-16GB-200GB",    "nodes": 3, "memory_mb": 16384, "cpu_cores": 6,  "storage_gb": 200,  "eur_monthly": 800.0,  "eur_hourly": 1.1111 },
+      { "plan": "3x6xCPU-16GB-500GB",    "nodes": 3, "memory_mb": 16384, "cpu_cores": 6,  "storage_gb": 500,  "eur_monthly": 1200.0, "eur_hourly": 1.6667 },
+      { "plan": "3x8xCPU-32GB-200GB",    "nodes": 3, "memory_mb": 32768, "cpu_cores": 8,  "storage_gb": 200,  "eur_monthly": 1120.0, "eur_hourly": 1.5556 },
+      { "plan": "3x8xCPU-32GB-500GB",    "nodes": 3, "memory_mb": 32768, "cpu_cores": 8,  "storage_gb": 500,  "eur_monthly": 1600.0, "eur_hourly": 2.2222 },
+      { "plan": "3x8xCPU-32GB-1000GB",   "nodes": 3, "memory_mb": 32768, "cpu_cores": 8,  "storage_gb": 1000, "eur_monthly": 2200.0, "eur_hourly": 3.0556 },
+      { "plan": "3x16xCPU-64GB-1000GB",  "nodes": 3, "memory_mb": 65536, "cpu_cores": 16, "storage_gb": 1000, "eur_monthly": 2240.0, "eur_hourly": 3.1111 },
+      { "plan": "3x16xCPU-64GB-2000GB",  "nodes": 3, "memory_mb": 65536, "cpu_cores": 16, "storage_gb": 2000, "eur_monthly": 3500.0, "eur_hourly": 4.8611 },
+      { "plan": "3x20xCPU-128GB-2000GB", "nodes": 3, "memory_mb": 131072,"cpu_cores": 20, "storage_gb": 2000, "eur_monthly": 3980.0, "eur_hourly": 5.5278 }
+    ]
+  },
+  "upcloud_managed_database_valkey": {
+    "terraform_resource": "upcloud_managed_database_valkey",
+    "plans": [
+      { "plan": "1x1xCPU-2GB",   "nodes": 1, "memory_mb": 2048,  "cpu_cores": 1,  "eur_monthly": 50.0,   "eur_hourly": 0.0694 },
+      { "plan": "1x2xCPU-4GB",   "nodes": 1, "memory_mb": 4096,  "cpu_cores": 2,  "eur_monthly": 90.0,   "eur_hourly": 0.125  },
+      { "plan": "1x2xCPU-8GB",   "nodes": 1, "memory_mb": 8192,  "cpu_cores": 2,  "eur_monthly": 120.0,  "eur_hourly": 0.1667 },
+      { "plan": "1x2xCPU-14GB",  "nodes": 1, "memory_mb": 14336, "cpu_cores": 2,  "eur_monthly": 160.0,  "eur_hourly": 0.2222 },
+      { "plan": "1x4xCPU-28GB",  "nodes": 1, "memory_mb": 28672, "cpu_cores": 4,  "eur_monthly": 300.0,  "eur_hourly": 0.4167 },
+      { "plan": "1x8xCPU-56GB",  "nodes": 1, "memory_mb": 57344, "cpu_cores": 8,  "eur_monthly": 590.0,  "eur_hourly": 0.8194 },
+      { "plan": "1x16xCPU-112GB","nodes": 1, "memory_mb": 114688,"cpu_cores": 16, "eur_monthly": 1160.0, "eur_hourly": 1.6111 },
+      { "plan": "2x1xCPU-2GB",   "nodes": 2, "memory_mb": 2048,  "cpu_cores": 1,  "eur_monthly": 100.0,  "eur_hourly": 0.1389 },
+      { "plan": "2x2xCPU-4GB",   "nodes": 2, "memory_mb": 4096,  "cpu_cores": 2,  "eur_monthly": 170.0,  "eur_hourly": 0.2361 },
+      { "plan": "2x2xCPU-8GB",   "nodes": 2, "memory_mb": 8192,  "cpu_cores": 2,  "eur_monthly": 230.0,  "eur_hourly": 0.3194 },
+      { "plan": "2x2xCPU-14GB",  "nodes": 2, "memory_mb": 14336, "cpu_cores": 2,  "eur_monthly": 310.0,  "eur_hourly": 0.4306 },
+      { "plan": "2x4xCPU-28GB",  "nodes": 2, "memory_mb": 28672, "cpu_cores": 4,  "eur_monthly": 600.0,  "eur_hourly": 0.8333 },
+      { "plan": "2x8xCPU-56GB",  "nodes": 2, "memory_mb": 57344, "cpu_cores": 8,  "eur_monthly": 1170.0, "eur_hourly": 1.625  },
+      { "plan": "2x16xCPU-112GB","nodes": 2, "memory_mb": 114688,"cpu_cores": 16, "eur_monthly": 2320.0, "eur_hourly": 3.2222 },
+      { "plan": "3x1xCPU-2GB",   "nodes": 3, "memory_mb": 2048,  "cpu_cores": 1,  "eur_monthly": 150.0,  "eur_hourly": 0.2083 },
+      { "plan": "3x2xCPU-4GB",   "nodes": 3, "memory_mb": 4096,  "cpu_cores": 2,  "eur_monthly": 260.0,  "eur_hourly": 0.3611 },
+      { "plan": "3x2xCPU-8GB",   "nodes": 3, "memory_mb": 8192,  "cpu_cores": 2,  "eur_monthly": 350.0,  "eur_hourly": 0.4861 },
+      { "plan": "3x2xCPU-14GB",  "nodes": 3, "memory_mb": 14336, "cpu_cores": 2,  "eur_monthly": 470.0,  "eur_hourly": 0.6528 },
+      { "plan": "3x4xCPU-28GB",  "nodes": 3, "memory_mb": 28672, "cpu_cores": 4,  "eur_monthly": 900.0,  "eur_hourly": 1.25   },
+      { "plan": "3x8xCPU-56GB",  "nodes": 3, "memory_mb": 57344, "cpu_cores": 8,  "eur_monthly": 1760.0, "eur_hourly": 2.4444 },
+      { "plan": "3x16xCPU-112GB","nodes": 3, "memory_mb": 114688,"cpu_cores": 16, "eur_monthly": 3480.0, "eur_hourly": 4.8333 }
+    ]
+  },
+  "upcloud_managed_database_opensearch": {
+    "terraform_resource": "upcloud_managed_database_opensearch",
+    "plans": [
+      { "plan": "1x2xCPU-4GB-80GB",    "nodes": 1, "memory_mb": 4096,  "cpu_cores": 2, "storage_gb": 80,   "eur_monthly": 100.0,  "eur_hourly": 0.1389 },
+      { "plan": "1x2xCPU-8GB-160GB",   "nodes": 1, "memory_mb": 8192,  "cpu_cores": 2, "storage_gb": 160,  "eur_monthly": 150.0,  "eur_hourly": 0.2083 },
+      { "plan": "3x2xCPU-4GB-120GB",   "nodes": 3, "memory_mb": 4096,  "cpu_cores": 2, "storage_gb": 120,  "eur_monthly": 280.0,  "eur_hourly": 0.3889 },
+      { "plan": "3x2xCPU-8GB-240GB",   "nodes": 3, "memory_mb": 8192,  "cpu_cores": 2, "storage_gb": 240,  "eur_monthly": 400.0,  "eur_hourly": 0.5556 },
+      { "plan": "3x2xCPU-14GB-420GB",  "nodes": 3, "memory_mb": 14336, "cpu_cores": 2, "storage_gb": 420,  "eur_monthly": 580.0,  "eur_hourly": 0.8056 },
+      { "plan": "6x2xCPU-14GB-840GB",  "nodes": 6, "memory_mb": 14336, "cpu_cores": 2, "storage_gb": 840,  "eur_monthly": 1160.0, "eur_hourly": 1.6111 },
+      { "plan": "9x2xCPU-14GB-1260GB", "nodes": 9, "memory_mb": 14336, "cpu_cores": 2, "storage_gb": 1260, "eur_monthly": 1730.0, "eur_hourly": 2.4028 },
+      { "plan": "3x2xCPU-4GB-600GB",   "nodes": 3, "memory_mb": 4096,  "cpu_cores": 2, "storage_gb": 600,  "eur_monthly": 580.0,  "eur_hourly": 0.8056 },
+      { "plan": "3x2xCPU-8GB-1200GB",  "nodes": 3, "memory_mb": 8192,  "cpu_cores": 2, "storage_gb": 1200, "eur_monthly": 1000.0, "eur_hourly": 1.3889 },
+      { "plan": "3x2xCPU-14GB-2100GB", "nodes": 3, "memory_mb": 14336, "cpu_cores": 2, "storage_gb": 2100, "eur_monthly": 1620.0, "eur_hourly": 2.25   }
+    ]
+  },
+  "upcloud_loadbalancer": {
+    "terraform_resource": "upcloud_loadbalancer",
+    "plans": [
+      { "plan": "essentials",   "nodes": 1, "sessions_per_node": 1000,  "eur_monthly": 0.0,  "eur_hourly": 0.0    },
+      { "plan": "development",  "nodes": 1, "sessions_per_node": 1000,  "eur_monthly": 10.0, "eur_hourly": 0.0138 },
+      { "plan": "production-s", "nodes": 2, "sessions_per_node": 50000, "eur_monthly": 30.0, "eur_hourly": 0.0416 },
+      { "plan": "production-m", "nodes": 5, "sessions_per_node": 50000, "eur_monthly": 75.0, "eur_hourly": 0.1042 }
+    ]
+  },
+  "upcloud_gateway": {
+    "terraform_resources": ["upcloud_gateway"],
+    "plans": [
+      { "plan": "essentials", "high_availability": false, "vpn_tunnels": 1,  "eur_monthly": 0.0,   "eur_hourly": 0.0    },
+      { "plan": "developer",  "high_availability": false, "vpn_tunnels": 1,  "eur_monthly": 15.0,  "eur_hourly": 0.0208 },
+      { "plan": "standard",   "high_availability": true,  "vpn_tunnels": 1,  "eur_monthly": 25.0,  "eur_hourly": 0.0347 },
+      { "plan": "production", "high_availability": true,  "vpn_tunnels": 2,  "eur_monthly": 100.0, "eur_hourly": 0.1389 },
+      { "plan": "advanced",   "high_availability": true,  "vpn_tunnels": 10, "eur_monthly": 300.0, "eur_hourly": 0.4167 }
+    ]
+  },
+  "upcloud_kubernetes_cluster": {
+    "terraform_resource": "upcloud_kubernetes_cluster",
+    "plans": [
+      { "plan": "development", "eur_monthly": 0.0,  "eur_hourly": 0.0    },
+      { "plan": "production",  "eur_monthly": 60.0, "eur_hourly": 0.0833 }
+    ]
+  },
+  "upcloud_storage": {
+    "terraform_resource": "upcloud_storage",
+    "tiers": [
+      { "tier": "maxiops",      "per_gb": { "eur_monthly": 0.22,  "eur_hourly": 0.00031  } },
+      { "tier": "standard",     "per_gb": { "eur_monthly": 0.085, "eur_hourly": 0.000118 } },
+      { "tier": "hdd",          "per_gb": { "eur_monthly": 0.085, "eur_hourly": 0.000118 } },
+      { "tier": "archive",      "per_gb": { "eur_monthly": 0.056, "eur_hourly": 0.000078 } },
+      { "tier": "custom_image", "per_gb": { "eur_monthly": 0.22,  "eur_hourly": 0.00031  } }
+    ]
+  },
+  "upcloud_managed_object_storage": {
+    "terraform_resource": "upcloud_managed_object_storage",
+    "base_monthly": 5.0,
+    "note": "First 250 GB tier; charged by usage above that"
+  },
+  "upcloud_file_storage": {
+    "terraform_resource": "upcloud_file_storage",
+    "per_gb": { "eur_monthly": 0.15, "eur_hourly": 0.0021 }
+  },
+  "networking": {
+    "terraform_resources": [
+      "upcloud_floating_ip_address",
+      "upcloud_network",
+      "upcloud_router",
+      "upcloud_firewall_rules"
+    ],
+    "items": {
+      "floating_ip":                    { "eur_monthly": 3.15 },
+      "additional_ipv4":                { "eur_monthly": 3.15 },
+      "private_ipv4":                   { "eur_monthly": 0.0  },
+      "public_ipv6":                    { "eur_monthly": 0.0  },
+      "sdn_private_network":            { "eur_monthly": 0.0  },
+      "sdn_router":                     { "eur_monthly": 0.0  },
+      "firewall":                       { "eur_monthly": 0.0  },
+      "transfer_public_outbound_per_gib":{ "eur_monthly": 0.0 },
+      "transfer_public_inbound_per_gib": { "eur_monthly": 0.0 },
+      "transfer_private_per_gib":        { "eur_monthly": 0.0 }
+    }
+  }
+}

@@ -135,6 +135,70 @@ pub fn generate_files(
         .filter(|(_, subnets)| !subnets.is_empty())
         .collect();
 
+    // Build lb_backend_net_map: lb resource_name → network name that its backends are on.
+    // Chain: aws_lb_listener (lb→tg) → aws_lb_target_group_attachment (tg→server) →
+    //        aws_instance (server→subnet) → upcloud_network (subnet→name).
+    // This gives a deterministic answer instead of the name-based heuristic.
+    let server_subnet_map: HashMap<String, String> = results.iter()
+        .filter(|r| r.resource_type == "aws_instance")
+        .filter_map(|r| r.source_hcl.as_deref().and_then(|hcl| {
+            extract_subnet_id_from_instance_hcl(hcl)
+                .map(|subnet| (r.resource_name.clone(), subnet))
+        }))
+        .collect();
+
+    let mut tg_servers_map: HashMap<String, Vec<String>> = HashMap::new();
+    for r in results.iter().filter(|r| r.resource_type == "aws_lb_target_group_attachment") {
+        if let Some(hcl) = r.source_hcl.as_deref() {
+            if let Some((tg, srv)) = extract_tg_server_from_attachment_source_hcl(hcl) {
+                tg_servers_map.entry(tg).or_default().push(srv);
+            }
+        }
+    }
+
+    let mut lb_tgs_map: HashMap<String, Vec<String>> = HashMap::new();
+    // lb_name comes from the `parent_resource` field set by the loadbalancer mapper on listener results
+    for r in results.iter().filter(|r| r.resource_type == "aws_lb_listener") {
+        if let Some(hcl) = r.source_hcl.as_deref() {
+            if let Some(tg) = extract_tg_from_listener_source_hcl(hcl) {
+                // The lb_name: prefer parent_resource, fall back to parsing load_balancer_arn
+                let lb_name = r.parent_resource.clone().unwrap_or_default();
+                let lb_name = if lb_name.is_empty() {
+                    // parse from `load_balancer_arn = aws_lb.NAME.arn`
+                    hcl.lines()
+                        .find(|l| l.trim().starts_with("load_balancer_arn"))
+                        .and_then(|l| l.find("aws_lb.").map(|p| &l[p + "aws_lb.".len()..]))
+                        .and_then(|s| s.split('.').next())
+                        .map(|s| s.trim_matches('"').to_string())
+                        .unwrap_or_default()
+                } else {
+                    lb_name
+                };
+                if !lb_name.is_empty() {
+                    lb_tgs_map.entry(lb_name).or_default().push(tg);
+                }
+            }
+        }
+    }
+
+    // Now chain lb → tgs → servers → subnets → network names
+    let mut lb_backend_net_map: HashMap<String, String> = HashMap::new();
+    for (lb_name, tgs) in &lb_tgs_map {
+        'outer: for tg in tgs {
+            if let Some(servers) = tg_servers_map.get(tg) {
+                for srv in servers {
+                    if let Some(subnet) = server_subnet_map.get(srv) {
+                        // subnet name must correspond to a known upcloud_network resource
+                        if network_names.contains(subnet) {
+                            lb_backend_net_map.insert(lb_name.clone(), subnet.clone());
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Build storage_count_map and storage_inject_map:
     // For aws_volume_attachment resources, inject storage_devices blocks directly
     // into the matching server's HCL (via the __STORAGE_END_<name>__ sentinel).
@@ -182,7 +246,7 @@ pub fn generate_files(
     }
 
     // Apply zone substitution and cross-resolve TODO placeholders
-    let resolve = |hcl: &str, _resource_name: &str| -> String {
+    let resolve = |hcl: &str, resource_name: &str| -> String {
         let mut s = hcl
             .replace("__ZONE__", zone)
             .replace("__OBJSTORAGE_REGION__", objstorage_region);
@@ -255,9 +319,25 @@ pub fn generate_files(
             }
         }
 
-        // Generic fallback: resolve "<TODO: upcloud_network reference>" to the first
-        // available network (used by LBs, DBs, and servers without a known subnet_id).
-        if let Some(net) = network_names.first() {
+        // Generic fallback: resolve "<TODO: upcloud_network reference>" to the best
+        // available network.
+        //
+        // For load balancers, use the deterministic chain:
+        //   aws_lb → aws_lb_listener (tg) → aws_lb_target_group_attachment (server) →
+        //   aws_instance.subnet_id → upcloud_network
+        // This is exact — no heuristic needed.
+        //
+        // For everything else, prefer (in order):
+        //   1. a network whose name contains "private"
+        //   2. any network whose name does NOT contain "public"
+        //   3. whatever is first (last resort)
+        let preferred_net = lb_backend_net_map
+            .get(resource_name)
+            .and_then(|net| network_names.iter().find(|n| *n == net))
+            .or_else(|| network_names.iter().find(|n| n.to_lowercase().contains("private")))
+            .or_else(|| network_names.iter().find(|n| !n.to_lowercase().contains("public")))
+            .or_else(|| network_names.first());
+        if let Some(net) = preferred_net {
             let net_has_count = network_count_map.get(net.as_str()).copied().unwrap_or(false);
             let net_ref = if net_has_count {
                 if extract_count_from_hcl(&s).is_some() {
@@ -1181,6 +1261,79 @@ fn extract_subnet_names_from_subnet_group(hcl: &str) -> Vec<String> {
     names
 }
 
+/// Extract the subnet name from an `aws_instance` source HCL block.
+/// Returns e.g. `"public_a"` from `subnet_id = aws_subnet.public_a.id`.
+fn extract_subnet_id_from_instance_hcl(hcl: &str) -> Option<String> {
+    for line in hcl.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("subnet_id") && trimmed.contains('=') {
+            if let Some(pos) = trimmed.find("aws_subnet.") {
+                let after = &trimmed[pos + "aws_subnet.".len()..];
+                // Strip trailing `.id`, `.arn`, etc. — take only the resource name segment
+                let name = after.split('.').next().unwrap_or("").trim_matches('"');
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the target group name from an `aws_lb_listener` source HCL block.
+/// Looks for `target_group_arn = aws_lb_target_group.NAME.arn` inside a forward action.
+fn extract_tg_from_listener_source_hcl(hcl: &str) -> Option<String> {
+    const PREFIX: &str = "aws_lb_target_group.";
+    for line in hcl.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("target_group_arn") && trimmed.contains(PREFIX) {
+            if let Some(pos) = trimmed.find(PREFIX) {
+                let after = &trimmed[pos + PREFIX.len()..];
+                let name = after.split('.').next().unwrap_or("").trim_matches('"');
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract (tg_name, server_name) from an `aws_lb_target_group_attachment` source HCL.
+/// Returns e.g. `("web", "web")` from:
+///   `target_group_arn = aws_lb_target_group.web.arn`
+///   `target_id        = aws_instance.web[0].id`
+fn extract_tg_server_from_attachment_source_hcl(hcl: &str) -> Option<(String, String)> {
+    let mut tg_name: Option<String> = None;
+    let mut server_name: Option<String> = None;
+    for line in hcl.lines() {
+        let trimmed = line.trim();
+        if tg_name.is_none() && trimmed.starts_with("target_group_arn") {
+            if let Some(pos) = trimmed.find("aws_lb_target_group.") {
+                let after = &trimmed[pos + "aws_lb_target_group.".len()..];
+                let name = after.split('.').next().unwrap_or("").trim_matches('"');
+                if !name.is_empty() {
+                    tg_name = Some(name.to_string());
+                }
+            }
+        }
+        if server_name.is_none() && trimmed.starts_with("target_id") {
+            if let Some(pos) = trimmed.find("aws_instance.") {
+                let after = &trimmed[pos + "aws_instance.".len()..];
+                // Strip any index suffix like `[0]` — take alphanumeric+underscore only
+                let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if !name.is_empty() {
+                    server_name = Some(name);
+                }
+            }
+        }
+    }
+    match (tg_name, server_name) {
+        (Some(tg), Some(srv)) => Some((tg, srv)),
+        _ => None,
+    }
+}
+
 fn extract_sg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
     let mut refs = Vec::new();
     const PREFIX: &str = "aws_security_group.";
@@ -1527,6 +1680,231 @@ mod tests {
         assert!(
             output.contains("upcloud_network.public[0].id"),
             "non-counted server + counted network should use [0]\n{output}"
+        );
+    }
+
+    #[test]
+    fn lb_private_network_block_prefers_private_named_network_over_public() {
+        // Regression: when networks are ordered [public_a, private_a], the generic
+        // "<TODO: upcloud_network reference>" fallback was picking public_a because
+        // it was first. The LB's `type = "private"` block must use the private network.
+        let public_net = make_result(
+            "aws_subnet",
+            "public_a",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "public_a" {
+  zone = "__ZONE__"
+  name = "public-a"
+
+  ip_network {
+    address = "10.0.1.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let private_net = make_result(
+            "aws_subnet",
+            "private_a",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "private_a" {
+  zone = "__ZONE__"
+  name = "private-a"
+
+  ip_network {
+    address = "10.0.2.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let lb = make_result(
+            "aws_lb",
+            "main",
+            "upcloud_loadbalancer",
+            Some(
+                r#"resource "upcloud_loadbalancer" "main" {
+  name              = "main"
+  plan              = "development"
+  zone              = "__ZONE__"
+  configured_status = "started"
+
+  networks {
+    name    = "private"
+    type    = "private"
+    family  = "IPv4"
+    network = "<TODO: upcloud_network reference>"
+  }
+
+  networks {
+    name   = "public"
+    type   = "public"
+    family = "IPv4"
+  }
+}
+"#,
+            ),
+            None,
+        );
+
+        // public_a comes first in the slice — it would have been picked by the old logic
+        let output = run_generate(&[public_net, private_net, lb], "lb_private_net_preference");
+
+        assert!(
+            output.contains("upcloud_network.private_a.id"),
+            "LB private network block must resolve to private_a, not public_a\n{output}"
+        );
+        assert!(
+            !output.contains("network = upcloud_network.public_a.id"),
+            "LB private network block must NOT reference public_a\n{output}"
+        );
+    }
+
+    #[test]
+    fn lb_private_network_resolved_deterministically_via_backend_chain() {
+        // Regression: with `public_a` ordered first AND named "public_a", the heuristic
+        // could not resolve correctly because the actual backends live in public_a.
+        // The deterministic chain (listener → attachment → instance → subnet) must win.
+        //
+        // Chain: aws_lb.main → listener (TG=web) → attachment (web[0] → public_a) →
+        //        aws_instance.web (subnet_id = aws_subnet.public_a) → upcloud_network.public_a
+        let public_net = make_result(
+            "aws_subnet", "public_a", "upcloud_network",
+            Some(r#"resource "upcloud_network" "public_a" {
+  zone = "__ZONE__"
+  name = "public-a"
+  ip_network { address = "10.0.1.0/24" dhcp = true family = "IPv4" }
+}
+"#),
+            None,
+        );
+        let private_net = make_result(
+            "aws_subnet", "private_a", "upcloud_network",
+            Some(r#"resource "upcloud_network" "private_a" {
+  zone = "__ZONE__"
+  name = "private-a"
+  ip_network { address = "10.0.2.0/24" dhcp = true family = "IPv4" }
+}
+"#),
+            None,
+        );
+
+        // aws_instance.web lives in public_a
+        let mut instance = make_result(
+            "aws_instance", "web", "upcloud_server",
+            Some(r#"resource "upcloud_server" "web" {
+  hostname = "web"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+  template { storage = "Ubuntu Server 24.04 LTS (Noble Numbat)" size = 50 }
+}
+"#),
+            None,
+        );
+        instance.source_hcl = Some(
+            r#"resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+  subnet_id     = aws_subnet.public_a.id
+}
+"#.to_string(),
+        );
+
+        // aws_lb_target_group_attachment: TG=web, server=web[0]
+        let mut attachment = make_result(
+            "aws_lb_target_group_attachment", "web_1", "upcloud_loadbalancer_static_backend_member",
+            Some(r#"resource "upcloud_loadbalancer_static_backend_member" "web_1" {
+  backend      = upcloud_loadbalancer_backend.<TODO>.name
+  name         = "web-1"
+  ip           = "<TODO: server IP>"
+  port         = 80
+  weight       = 100
+  max_sessions = 1000
+}
+"#),
+            None,
+        );
+        attachment.source_hcl = Some(
+            r#"resource "aws_lb_target_group_attachment" "web_1" {
+  target_group_arn = aws_lb_target_group.web.arn
+  target_id        = aws_instance.web[0].id
+  port             = 80
+}
+"#.to_string(),
+        );
+
+        // aws_lb_listener: lb=main, TG=web
+        let mut listener = make_result(
+            "aws_lb_listener", "https", "upcloud_loadbalancer_frontend",
+            Some(r#"resource "upcloud_loadbalancer_frontend" "https" {
+  name             = "https"
+  mode             = "tcp"
+  port             = 443
+  loadbalancer     = upcloud_loadbalancer.<TODO>.id
+  default_backend_name = upcloud_loadbalancer_backend.<TODO>.name
+}
+"#),
+            None,
+        );
+        listener.source_hcl = Some(
+            r#"resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = "443"
+  protocol          = "HTTPS"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
+  }
+}
+"#.to_string(),
+        );
+
+        // aws_lb.main: has the generic network placeholder
+        let lb = make_result(
+            "aws_lb", "main", "upcloud_loadbalancer",
+            Some(r#"resource "upcloud_loadbalancer" "main" {
+  name              = "main"
+  plan              = "development"
+  zone              = "__ZONE__"
+  configured_status = "started"
+  networks {
+    name    = "private"
+    type    = "private"
+    family  = "IPv4"
+    network = "<TODO: upcloud_network reference>"
+  }
+  networks {
+    name   = "public"
+    type   = "public"
+    family = "IPv4"
+  }
+}
+"#),
+            None,
+        );
+
+        // public_a is ordered first (and is named "public_a") — heuristic would pick private_a,
+        // but the deterministic chain shows the backends are actually in public_a.
+        let output = run_generate(
+            &[public_net, private_net, instance, attachment, listener, lb],
+            "lb_deterministic_chain",
+        );
+
+        assert!(
+            output.contains("upcloud_network.public_a.id"),
+            "LB private network block must resolve to public_a via backend chain\n{output}"
+        );
+        assert!(
+            !output.contains("upcloud_network.private_a.id"),
+            "LB must NOT reference private_a when backends are in public_a\n{output}"
         );
     }
 
@@ -2364,7 +2742,7 @@ output "server_id" {
             Some(concat!(
                 "resource \"upcloud_managed_database_postgresql\" \"postgres\" {\n",
                 "  name = \"postgres-db\"\n",
-                "  plan = \"2x2xCPU-4GB-50GB\"\n",
+                "  plan = \"1x2xCPU-4GB-50GB\"\n",
                 "  zone = \"__ZONE__\"\n",
                 "  network {\n",
                 "    family = \"IPv4\"\n",

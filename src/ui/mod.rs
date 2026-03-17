@@ -2,6 +2,7 @@ pub mod chat;
 pub mod diff;
 pub mod filebrowser;
 pub mod generator;
+pub mod pricing;
 pub mod resources;
 pub mod scanner;
 pub mod splash;
@@ -21,5 +22,6 @@ pub fn render(f: &mut Frame, app: &App) {
         View::DiffReview => diff::render(f, app),
         View::TodoReview => todo::render(f, app),
         View::Chat => chat::render(f, app),
+        View::Pricing => pricing::render(f, app),
     }
 }

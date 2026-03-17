@@ -97,10 +97,10 @@ fn map_engine(engine: &str) -> (&'static str, &'static str) {
 fn map_instance_class(class: &str) -> &'static str {
     match class {
         c if c.contains("micro") || c.contains("small") => "1x1xCPU-2GB-25GB",
-        c if c.contains("medium") => "2x2xCPU-4GB-50GB",
-        c if c.contains("xlarge") => "4x8xCPU-16GB-200GB", // must precede "large" — xlarge contains "large"
-        c if c.contains("large") => "4x4xCPU-8GB-100GB",
-        _ => "2x2xCPU-4GB-50GB",
+        c if c.contains("medium") => "1x2xCPU-4GB-50GB",
+        c if c.contains("xlarge") => "2x6xCPU-16GB-100GB", // must precede "large" — xlarge contains "large"
+        c if c.contains("large") => "2x4xCPU-8GB-100GB",
+        _ => "1x2xCPU-4GB-50GB",
     }
 }
 
@@ -161,9 +161,9 @@ mod tests {
         let cases = [
             ("db.t3.micro",  "1x1xCPU-2GB-25GB"),
             ("db.t3.small",  "1x1xCPU-2GB-25GB"),
-            ("db.t3.medium", "2x2xCPU-4GB-50GB"),
-            ("db.r5.large",  "4x4xCPU-8GB-100GB"),
-            ("db.r5.xlarge", "4x8xCPU-16GB-200GB"),
+            ("db.t3.medium", "1x2xCPU-4GB-50GB"),
+            ("db.r5.large",  "2x4xCPU-8GB-100GB"),
+            ("db.r5.xlarge", "2x6xCPU-16GB-100GB"),
         ];
         for (class, expected_plan) in &cases {
             let res = make_res("aws_db_instance", "db", &[
@@ -357,7 +357,7 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
     let hcl = format!(
         r#"resource "{upcloud_type}" "{name}" {{
   name  = "{name}-cluster"
-  plan  = "2x2xCPU-4GB-50GB"
+  plan  = "1x2xCPU-4GB-50GB"
   title = "{name}"
   zone  = "__ZONE__"
 
@@ -565,9 +565,9 @@ pub fn map_elasticache_parameter_group(res: &TerraformResource) -> MigrationResu
 fn map_elasticache_node_type(node_type: &str) -> &'static str {
     match node_type {
         t if t.contains("micro") || t.contains("small") => "1x1xCPU-2GB",
-        t if t.contains("medium") => "2x2xCPU-4GB",
-        t if t.contains("xlarge") => "4x8xCPU-16GB", // must precede "large"
-        t if t.contains("large") => "4x4xCPU-8GB",
+        t if t.contains("medium") => "1x2xCPU-4GB",
+        t if t.contains("xlarge") => "1x4xCPU-28GB", // must precede "large"
+        t if t.contains("large") => "1x2xCPU-8GB",
         _ => "1x1xCPU-2GB",
     }
 }

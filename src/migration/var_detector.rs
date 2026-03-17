@@ -212,8 +212,8 @@ fn score_instance_type(
 /// managed database plan. Returns `None` for unrecognised patterns.
 ///
 /// RDS classes use the `db.` prefix and map to plans with a storage component
-/// (e.g. `2x2xCPU-4GB-50GB`). ElastiCache node types use the `cache.` prefix
-/// and map to plans without storage (e.g. `2x2xCPU-4GB`).
+/// (e.g. `1x2xCPU-4GB-50GB`). ElastiCache node types use the `cache.` prefix
+/// and map to plans without storage (e.g. `1x2xCPU-4GB`).
 fn rds_or_cache_class_to_upcloud_plan(class: &str) -> Option<&'static str> {
     let (is_rds, stripped) = if let Some(s) = class.strip_prefix("db.") {
         (true, s)
@@ -229,14 +229,17 @@ fn rds_or_cache_class_to_upcloud_plan(class: &str) -> Option<&'static str> {
         "nano" | "micro" | "small" => {
             if is_rds { Some("1x1xCPU-2GB-25GB") } else { Some("1x1xCPU-2GB") }
         }
-        "medium" | "large" => {
-            if is_rds { Some("2x2xCPU-4GB-50GB") } else { Some("2x2xCPU-4GB") }
+        "medium" => {
+            if is_rds { Some("1x2xCPU-4GB-50GB") } else { Some("1x2xCPU-4GB") }
+        }
+        "large" => {
+            if is_rds { Some("2x4xCPU-8GB-100GB") } else { Some("1x2xCPU-8GB") }
         }
         "xlarge" => {
-            if is_rds { Some("4x4xCPU-8GB-100GB") } else { Some("4x4xCPU-8GB") }
+            if is_rds { Some("2x6xCPU-16GB-100GB") } else { Some("1x4xCPU-28GB") }
         }
         s if s.ends_with("xlarge") => {
-            if is_rds { Some("4x8xCPU-16GB-200GB") } else { Some("4x8xCPU-16GB") }
+            if is_rds { Some("2x8xCPU-32GB-100GB") } else { Some("1x8xCPU-56GB") }
         }
         _ => None,
     }
@@ -666,7 +669,7 @@ mod tests {
         ).unwrap();
         assert_eq!(conv.kind, VarKind::InstanceType);
         assert!(conv.confidence >= 8, "confidence too low: {}", conv.confidence);
-        assert_eq!(conv.converted_value.as_deref(), Some("2x2xCPU-4GB-50GB"));
+        assert_eq!(conv.converted_value.as_deref(), Some("1x2xCPU-4GB-50GB"));
     }
 
     #[test]
@@ -690,7 +693,7 @@ mod tests {
             None,
             &[String::from("instance_class")],
         ).unwrap();
-        assert_eq!(conv.converted_value.as_deref(), Some("4x4xCPU-8GB-100GB"));
+        assert_eq!(conv.converted_value.as_deref(), Some("2x6xCPU-16GB-100GB"));
     }
 
     #[test]
@@ -701,7 +704,7 @@ mod tests {
             None,
             &[String::from("instance_class")],
         ).unwrap();
-        assert_eq!(conv.converted_value.as_deref(), Some("4x8xCPU-16GB-200GB"));
+        assert_eq!(conv.converted_value.as_deref(), Some("2x8xCPU-32GB-100GB"));
     }
 
     #[test]
@@ -712,7 +715,7 @@ mod tests {
             None,
             &[String::from("node_type")],
         ).unwrap();
-        assert_eq!(conv.converted_value.as_deref(), Some("4x4xCPU-8GB"));
+        assert_eq!(conv.converted_value.as_deref(), Some("1x4xCPU-28GB"));
     }
 
     #[test]

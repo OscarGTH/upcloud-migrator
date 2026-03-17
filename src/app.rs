@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use crate::ai::ChatMessage;
 use crate::migration::generator::ResolvedHclMap;
+use crate::pricing::{compute_costs, CostEntry};
 use crate::migration::mapper::map_resource;
 use crate::migration::scorer::compute_overall_score;
 use crate::migration::types::MigrationResult;
@@ -28,6 +29,7 @@ pub enum View {
     DiffReview,
     TodoReview,
     Chat,
+    Pricing,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +119,10 @@ pub struct App {
     /// Concatenated content of generated .tf files, built once on entering the chat view.
     pub chat_tf_context: String,
 
+    // Pricing calculator state
+    pub pricing_scroll: usize,
+    pub pricing_costs: Vec<CostEntry>,
+
     // Async channel
     tx: mpsc::Sender<AppMessage>,
     rx: mpsc::Receiver<AppMessage>,
@@ -169,6 +175,8 @@ impl App {
             chat_scroll_max: std::cell::Cell::new(0),
             chat_loading: false,
             chat_tf_context: String::new(),
+            pricing_scroll: 0,
+            pricing_costs: Vec::new(),
             tx,
             rx,
         }
@@ -228,6 +236,7 @@ impl App {
             View::DiffReview => self.handle_diff_key(code).await,
             View::TodoReview => self.handle_todo_key(code).await,
             View::Chat => self.handle_chat_key(code).await,
+            View::Pricing => self.handle_pricing_key(code),
         }
     }
 
@@ -461,10 +470,13 @@ impl App {
                 self.view = View::DiffReview;
             }
             KeyCode::Char('c') | KeyCode::Char('C') if self.gen_complete => {
-                self.enter_chat_view(false).await;
+                self.enter_chat_view().await;
             }
-            KeyCode::Char('v') | KeyCode::Char('V') if self.gen_complete => {
-                self.enter_chat_view(true).await;
+            KeyCode::Char('p') | KeyCode::Char('P') if self.gen_complete => {
+                self.pricing_costs =
+                    compute_costs(&self.migration_results, &self.resolved_hcl_map, &self.passthroughs);
+                self.pricing_scroll = 0;
+                self.view = View::Pricing;
             }
 
             // Zone picker navigation
@@ -601,6 +613,15 @@ impl App {
         } else {
             self.todos.get(self.todo_idx).and_then(|i| i.ai_suggestion.clone())
         };
+        // Strip markdown backtick wrapping that AI models sometimes emit (e.g. `value`).
+        let resolution = resolution.map(|r| {
+            let t = r.trim();
+            if t.starts_with('`') && t.ends_with('`') && t.len() > 1 {
+                t[1..t.len() - 1].to_string()
+            } else {
+                t.to_string()
+            }
+        });
 
         if let (Some(res), Some(output_dir)) = (resolution, self.output_path.clone()) {
             if let Some(item) = self.todos.get_mut(self.todo_idx) {
@@ -658,7 +679,7 @@ impl App {
             AppMessage::ChatResponse(text) => {
                 self.chat_loading = false;
                 self.chat_messages.push(ChatMessage::ai(text));
-                self.chat_scroll = 9999; // auto-scroll to bottom
+                self.chat_scroll = 9999;
             }
             AppMessage::ChatError(err) => {
                 self.chat_loading = false;
@@ -733,6 +754,22 @@ impl App {
                     for line in log {
                         let _ = tx.send(AppMessage::GenerateLog(line)).await;
                     }
+                    // Run `terraform fmt` if available.
+                    match std::process::Command::new("terraform")
+                        .args(["fmt", output_dir.to_str().unwrap_or(".")])
+                        .output()
+                    {
+                        Ok(out) if out.status.success() => {
+                            let _ = tx.send(AppMessage::GenerateLog("[terraform fmt] OK".into())).await;
+                        }
+                        Ok(out) => {
+                            let stderr = String::from_utf8_lossy(&out.stderr);
+                            let _ = tx.send(AppMessage::GenerateLog(format!("[terraform fmt] {}", stderr.trim()))).await;
+                        }
+                        Err(_) => {
+                            let _ = tx.send(AppMessage::GenerateLog("[terraform fmt] not found — skipping".into())).await;
+                        }
+                    }
                     let _ = tx.send(AppMessage::GenerateDone(count, resolved_map)).await;
                 }
                 Err(e) => {
@@ -742,115 +779,18 @@ impl App {
         });
     }
 
-    /// Build a truncated string of all generated .tf file contents for AI context.
-    fn build_tf_context(&self) -> String {
-        const MAX_CHARS: usize = 14_000;
-        let Some(output_dir) = &self.output_path else { return String::new() };
-
-        let mut ctx = String::new();
-        if let Ok(entries) = std::fs::read_dir(output_dir) {
-            let mut paths: Vec<_> = entries
-                .flatten()
-                .filter(|e| e.path().extension().map_or(false, |x| x == "tf"))
-                .collect();
-            paths.sort_by_key(|e| e.file_name());
-            for entry in paths {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    let header = format!("# --- {} ---\n", entry.file_name().to_string_lossy());
-                    ctx.push_str(&header);
-                    ctx.push_str(&content);
-                    ctx.push('\n');
-                    if ctx.len() >= MAX_CHARS { break; }
-                }
-            }
-        }
-        if ctx.len() > MAX_CHARS {
-            ctx.truncate(MAX_CHARS);
-            ctx.push_str("\n... (truncated)");
-        }
-        ctx
-    }
-
-    /// Enter the Chat view. If `validate` is true, immediately send a validation request.
-    async fn enter_chat_view(&mut self, validate: bool) {
-        self.chat_tf_context = self.build_tf_context();
-        self.chat_messages.clear();
-        self.chat_input.clear();
-        self.chat_loading = false;
-        self.chat_scroll = 9999;
-        self.view = View::Chat;
-
-        if validate {
-            let prompt = "Please validate this UpCloud Terraform for correctness. \
-                Check for: unresolved <TODO> placeholders, missing required attributes, \
-                incorrect resource references, and any UpCloud-specific issues. \
-                List problems clearly, then summarise what looks good.";
-            self.chat_messages.push(ChatMessage::user(prompt));
-            self.chat_loading = true;
-            self.start_chat_message().await;
-        } else if let Some(api_key) = &self.api_key {
-            // Send a greeting / summary from the AI on open
-            let _ = api_key; // used below
-            self.chat_messages.push(ChatMessage::user(
-                "Briefly introduce yourself and summarise the generated Terraform in 2-3 sentences."
-            ));
-            self.chat_loading = true;
-            self.start_chat_message().await;
-        }
-    }
-
-    /// Spawn an async task that sends the current chat_messages to the AI and waits for a reply.
-    async fn start_chat_message(&mut self) {
-        let Some(api_key) = self.api_key.clone() else { return };
-        let messages = self.chat_messages.clone();
-        let tf_context = self.chat_tf_context.clone();
-        let tx = self.tx.clone();
-
-        tokio::spawn(async move {
-            match crate::ai::chat_with_tf(&messages, &tf_context, &api_key).await {
-                Ok(resp) => { let _ = tx.send(AppMessage::ChatResponse(resp)).await; }
-                Err(e)   => { let _ = tx.send(AppMessage::ChatError(e.to_string())).await; }
-            }
-        });
-    }
-
-    async fn handle_chat_key(&mut self, code: KeyCode) {
+    fn handle_pricing_key(&mut self, code: KeyCode) {
+        let count = self.pricing_costs.len();
         match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') if self.chat_input.is_empty() => {
-                self.should_quit = true;
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => self.view = View::Generator,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.pricing_scroll = self.pricing_scroll.saturating_sub(1);
             }
-            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
-                self.view = View::Generator;
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.chat_input.is_empty() => {
-                let max = self.chat_scroll_max.get() as usize;
-                // Clamp from the 9999 sentinel to the actual bottom, then move up.
-                let effective = self.chat_scroll.min(max);
-                self.chat_scroll = effective.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') if self.chat_input.is_empty() => {
-                let max = self.chat_scroll_max.get() as usize;
-                let effective = self.chat_scroll.min(max);
-                if effective >= max {
-                    self.chat_scroll = 9999; // already at bottom — keep auto-scroll
-                } else {
-                    self.chat_scroll = effective + 1;
-                }
-            }
-            KeyCode::Char(c) => {
-                self.chat_input.push(c);
-            }
-            KeyCode::Backspace => {
-                self.chat_input.pop();
-            }
-            KeyCode::Enter => {
-                let msg = self.chat_input.trim().to_string();
-                if !msg.is_empty() && !self.chat_loading {
-                    self.chat_input.clear();
-                    self.chat_messages.push(ChatMessage::user(&msg));
-                    self.chat_loading = true;
-                    self.chat_scroll = 9999;
-                    self.start_chat_message().await;
+            KeyCode::Down | KeyCode::Char('j') => {
+                // Max scroll is capped in the render function; we just add here and let render clamp
+                if count > 0 {
+                    self.pricing_scroll = self.pricing_scroll.saturating_add(1).min(count.saturating_sub(1));
                 }
             }
             _ => {}
@@ -879,6 +819,120 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
                 self.diff_scroll = self.diff_scroll.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    // ── Chat / AI advisor ─────────────────────────────────────────────────────
+
+    /// Build a truncated string of all generated .tf file contents for AI context.
+    fn build_tf_context(&self) -> String {
+        const MAX_CHARS: usize = 14_000;
+        let Some(output_dir) = &self.output_path else {
+            return String::new();
+        };
+
+        let mut ctx = String::new();
+        if let Ok(entries) = std::fs::read_dir(output_dir) {
+            let mut paths: Vec<_> = entries
+                .flatten()
+                .filter(|e| e.path().extension().map_or(false, |x| x == "tf"))
+                .collect();
+            paths.sort_by_key(|e| e.file_name());
+            for entry in paths {
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    let header = format!("# --- {} ---\n", entry.file_name().to_string_lossy());
+                    ctx.push_str(&header);
+                    ctx.push_str(&content);
+                    ctx.push('\n');
+                    if ctx.len() >= MAX_CHARS {
+                        break;
+                    }
+                }
+            }
+        }
+        if ctx.len() > MAX_CHARS {
+            ctx.truncate(MAX_CHARS);
+            ctx.push_str("\n... (truncated)");
+        }
+        ctx
+    }
+
+    async fn enter_chat_view(&mut self) {
+        self.chat_tf_context = self.build_tf_context();
+        self.chat_messages.clear();
+        self.chat_input.clear();
+        self.chat_loading = false;
+        self.chat_scroll = 9999;
+        self.view = View::Chat;
+
+        if let Some(_api_key) = &self.api_key {
+            self.chat_messages.push(ChatMessage::user(
+                "Briefly introduce yourself and summarise the generated Terraform in 2-3 sentences.",
+            ));
+            self.chat_loading = true;
+            self.start_chat_message().await;
+        }
+    }
+
+    async fn start_chat_message(&mut self) {
+        let Some(api_key) = self.api_key.clone() else {
+            return;
+        };
+        let messages = self.chat_messages.clone();
+        let tf_context = self.chat_tf_context.clone();
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            match crate::ai::chat_with_tf(&messages, &tf_context, &api_key).await {
+                Ok(resp) => {
+                    let _ = tx.send(AppMessage::ChatResponse(resp)).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::ChatError(e.to_string())).await;
+                }
+            }
+        });
+    }
+
+    async fn handle_chat_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') if self.chat_input.is_empty() => {
+                self.should_quit = true;
+            }
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
+                self.view = View::Generator;
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.chat_input.is_empty() => {
+                let max = self.chat_scroll_max.get() as usize;
+                let effective = self.chat_scroll.min(max);
+                self.chat_scroll = effective.saturating_sub(3);
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.chat_input.is_empty() => {
+                let max = self.chat_scroll_max.get() as usize;
+                let effective = self.chat_scroll.min(max);
+                if effective >= max {
+                    self.chat_scroll = 9999;
+                } else {
+                    self.chat_scroll = (effective + 3).min(max);
+                }
+            }
+            KeyCode::Char(c) => {
+                self.chat_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.chat_input.pop();
+            }
+            KeyCode::Enter => {
+                let msg = self.chat_input.trim().to_string();
+                if !msg.is_empty() && !self.chat_loading {
+                    self.chat_input.clear();
+                    self.chat_messages.push(ChatMessage::user(&msg));
+                    self.chat_loading = true;
+                    self.chat_scroll = 9999;
+                    self.start_chat_message().await;
+                }
             }
             _ => {}
         }

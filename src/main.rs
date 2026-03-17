@@ -1,6 +1,7 @@
 mod ai;
 mod app;
 mod migration;
+mod pricing;
 mod terraform;
 mod todo;
 mod ui;
