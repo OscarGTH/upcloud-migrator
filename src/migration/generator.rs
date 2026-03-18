@@ -413,7 +413,14 @@ pub fn generate_files(
                                     let _ = prefix; // prefix not prepended; UpCloud property names are unprefixed
                                     for (name, value) in params {
                                         if is_valid_pg_property(name) {
-                                            out.push_str(&format!("    {} = \"{}\"\n", name, value));
+                                            if name == "max_connections" {
+                                                out.push_str(&format!(
+                                                    "    # max_connections = \"{}\"  # requires pg_user_config_max_connections account permission — uncomment once confirmed\n",
+                                                    value
+                                                ));
+                                            } else {
+                                                out.push_str(&format!("    {} = \"{}\"\n", name, value));
+                                            }
                                         } else {
                                             out.push_str(&format!(
                                                 "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
@@ -1132,7 +1139,7 @@ fn upcloud_attr_for(upcloud_type: &str, aws_attr: &str) -> Option<&'static str> 
         ("upcloud_server", "private_ip") => Some("network_interface[1].ip_address"),
         // upcloud_loadbalancer
         ("upcloud_loadbalancer", "id")       => Some("id"),
-        ("upcloud_loadbalancer", "dns_name") => Some("dns_name"),
+        ("upcloud_loadbalancer", "dns_name") => None, // handled as special case in rewrite_output_refs
         // upcloud_router
         ("upcloud_router", "id") => Some("id"),
         // upcloud_network
@@ -1206,7 +1213,14 @@ fn rewrite_output_refs(s: &str) -> String {
 
         let new_ref = if let Some(upcloud_type) = upcloud_type_for_aws(aws_type) {
             let upcloud_name = upcloud_resource_name_for(aws_type, resource_name);
-            if let Some(upcloud_attr) = upcloud_attr_for(upcloud_type, attr_key) {
+            if upcloud_type == "upcloud_loadbalancer" && attr_key == "dns_name" {
+                // dns_name moved to the per-network block; get the public network's dns_name.
+                format!(
+                    "[for n in {upcloud_type}.{upcloud_name}.networks : n.dns_name if n.type == \"public\"][0]",
+                    upcloud_type = upcloud_type,
+                    upcloud_name = upcloud_name,
+                )
+            } else if let Some(upcloud_attr) = upcloud_attr_for(upcloud_type, attr_key) {
                 format!("{}.{}.{}", upcloud_type, upcloud_name, upcloud_attr)
             } else {
                 format!(
@@ -2619,8 +2633,8 @@ resource "aws_instance" "web" {
         let hcl = "output \"lb\" {\n  value = aws_lb.main.dns_name\n}";
         let rewritten = rewrite_output_refs(hcl);
         assert!(
-            rewritten.contains("upcloud_loadbalancer.main.dns_name"),
-            "lb dns_name should map directly\n{rewritten}"
+            rewritten.contains("[for n in upcloud_loadbalancer.main.networks : n.dns_name if n.type == \"public\"][0]"),
+            "lb dns_name should use for-expression over public network\n{rewritten}"
         );
     }
 

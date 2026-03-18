@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
 use crate::app::App;
@@ -44,7 +44,36 @@ pub fn render(f: &mut Frame, app: &App) {
     render_hints(f, app, chunks[2]);
 }
 
+/// Pre-wrap a content line into chunks that each fit within `available` chars.
+/// Returns at least one entry (possibly empty string for blank lines).
+fn pre_wrap(text: &str, available: usize) -> Vec<String> {
+    if available == 0 {
+        return vec![text.to_string()];
+    }
+    if text.len() <= available {
+        return vec![text.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut remaining = text;
+    while remaining.len() > available {
+        // Find last space within `available` chars to break on a word boundary.
+        let slice = &remaining[..available];
+        let break_at = slice.rfind(' ').unwrap_or(available);
+        result.push(remaining[..break_at].to_string());
+        remaining = remaining[break_at..].trim_start_matches(' ');
+    }
+    if !remaining.is_empty() || result.is_empty() {
+        result.push(remaining.to_string());
+    }
+    result
+}
+
 fn render_messages(f: &mut Frame, app: &App, area: Rect) {
+    // Content width inside the block borders (1 char each side).
+    let content_width = area.width.saturating_sub(2) as usize;
+    // Available width for message text after the 5-space indent.
+    let text_width = content_width.saturating_sub(5).max(1);
+
     let mut lines: Vec<Line> = Vec::new();
 
     if app.chat_messages.is_empty() && !app.chat_loading {
@@ -75,12 +104,10 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
                 ),
             ]));
             for content_line in msg.content.lines() {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("     {}", content_line),
-                        Style::default().fg(USER_FG).bg(USER_BG),
-                    ),
-                ]));
+                let style = Style::default().fg(USER_FG).bg(USER_BG);
+                for chunk in pre_wrap(content_line, text_width) {
+                    lines.push(Line::from(Span::styled(format!("     {}", chunk), style)));
+                }
             }
         } else {
             // AI header: vivid magenta on dark purple
@@ -95,32 +122,25 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
             ]));
             for content_line in msg.content.lines() {
                 // Highlight code blocks differently (lines starting with ``` or indented 4 spaces)
-                let (text, style) = if content_line.starts_with("```")
+                let style = if content_line.starts_with("```")
                     || content_line.starts_with("    ")
                 {
-                    (
-                        format!("     {}", content_line),
-                        Style::default()
-                            .fg(Color::Rgb(185, 145, 255))
-                            .bg(Color::Rgb(15, 6, 30)),
-                    )
+                    Style::default()
+                        .fg(Color::Rgb(185, 145, 255))
+                        .bg(Color::Rgb(15, 6, 30))
                 } else if content_line.trim_start().starts_with('#')
                     || content_line.trim_start().starts_with("**")
                 {
-                    (
-                        format!("     {}", content_line),
-                        Style::default()
-                            .fg(Color::Rgb(255, 200, 80))
-                            .bg(AI_BG)
-                            .add_modifier(Modifier::BOLD),
-                    )
+                    Style::default()
+                        .fg(Color::Rgb(255, 200, 80))
+                        .bg(AI_BG)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    (
-                        format!("     {}", content_line),
-                        Style::default().fg(AI_FG).bg(AI_BG),
-                    )
+                    Style::default().fg(AI_FG).bg(AI_BG)
                 };
-                lines.push(Line::from(Span::styled(text, style)));
+                for chunk in pre_wrap(content_line, text_width) {
+                    lines.push(Line::from(Span::styled(format!("     {}", chunk), style)));
+                }
             }
         }
         lines.push(Line::from(""));
@@ -140,17 +160,8 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    // Estimate wrapped line count for scroll calculation.
-    // Each logical line wraps based on content width (inner width - 2 for borders - 5 indent).
-    let inner_width = area.width.saturating_sub(4).max(1) as usize;
-    let rendered_rows: u16 = lines
-        .iter()
-        .map(|l| {
-            let len: usize = l.spans.iter().map(|s| s.content.len()).sum();
-            ((len.max(1) + inner_width - 1) / inner_width) as u16
-        })
-        .sum();
-
+    // Row count is now exact: each Line renders as exactly 1 row since we pre-wrapped.
+    let rendered_rows = lines.len() as u16;
     let visible = area.height.saturating_sub(2);
     let max_scroll = rendered_rows.saturating_sub(visible);
     app.chat_scroll_max.set(max_scroll);
@@ -172,7 +183,6 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Rgb(100, 60, 140)),
                 )),
         )
-        .wrap(Wrap { trim: false })
         .scroll((scroll_y, 0));
 
     f.render_widget(para, area);

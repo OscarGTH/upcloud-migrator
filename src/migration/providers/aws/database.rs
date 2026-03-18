@@ -440,27 +440,22 @@ pub fn map_db_parameter_group(res: &TerraformResource) -> MigrationResult {
 
     let params = extract_parameter_blocks(&res.raw_hcl);
 
-    let mut lines = vec![
-        format!("# aws_db_parameter_group \"{}\" (family: {}) has no standalone UpCloud resource.", res.name, family),
-        format!("# Add these parameters to the properties {{}} block of your {} resource:", db_type),
-        "#".into(),
-        "#   properties {".into(),
-        "#     public_access = false".into(),
-    ];
-    if params.is_empty() {
-        lines.push(format!("#     # <TODO: migrate {} parameters manually>", props_prefix));
-    } else {
-        for (name, value) in &params {
-            if is_valid_pg_property(name) {
-                lines.push(format!("#     {} = \"{}\"", name, value));
-            } else {
-                lines.push(format!("#     # {} = \"{}\"  — not a valid upcloud_managed_database_postgresql property; migrate manually", name, value));
-            }
-        }
-    }
-    lines.push("#   }".into());
+    let (valid, invalid): (Vec<_>, Vec<_>) = params.iter().partition(|(n, _)| is_valid_pg_property(n));
 
-    let hcl = lines.join("\n");
+    let mut notes = vec![
+        format!(
+            "No standalone UpCloud equivalent — {} parameter(s) merged inline into the target {} properties block.",
+            params.len(), db_type
+        ),
+    ];
+    if !invalid.is_empty() {
+        notes.push(format!(
+            "{} unsupported parameter(s) commented out: {}",
+            invalid.len(),
+            invalid.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let _ = (valid, props_prefix); // used only for notes above
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -469,13 +464,10 @@ pub fn map_db_parameter_group(res: &TerraformResource) -> MigrationResult {
         status: MigrationStatus::Partial,
         score: 40,
         upcloud_type: format!("({} parameters → properties block)", props_prefix),
-        upcloud_hcl: Some(hcl),
+        upcloud_hcl: None, // no standalone output — parameters are injected inline via __DB_PROPS marker
         snippet: None,
         parent_resource: None,
-        notes: vec![
-            format!("aws_db_parameter_group has no UpCloud equivalent resource (family: {}).", family),
-            format!("Add the {} properties shown above to your {} resource.", params.len(), db_type),
-        ],
+        notes,
         source_hcl: None,
     }
 }

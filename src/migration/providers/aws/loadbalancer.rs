@@ -177,8 +177,7 @@ mod tests {
         let hcl = map_lb_listener(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_loadbalancer_frontend_rule"), "redirect must generate a frontend rule\n{hcl}");
         assert!(hcl.contains("http_redirect"), "{hcl}");
-        assert!(hcl.contains("https://"), "redirect target must use https\n{hcl}");
-        assert!(hcl.contains(":443"), "redirect target must include port 443\n{hcl}");
+        assert!(hcl.contains("scheme = \"https\""), "redirect must use scheme not location\n{hcl}");
     }
 
     #[test]
@@ -477,9 +476,6 @@ pub fn map_lb_listener(res: &TerraformResource) -> MigrationResult {
     // performs the redirect. UpCloud uses upcloud_loadbalancer_frontend_rule with
     // an http_redirect action (HAProxy location string).
     if is_redirect {
-        let redirect_port = res.attributes.get("default_action.redirect.port")
-            .map(|v| v.trim_matches('"'))
-            .unwrap_or("443");
         let redirect_proto = res.attributes.get("default_action.redirect.protocol")
             .map(|v| v.trim_matches('"').to_lowercase())
             .unwrap_or_else(|| "https".into());
@@ -492,14 +488,13 @@ resource "upcloud_loadbalancer_frontend_rule" "{name}_redirect" {{
 
   actions {{
     http_redirect {{
-      location = "{proto}://{{{{req.hdr(host)}}}}:{port}{{{{req.path}}}}"
+      scheme = "{proto}"
     }}
   }}
 }}
 "#,
             name = res.name,
             proto = redirect_proto,
-            port = redirect_port,
         ));
     }
 

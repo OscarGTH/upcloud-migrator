@@ -322,8 +322,8 @@ pub fn map_efs_file_system(res: &TerraformResource) -> MigrationResult {
     let hcl = format!(
         r#"resource "upcloud_file_storage" "{name}" {{
   name              = "{name}"
-  size              = 100  # set appropriate size in GiB
-  zone              = "__ZONE__"
+  size              = 250  # minimum 250 GiB; set appropriate size
+  zone              = "__ZONE__"  # NOTE: File Storage is not available in all zones (e.g. fi-hel1); use fi-hel2 if your zone is unsupported
   configured_status = "started"
 }}
 "#,

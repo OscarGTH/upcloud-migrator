@@ -140,7 +140,6 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     // For <<-MARKER heredocs we normalise the closing marker indentation to match
     // the content, so HCL's indentation-stripping leaves nested bash heredoc
     // closers (like `HTML` or `NGINX`) at column 0 where bash expects them.
-    let has_user_data = res.attributes.contains_key("user_data");
     let user_data_raw = res.attributes.get("user_data").map(|v| v.as_str());
     // Scan user_data for AWS-specific patterns that won't work on UpCloud
     let aws_ud_patterns: &[(&str, &str)] = &[
@@ -166,8 +165,9 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         .map(|v| format!("\n{}  user_data = {}", ud_warning_comment, normalize_heredoc(v)))
         .unwrap_or_default();
 
-    // metadata must be true when using cloud-init / user_data (provider docs requirement).
-    let metadata_line = if has_user_data { "\n  metadata  = true" } else { "" };
+    // metadata must always be true when using cloud-init templates (Ubuntu 24.04 is cloud-init).
+    // Without it, UpCloud returns METADATA_DISABLED_ON_CLOUD-INIT (409).
+    let metadata_line = "\n  metadata  = true";
 
     // For expression plans (var.xxx) the value must not be quoted.
     let plan_line = if is_expr {
@@ -595,10 +595,10 @@ mod tests {
     }
 
     #[test]
-    fn instance_without_user_data_omits_metadata() {
+    fn instance_always_has_metadata_true() {
         let res = make_res("aws_instance", "web", &[("instance_type", "t3.micro")]);
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
-        assert!(!hcl.contains("metadata"), "metadata must not appear when user_data is absent\n{hcl}");
+        assert!(hcl.contains("metadata  = true"), "metadata must always be true (Ubuntu 24.04 is cloud-init)\n{hcl}");
     }
 
     #[test]

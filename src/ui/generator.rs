@@ -358,8 +358,14 @@ fn render_generation_view(f: &mut Frame, app: &App) {
     let log_lines: Vec<Line> = app
         .gen_log
         .iter()
+        .filter(|line| {
+            line.starts_with(">>")
+                || line.contains("[OK]")
+                || line.contains("[ERR]")
+                || line.contains("[terraform fmt]")
+        })
         .map(|line| {
-            let style = if line.contains("[OK]") {
+            let style = if line.contains("[OK]") || line.contains("[terraform fmt] OK") {
                 theme::success()
             } else if line.contains("[ERR]") {
                 theme::danger()

@@ -21,6 +21,15 @@ resource "aws_instance" "web" {
     aws_security_group.monitoring.id,
   ]
 
+  user_data = <<-EOF
+    #!/bin/bash
+    apt-get update -y
+    apt-get install -y docker.io
+    systemctl enable --now docker
+    docker run -d -p 80:80 --name hello --restart always \
+      nginxdemos/hello:plain-text
+  EOF
+
   root_block_device {
     volume_size = 20
     volume_type = "gp3"
