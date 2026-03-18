@@ -1,17 +1,19 @@
 use ratatui::style::{Color, Modifier, Style};
 
-// Cyberpunk neon palette (RGB)
-pub const PRIMARY:  Color = Color::Rgb(0,   210, 255); // electric cyan
-pub const ACCENT:   Color = Color::Rgb(200,  0,  255); // hot magenta
+// UpCloud purple palette (RGB)
+pub const PRIMARY:  Color = Color::Rgb(160, 100, 255); // light purple (was electric cyan)
+pub const ACCENT:   Color = Color::Rgb(200,  0,  255); // hot magenta-purple
 pub const SUCCESS:  Color = Color::Rgb(0,   255, 120); // neon green
 pub const WARNING:  Color = Color::Rgb(255, 200,   0); // electric amber
 pub const DANGER:   Color = Color::Rgb(255,  50,  80); // hot red
-pub const DIM:      Color = Color::Rgb( 80,  90, 110); // muted slate
-pub const MUTED:    Color = Color::Rgb(130, 140, 160); // mid tone
+pub const DIM:      Color = Color::Rgb( 75,  60, 105); // muted purple-slate
+pub const MUTED:    Color = Color::Rgb(145, 125, 175); // lavender mid-tone
 pub const WHITE:    Color = Color::Rgb(210, 220, 240); // cool white
-pub const HCL_KEY:  Color = Color::Rgb(130, 200, 255); // soft cyan for HCL keys
-pub const HCL_VAL:  Color = Color::Rgb(255, 200,  80); // amber for HCL values
-pub const HCL_KW:   Color = Color::Rgb(200,  80, 255); // magenta for keywords
+pub const HCL_KEY:    Color = Color::Rgb(185, 145, 255); // lavender for HCL keys (was soft cyan)
+pub const HCL_VAL:    Color = Color::Rgb(255, 200,  80); // amber for HCL values
+pub const HCL_KW:     Color = Color::Rgb(200,  80, 255); // magenta for keywords
+pub const UPCLOUD_PURPLE: Color = Color::Rgb(123, 0, 255); // UpCloud brand purple #7b00ff
+pub const UPCLOUD_SPARKLE: Color = Color::Rgb(200, 140, 255); // bright sparkle tint
 
 pub fn primary()      -> Style { Style::default().fg(PRIMARY) }
 pub fn accent()       -> Style { Style::default().fg(ACCENT) }
@@ -67,20 +69,25 @@ pub fn spinner(tick: u64) -> &'static str {
     SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()]
 }
 
-pub const ASCII_LOGO: &[&str] = &[
-    "██╗   ██╗██████╗  ██████╗██╗      ██████╗ ██╗   ██╗██████╗",
-    "██║   ██║██╔══██╗██╔════╝██║     ██╔═══██╗██║   ██║██╔══██╗",
-    "██║   ██║██████╔╝██║     ██║     ██║   ██║██║   ██║██║  ██║",
-    "██║   ██║██╔═══╝ ██║     ██║     ██║   ██║██║   ██║██║  ██║",
-    "╚██████╔╝██║     ╚██████╗███████╗╚██████╔╝╚██████╔╝██████╔╝",
-    " ╚═════╝ ╚═╝      ╚═════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝",
-    "",
-    "   ███╗   ███╗██╗ ██████╗ ██████╗  █████╗ ████████╗███████╗",
-    "   ████╗ ████║██║██╔════╝ ██╔══██╗██╔══██╗╚══██╔══╝██╔════╝",
-    "   ██╔████╔██║██║██║  ███╗██████╔╝███████║   ██║   █████╗  ",
-    "   ██║╚██╔╝██║██║██║   ██║██╔══██╗██╔══██║   ██║   ██╔══╝  ",
-    "   ██║ ╚═╝ ██║██║╚██████╔╝██║  ██║██║  ██║   ██║   ███████╗",
-    "   ╚═╝     ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚══════╝",
+/// UpCloud brand logo (34 lines of raw ASCII)
+pub const UPCLOUD_LOGO: &[&str] = &[
+    "                                    ################################                                ",
+    "                                    ###################################                             ",
+    "                                                                ########                            ",
+    "                                                                 ########                           ",
+    "                                                              ##########                            ",
+    "     #################################################################                              ",
+    "  ###############################################################                                   ",
+    "#########                                                                                           ",
+    "########                                                                                            ",
+    " #########                                                                                          ",
+    "   #########################         ########        ##########################################     ",
+    "        ####################         ########        #############################################  ",
+    "                                     ########                                              #########",
+    "                                     ########                                               ########",
+    "                                     ########                                            ########## ",
+    "                                     ############################################################   ",
+    "                                     #######################################################        ",
 ];
 
 /// Simple line-by-line HCL syntax highlighter.

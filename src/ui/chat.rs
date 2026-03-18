@@ -12,7 +12,7 @@ use crate::ui::theme::*;
 // Distinct colors for the chat UI
 const USER_BG:   Color = Color::Rgb(10, 20, 45);   // deep navy for user messages
 const AI_BG:     Color = Color::Rgb(15, 8,  30);   // deep purple for AI messages
-const USER_FG:   Color = Color::Rgb(160, 220, 255); // light blue text
+const USER_FG:   Color = Color::Rgb(200, 170, 255); // light lavender text
 const AI_FG:     Color = Color::Rgb(220, 180, 255); // light magenta text
 const AI_BORDER: Color = Color::Rgb(120, 0, 200);   // vivid purple border
 
@@ -64,12 +64,12 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
 
     for msg in &app.chat_messages {
         if msg.is_user {
-            // User header: bold electric cyan on dark navy
+            // User header: bold light purple on dark navy
             lines.push(Line::from(vec![
                 Span::styled(
                     "  ▶ YOU ",
                     Style::default()
-                        .fg(Color::Rgb(0, 200, 255))
+                        .fg(Color::Rgb(160, 100, 255))
                         .bg(USER_BG)
                         .add_modifier(Modifier::BOLD),
                 ),
@@ -101,8 +101,8 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
                     (
                         format!("     {}", content_line),
                         Style::default()
-                            .fg(Color::Rgb(130, 200, 255))
-                            .bg(Color::Rgb(8, 4, 20)),
+                            .fg(Color::Rgb(185, 145, 255))
+                            .bg(Color::Rgb(15, 6, 30)),
                     )
                 } else if content_line.trim_start().starts_with('#')
                     || content_line.trim_start().starts_with("**")
@@ -185,9 +185,9 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
     } else {
         (
             Style::default()
-                .fg(Color::Rgb(0, 200, 255))
+                .fg(Color::Rgb(160, 100, 255))
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::Rgb(0, 180, 220)),
+            Style::default().fg(Color::Rgb(130, 70, 220)),
         )
     };
 
@@ -196,7 +196,7 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Span::styled(
             format!(" {}{}", app.chat_input, cursor),
-            Style::default().fg(Color::Rgb(200, 230, 255)),
+            Style::default().fg(Color::Rgb(220, 205, 255)),
         )
     };
 

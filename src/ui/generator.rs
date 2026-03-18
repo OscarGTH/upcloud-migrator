@@ -179,15 +179,15 @@ fn rain_cell(col: u16, row: u16, tick: u64, height: u16, victory: bool) -> (char
 
     // Head is bright white; trail fades to near-black.
     let color = if victory {
-        // Cyan/teal rain on victory.
+        // Purple rain on victory.
         match dist {
             0 => Color::Rgb(255, 255, 255),
-            1 => Color::Rgb(0, 210, 255),
-            2 => Color::Rgb(0, 170, 210),
-            3 => Color::Rgb(0, 130, 170),
-            4 => Color::Rgb(0, 90, 130),
-            5 | 6 => Color::Rgb(0, 55, 80),
-            _ => Color::Rgb(0, 25, 40),
+            1 => Color::Rgb(160, 100, 255),
+            2 => Color::Rgb(120,  65, 220),
+            3 => Color::Rgb( 90,  40, 180),
+            4 => Color::Rgb( 65,  20, 140),
+            5 | 6 => Color::Rgb(40, 10, 100),
+            _ => Color::Rgb(22, 5, 60),
         }
     } else {
         // Classic green Matrix rain during generation.
