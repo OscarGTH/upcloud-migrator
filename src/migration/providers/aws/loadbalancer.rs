@@ -280,8 +280,10 @@ mod tests {
     fn acm_cert_has_certificate_and_private_key_todos() {
         let res = make_res("aws_acm_certificate", "cert", &[]);
         let hcl = map_acm_certificate(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("<TODO: base64 encoded certificate>"), "{hcl}");
-        assert!(hcl.contains("<TODO: base64 encoded private key>"), "{hcl}");
+        assert!(hcl.contains("base64encode(file("), "{hcl}");
+        assert!(hcl.contains("<TODO: path to certificate PEM file>"), "{hcl}");
+        assert!(hcl.contains("<TODO: path to private key PEM file>"), "{hcl}");
+        assert!(hcl.contains("# NOTE: certificate and private_key must be base64-encoded"), "{hcl}");
     }
 
     #[test]
@@ -652,10 +654,14 @@ pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResul
 
 pub fn map_acm_certificate(res: &TerraformResource) -> MigrationResult {
     let hcl = format!(
-        r#"resource "upcloud_loadbalancer_manual_certificate_bundle" "{name}" {{
+        r#"# NOTE: certificate and private_key must be base64-encoded file contents.
+# Export your cert/key from ACM first, then use:
+#   certificate = base64encode(file(var.certificate_path))
+#   private_key = base64encode(file(var.private_key_path))
+resource "upcloud_loadbalancer_manual_certificate_bundle" "{name}" {{
   name        = "{name}"
-  certificate = "<TODO: base64 encoded certificate>"
-  private_key = "<TODO: base64 encoded private key>"
+  certificate = base64encode(file("<TODO: path to certificate PEM file>"))
+  private_key = base64encode(file("<TODO: path to private key PEM file>"))
 }}
 "#,
         name = res.name,
@@ -673,7 +679,7 @@ pub fn map_acm_certificate(res: &TerraformResource) -> MigrationResult {
         parent_resource: None,
         notes: vec![
             "ACM → UpCloud manual cert bundle. Export cert/key from ACM first.".into(),
-            "No automatic certificate provisioning equivalent.".into(),
+            "certificate and private_key must be base64encode(file(...)) expressions.".into(),
         ],
         source_hcl: None,
     }

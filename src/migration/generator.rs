@@ -212,6 +212,10 @@ pub fn generate_files(
 
     // storage_inject_map: server_resource_name → Vec<storage_devices block>
     let mut storage_inject_map: HashMap<String, Vec<String>> = HashMap::new();
+    // storage_promote_count: storage_name → count_value
+    // When a server has count but its attached storage does not, promote count onto the storage
+    // so each server instance gets its own dedicated storage device.
+    let mut storage_promote_count: HashMap<String, String> = HashMap::new();
     for r in results.iter().filter(|r| r.resource_type == "aws_volume_attachment") {
         let server_name = match r.parent_resource.as_deref() {
             Some(n) if !n.is_empty() => n.to_string(),
@@ -229,9 +233,16 @@ pub fn generate_files(
             Some(n) => n,
             None => continue,
         };
-        let server_has_count = server_info_map.get(&server_name).map(|c| c.is_some()).unwrap_or(false);
+        let server_count_val = server_info_map.get(&server_name).and_then(|c| c.clone());
+        let server_has_count = server_count_val.is_some();
         let storage_has_count = storage_count_map.get(&storage_name).copied().unwrap_or(false);
-        let storage_ref = if storage_has_count && server_has_count {
+        let storage_ref = if server_has_count && !storage_has_count {
+            // Storage needs count promoted from the server
+            if let Some(ref count_val) = server_count_val {
+                storage_promote_count.insert(storage_name.clone(), count_val.clone());
+            }
+            format!("upcloud_storage.{}[count.index].id", storage_name)
+        } else if storage_has_count && server_has_count {
             format!("upcloud_storage.{}[count.index].id", storage_name)
         } else if storage_has_count {
             format!("upcloud_storage.{}[0].id", storage_name)
@@ -770,6 +781,29 @@ provider "upcloud" {
                 log.push(format!("  [INJECT] storage_devices → upcloud_server.{}", server_name));
             }
         }
+        // Promote count onto storage resources that are attached to counted servers.
+        // This ensures each server instance gets its own dedicated storage device.
+        for (storage_name, count_val) in &storage_promote_count {
+            let header = format!("resource \"upcloud_storage\" \"{}\" {{", storage_name);
+            if let Some(pos) = content.find(&header) {
+                let after_brace = pos + header.len();
+                // Find the existing title line and update it to include count.index
+                let old_title = format!("title = \"{}\"", storage_name);
+                let new_title = format!("title = \"{}_${{count.index + 1}}\"", storage_name);
+                // Insert count after the opening brace and update the title
+                let count_line = format!("\n  count = {}", count_val);
+                content.insert_str(after_brace, &count_line);
+                content = content.replace(&old_title, &new_title);
+                // Insert a NOTE comment before the resource
+                let note = format!("# NOTE: One storage device per server instance (count = {})\n", count_val);
+                content = content.replacen(&header, &format!("{}{}", note, header), 1);
+                log.push(format!(
+                    "  [PROMOTE] count = {} → upcloud_storage.{} (one per server instance)",
+                    count_val, storage_name
+                ));
+            }
+        }
+
         // Remove any uninjected sentinels (servers with no attachments)
         let content_cleaned: String = content.lines()
             .filter(|l| !l.trim_start().starts_with("# __STORAGE_END_"))
@@ -2974,6 +3008,69 @@ output "server_id" {
         assert!(
             !output.contains("__STORAGE_END_"),
             "sentinel must be removed after injection\n{output}"
+        );
+    }
+
+    #[test]
+    fn storage_count_promoted_when_server_has_count_but_storage_does_not() {
+        use crate::migration::providers::aws::{compute::map_instance, storage::{map_ebs_volume, map_volume_attachment}};
+        use crate::terraform::types::TerraformResource;
+        use std::path::PathBuf;
+
+        let make = |rt: &str, name: &str, attrs: &[(&str, &str)]| TerraformResource {
+            resource_type: rt.to_string(),
+            name: name.to_string(),
+            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            source_file: PathBuf::from("main.tf"),
+            raw_hcl: String::new(),
+        };
+
+        // Server with count = 2
+        let srv_res = make("aws_instance", "api", &[
+            ("instance_type", "t3.micro"),
+            ("count", "2"),
+            ("subnet_id", "aws_subnet.private.id"),
+        ]);
+        let mut srv_result = map_instance(&srv_res);
+        srv_result.source_hcl = Some(srv_result.upcloud_hcl.clone().unwrap());
+
+        // EBS volume WITHOUT count (single volume in AWS, attached to api[0])
+        let vol_res = make("aws_ebs_volume", "api_data", &[("type", "gp3"), ("size", "200")]);
+        let vol_result = map_ebs_volume(&vol_res);
+
+        // Attachment: volume → api[0]
+        let att_res = make("aws_volume_attachment", "api_data", &[
+            ("volume_id", "aws_ebs_volume.api_data.id"),
+            ("instance_id", "aws_instance.api[0].id"),
+        ]);
+        let att_result = map_volume_attachment(&att_res);
+
+        let out_dir = std::env::temp_dir().join("upcloud_storage_promote_count_test");
+        let mut log = vec![];
+        generate_files(&[srv_result, vol_result, att_result], &[], &out_dir, None, "fi-hel1", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("main.tf")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        // Storage must now have count = 2
+        assert!(
+            output.contains("resource \"upcloud_storage\" \"api_data\"")
+                && output.contains("count = 2"),
+            "storage must have count promoted from server\n{output}\nlog: {:?}", log
+        );
+        // Title must be indexed
+        assert!(
+            output.contains("title = \"api_data_${count.index + 1}\""),
+            "storage title must include count.index\n{output}"
+        );
+        // storage_devices must reference with [count.index]
+        assert!(
+            output.contains("upcloud_storage.api_data[count.index].id"),
+            "storage_devices ref must use count.index\n{output}"
+        );
+        // Log must show promotion
+        assert!(
+            log.iter().any(|l| l.contains("[PROMOTE]")),
+            "log must contain PROMOTE entry\nlog: {:?}", log
         );
     }
 }
