@@ -1,0 +1,1 @@
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ6r8w1zJpT8jmpfd5leJKokMc0A0dFfeZq/L9qQVRmY oskupersonal@oskuoskuosku.local"
