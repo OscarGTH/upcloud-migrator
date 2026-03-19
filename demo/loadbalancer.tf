@@ -28,12 +28,12 @@ resource "aws_lb" "main" {
 
 resource "aws_lb_target_group" "web" {
   name     = "saas-web-tg"
-  port     = 8080
+  port     = 80
   protocol = "HTTP"
   vpc_id   = aws_vpc.main.id
 
   health_check {
-    path                = "/healthz"
+    path                = "/"
     matcher             = "200"
     healthy_threshold   = 2
     unhealthy_threshold = 3
@@ -46,13 +46,13 @@ resource "aws_lb_target_group" "web" {
 resource "aws_lb_target_group_attachment" "web_1" {
   target_group_arn = aws_lb_target_group.web.arn
   target_id        = aws_instance.web[0].id
-  port             = 8080
+  port             = 80
 }
 
 resource "aws_lb_target_group_attachment" "web_2" {
   target_group_arn = aws_lb_target_group.web.arn
   target_id        = aws_instance.web[1].id
-  port             = 8080
+  port             = 80
 }
 
 # HTTP listener — redirects to HTTPS
