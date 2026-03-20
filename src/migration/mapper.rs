@@ -1,5 +1,5 @@
-use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::migration::providers::aws;
+use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
 pub fn map_resource(res: &TerraformResource) -> MigrationResult {
@@ -17,7 +17,10 @@ pub fn map_resource(res: &TerraformResource) -> MigrationResult {
             upcloud_hcl: None,
             snippet: None,
             parent_resource: None,
-            notes: vec![format!("Provider not recognized for resource type '{}'", rt)],
+            notes: vec![format!(
+                "Provider not recognized for resource type '{}'",
+                rt
+            )],
             source_hcl: None,
         }
     };
@@ -52,7 +55,9 @@ fn map_aws(res: &TerraformResource) -> MigrationResult {
 
         // Load Balancers
         "aws_lb" | "aws_alb" => aws::loadbalancer::map_lb(res),
-        "aws_lb_target_group" | "aws_alb_target_group" => aws::loadbalancer::map_lb_target_group(res),
+        "aws_lb_target_group" | "aws_alb_target_group" => {
+            aws::loadbalancer::map_lb_target_group(res)
+        }
         "aws_lb_listener" | "aws_alb_listener" => aws::loadbalancer::map_lb_listener(res),
         "aws_lb_target_group_attachment" | "aws_alb_target_group_attachment" => {
             aws::loadbalancer::map_lb_target_group_attachment(res)
@@ -71,8 +76,12 @@ fn map_aws(res: &TerraformResource) -> MigrationResult {
         "aws_elasticache_parameter_group" => aws::database::map_elasticache_parameter_group(res),
 
         // Kubernetes (not supported in this MVP)
-        "aws_eks_cluster" | "aws_eks_node_group" | "aws_eks_fargate_profile"
-        | "aws_eks_addon" => unsupported(res, "(EKS not supported — use upcloud_kubernetes_cluster manually)"),
+        "aws_eks_cluster" | "aws_eks_node_group" | "aws_eks_fargate_profile" | "aws_eks_addon" => {
+            unsupported(
+                res,
+                "(EKS not supported — use upcloud_kubernetes_cluster manually)",
+            )
+        }
 
         // Unsupported
         "aws_iam_role"
@@ -118,7 +127,10 @@ fn map_aws(res: &TerraformResource) -> MigrationResult {
             upcloud_hcl: None,
             snippet: None,
             parent_resource: None,
-            notes: vec![format!("AWS resource '{}' has no defined mapping yet", res.resource_type)],
+            notes: vec![format!(
+                "AWS resource '{}' has no defined mapping yet",
+                res.resource_type
+            )],
             source_hcl: None,
         },
     }
@@ -138,7 +150,7 @@ fn unsupported(res: &TerraformResource, reason: &str) -> MigrationResult {
             "'{}' has no UpCloud equivalent. Manual migration required.",
             res.resource_type
         )],
-            source_hcl: None,
+        source_hcl: None,
     }
 }
 
@@ -153,6 +165,6 @@ fn partial_dns(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec!["DNS must be managed outside Terraform or via a separate DNS provider".into()],
-            source_hcl: None,
+        source_hcl: None,
     }
 }

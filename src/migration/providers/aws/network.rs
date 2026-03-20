@@ -30,7 +30,9 @@ pub fn map_vpc(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
-    let cidr = res.attributes.get("cidr_block")
+    let cidr = res
+        .attributes
+        .get("cidr_block")
         .map(|c| c.trim_matches('"').to_string())
         .unwrap_or_else(|| "10.0.1.0/24".into());
 
@@ -46,15 +48,19 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
     });
 
     // Reference the router created by the parent VPC mapping
-    let router_ref = vpc_name.as_deref()
+    let router_ref = vpc_name
+        .as_deref()
         .map(|n| format!("upcloud_router.{}_router.id", n))
         .unwrap_or_else(|| "\"<TODO: router id>\"".to_string());
 
     // Propagate count if the source subnet used count (e.g. count = 2 with dynamic CIDRs)
-    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
+    let count_attr = res
+        .attributes
+        .get("count")
+        .map(|v| v.trim_matches('"').to_string());
     let count_line = match &count_attr {
         Some(n) => format!("  count = {}\n", n),
-        None    => String::new(),
+        None => String::new(),
     };
     // With count the name must be unique per instance
     let name_val = if count_attr.is_some() {
@@ -98,7 +104,9 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
             let mut n = vec![
                 "AWS Subnet → upcloud_network (private SDN; public internet via server network_interface type=public).".into(),
             ];
-            let is_public = res.attributes.get("map_public_ip_on_launch")
+            let is_public = res
+                .attributes
+                .get("map_public_ip_on_launch")
                 .map(|v| v.trim_matches('"') == "true")
                 .unwrap_or(false);
             if is_public {
@@ -123,8 +131,12 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
             has_egress_allow_all = true;
         }
         rule_blocks.push_str(&build_firewall_rule(
-            direction, *from_port, *to_port, protocol,
-            description.as_deref(), *is_all_traffic,
+            direction,
+            *from_port,
+            *to_port,
+            protocol,
+            description.as_deref(),
+            *is_all_traffic,
         ));
         rule_blocks.push('\n');
     }
@@ -154,7 +166,10 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
     if rules.is_empty() {
         notes.push("No ingress/egress rules — add firewall_rule blocks manually.".into());
     } else {
-        notes.push(format!("{} rule(s) auto-generated from source ingress/egress blocks.", rules.len()));
+        notes.push(format!(
+            "{} rule(s) auto-generated from source ingress/egress blocks.",
+            rules.len()
+        ));
     }
     notes.push("server_id auto-resolved from vpc_security_group_ids on the instance.".into());
 
@@ -214,7 +229,14 @@ fn parse_sg_rules(raw_hcl: &str) -> Vec<(String, i32, i32, String, Option<String
             }
 
             let is_all_traffic = protocol == "-1" || (from_port == 0 && to_port == 0);
-            rules.push((direction.to_string(), from_port, to_port, protocol, description, is_all_traffic && cidr_all));
+            rules.push((
+                direction.to_string(),
+                from_port,
+                to_port,
+                protocol,
+                description,
+                is_all_traffic && cidr_all,
+            ));
         }
     }
     rules
@@ -257,17 +279,24 @@ fn build_firewall_rule(
     s
 }
 
-
 pub fn map_eip_association(res: &TerraformResource) -> MigrationResult {
     // aws_eip_association links an EIP to an instance/interface.
     // UpCloud equivalent: set mac_address on upcloud_floating_ip_address.
     let eip_name = res.attributes.get("allocation_id").and_then(|v| {
         let v = v.trim_matches('"');
-        if v.starts_with("aws_eip.") { v.split('.').nth(1).map(str::to_string) } else { None }
+        if v.starts_with("aws_eip.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
     });
     let instance_name = res.attributes.get("instance_id").and_then(|v| {
         let v = v.trim_matches('"');
-        if v.starts_with("aws_instance.") { v.split('.').nth(1).map(str::to_string) } else { None }
+        if v.starts_with("aws_instance.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
     });
 
     let snippet = match (&eip_name, &instance_name) {
@@ -337,13 +366,16 @@ pub fn map_route_table(res: &TerraformResource) -> MigrationResult {
     // If the route table only contains default routes (0.0.0.0/0), no action is needed —
     // UpCloud Router provides internet routing and NAT automatically.
     // Only generate a static_route snippet for non-default (custom) routes.
-    let has_custom_route = !res.raw_hcl.is_empty() && res.raw_hcl.lines().any(|line| {
-        let t = line.trim();
-        if !t.starts_with("cidr_block") { return false; }
-        // Extract the value: cidr_block = "X.X.X.X/Y"
-        let val = t.split('"').nth(1).unwrap_or("");
-        !val.is_empty() && val != "0.0.0.0/0" && !val.starts_with(':')
-    });
+    let has_custom_route = !res.raw_hcl.is_empty()
+        && res.raw_hcl.lines().any(|line| {
+            let t = line.trim();
+            if !t.starts_with("cidr_block") {
+                return false;
+            }
+            // Extract the value: cidr_block = "X.X.X.X/Y"
+            let val = t.split('"').nth(1).unwrap_or("");
+            !val.is_empty() && val != "0.0.0.0/0" && !val.starts_with(':')
+        });
 
     if has_custom_route {
         let snippet = format!(
@@ -413,7 +445,10 @@ pub fn map_eip(res: &TerraformResource) -> MigrationResult {
             inst = inst,
         );
         let n = vec![
-            format!("EIP → upcloud_floating_ip_address attached to upcloud_server.{}.", inst),
+            format!(
+                "EIP → upcloud_floating_ip_address attached to upcloud_server.{}.",
+                inst
+            ),
             "mac_address auto-resolved from aws_eip.instance attribute.".into(),
         ];
         (h, n)
@@ -448,8 +483,6 @@ pub fn map_eip(res: &TerraformResource) -> MigrationResult {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,7 +492,10 @@ mod tests {
         TerraformResource {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("test.tf"),
             raw_hcl: String::new(),
         }
@@ -473,41 +509,61 @@ mod tests {
         let r = map_vpc(&res);
         assert_eq!(r.upcloud_type, "upcloud_router");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_router\" \"main_router\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_router\" \"main_router\""),
+            "{hcl}"
+        );
         // must NOT generate an upcloud_network block (only 1 ip_network allowed per network)
-        assert!(!hcl.contains("upcloud_network"), "VPC must not produce an upcloud_network\n{hcl}");
+        assert!(
+            !hcl.contains("upcloud_network"),
+            "VPC must not produce an upcloud_network\n{hcl}"
+        );
         assert!(!hcl.contains("ip_network"), "{hcl}");
     }
 
     #[test]
     fn vpc_status_is_compatible() {
         let res = make_res("aws_vpc", "main", &[]);
-        assert_eq!(map_vpc(&res).status, crate::migration::types::MigrationStatus::Compatible);
+        assert_eq!(
+            map_vpc(&res).status,
+            crate::migration::types::MigrationStatus::Compatible
+        );
     }
 
     // ── map_subnet ────────────────────────────────────────────────────────────
 
     #[test]
     fn subnet_generates_standalone_upcloud_network() {
-        let res = make_res("aws_subnet", "pub", &[
-            ("cidr_block", "10.0.1.0/24"),
-            ("vpc_id", "aws_vpc.main.id"),
-        ]);
+        let res = make_res(
+            "aws_subnet",
+            "pub",
+            &[("cidr_block", "10.0.1.0/24"), ("vpc_id", "aws_vpc.main.id")],
+        );
         let r = map_subnet(&res);
         assert_eq!(r.upcloud_type, "upcloud_network");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_network\" \"pub\""), "{hcl}");
-        assert!(hcl.contains("address            = \"10.0.1.0/24\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_network\" \"pub\""),
+            "{hcl}"
+        );
+        assert!(
+            hcl.contains("address            = \"10.0.1.0/24\""),
+            "{hcl}"
+        );
         // snippet must be None (no injection into parent)
-        assert!(r.snippet.is_none(), "subnets are no longer injected as snippets");
+        assert!(
+            r.snippet.is_none(),
+            "subnets are no longer injected as snippets"
+        );
     }
 
     #[test]
     fn subnet_references_parent_router() {
-        let res = make_res("aws_subnet", "priv", &[
-            ("cidr_block", "10.0.2.0/24"),
-            ("vpc_id", "aws_vpc.main.id"),
-        ]);
+        let res = make_res(
+            "aws_subnet",
+            "priv",
+            &[("cidr_block", "10.0.2.0/24"), ("vpc_id", "aws_vpc.main.id")],
+        );
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_router.main_router.id"), "{hcl}");
     }
@@ -521,33 +577,51 @@ mod tests {
 
     #[test]
     fn subnet_with_count_generates_count_line() {
-        let res = make_res("aws_subnet", "public", &[
-            ("cidr_block", "10.0.${count.index + 1}.0/24"),
-            ("vpc_id", "aws_vpc.main.id"),
-            ("count", "2"),
-        ]);
+        let res = make_res(
+            "aws_subnet",
+            "public",
+            &[
+                ("cidr_block", "10.0.${count.index + 1}.0/24"),
+                ("vpc_id", "aws_vpc.main.id"),
+                ("count", "2"),
+            ],
+        );
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("count = 2"), "count should be propagated\n{hcl}");
+        assert!(
+            hcl.contains("count = 2"),
+            "count should be propagated\n{hcl}"
+        );
     }
 
     #[test]
     fn subnet_with_count_uses_index_in_name() {
-        let res = make_res("aws_subnet", "public", &[
-            ("cidr_block", "10.0.0.0/24"),
-            ("vpc_id", "aws_vpc.main.id"),
-            ("count", "3"),
-        ]);
+        let res = make_res(
+            "aws_subnet",
+            "public",
+            &[
+                ("cidr_block", "10.0.0.0/24"),
+                ("vpc_id", "aws_vpc.main.id"),
+                ("count", "3"),
+            ],
+        );
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("${count.index + 1}"), "name should use count.index\n{hcl}");
-        assert!(!hcl.contains("name = \"public\"\n"), "bare name should not appear when count is set\n{hcl}");
+        assert!(
+            hcl.contains("${count.index + 1}"),
+            "name should use count.index\n{hcl}"
+        );
+        assert!(
+            !hcl.contains("name = \"public\"\n"),
+            "bare name should not appear when count is set\n{hcl}"
+        );
     }
 
     #[test]
     fn subnet_has_exactly_one_ip_network_block() {
-        let res = make_res("aws_subnet", "s", &[
-            ("cidr_block", "10.0.4.0/24"),
-            ("vpc_id", "aws_vpc.main.id"),
-        ]);
+        let res = make_res(
+            "aws_subnet",
+            "s",
+            &[("cidr_block", "10.0.4.0/24"), ("vpc_id", "aws_vpc.main.id")],
+        );
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
         let count = hcl.matches("ip_network").count();
         assert_eq!(count, 1, "must have exactly 1 ip_network block\n{hcl}");
@@ -577,12 +651,21 @@ mod tests {
         let r = map_security_group(&res);
         assert_eq!(r.upcloud_type, "upcloud_firewall_rules");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_firewall_rules\" \"web\""), "{hcl}");
-        assert!(hcl.contains("upcloud_server.<TODO>.id"), "server_id needs TODO before cross-resolve\n{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_firewall_rules\" \"web\""),
+            "{hcl}"
+        );
+        assert!(
+            hcl.contains("upcloud_server.<TODO>.id"),
+            "server_id needs TODO before cross-resolve\n{hcl}"
+        );
         assert!(hcl.contains("direction = \"in\""), "{hcl}");
         assert!(hcl.contains("direction = \"out\""), "{hcl}");
         assert!(hcl.contains("destination_port_start = \"80\""), "{hcl}");
-        assert!(hcl.contains("destination_port_end   = \"80\""), "end must equal start for single-port rules\n{hcl}");
+        assert!(
+            hcl.contains("destination_port_end   = \"80\""),
+            "end must equal start for single-port rules\n{hcl}"
+        );
     }
 
     #[test]
@@ -601,7 +684,10 @@ mod tests {
         let res = make_res("aws_internet_gateway", "igw", &[]);
         let r = map_internet_gateway(&res);
         assert_eq!(r.status, crate::migration::types::MigrationStatus::Partial);
-        assert!(r.upcloud_hcl.is_none(), "IGW has no standalone UpCloud resource");
+        assert!(
+            r.upcloud_hcl.is_none(),
+            "IGW has no standalone UpCloud resource"
+        );
     }
 
     // ── map_route_table ───────────────────────────────────────────────────────
@@ -612,8 +698,15 @@ mod tests {
         let res = make_res("aws_route_table", "rt", &[]);
         let r = map_route_table(&res);
         // No snippet — UpCloud Router handles default routes automatically
-        assert!(r.snippet.is_none(), "default-only route table should not generate snippet");
-        assert!(r.notes.iter().any(|n| n.contains("automatically")), "should note automatic routing\n{:?}", r.notes);
+        assert!(
+            r.snippet.is_none(),
+            "default-only route table should not generate snippet"
+        );
+        assert!(
+            r.notes.iter().any(|n| n.contains("automatically")),
+            "should note automatic routing\n{:?}",
+            r.notes
+        );
     }
 
     #[test]
@@ -624,9 +717,14 @@ mod tests {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.main.id
   }
-}"#.to_string();
+}"#
+        .to_string();
         let r = map_route_table(&res);
-        assert!(r.snippet.is_none(), "default-only route table should not generate snippet\n{:?}", r.notes);
+        assert!(
+            r.snippet.is_none(),
+            "default-only route table should not generate snippet\n{:?}",
+            r.notes
+        );
     }
 
     #[test]
@@ -637,7 +735,8 @@ mod tests {
     cidr_block = "10.100.0.0/16"
     gateway_id = aws_vpn_gateway.main.id
   }
-}"#.to_string();
+}"#
+        .to_string();
         let r = map_route_table(&res);
         let snippet = r.snippet.unwrap();
         assert!(snippet.contains("static_route"), "{snippet}");
@@ -652,38 +751,59 @@ mod tests {
         let r = map_eip(&res);
         assert_eq!(r.upcloud_type, "upcloud_floating_ip_address");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_floating_ip_address\" \"my_ip\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_floating_ip_address\" \"my_ip\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("zone = \"__ZONE__\""), "{hcl}");
         // Comment mentions mac_address as guidance — but it must not be set as an attribute
-        assert!(!hcl.lines().any(|l| !l.trim().starts_with('#') && l.contains("mac_address")),
-            "detached EIP should not have mac_address attribute\n{hcl}");
+        assert!(
+            !hcl.lines()
+                .any(|l| !l.trim().starts_with('#') && l.contains("mac_address")),
+            "detached EIP should not have mac_address attribute\n{hcl}"
+        );
     }
 
     #[test]
     fn eip_with_instance_generates_attached_floating_ip() {
-        let res = make_res("aws_eip", "bastion", &[
-            ("instance", "aws_instance.bastion.id"),
-        ]);
+        let res = make_res(
+            "aws_eip",
+            "bastion",
+            &[("instance", "aws_instance.bastion.id")],
+        );
         let r = map_eip(&res);
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("mac_address = upcloud_server.bastion.network_interface[0].mac_address"), "{hcl}");
-        assert!(!hcl.contains("zone"), "attached EIP does not need zone attr\n{hcl}");
+        assert!(
+            hcl.contains("mac_address = upcloud_server.bastion.network_interface[0].mac_address"),
+            "{hcl}"
+        );
+        assert!(
+            !hcl.contains("zone"),
+            "attached EIP does not need zone attr\n{hcl}"
+        );
     }
 
     // ── map_eip_association ───────────────────────────────────────────────────
 
     #[test]
     fn eip_association_generates_mac_address_snippet() {
-        let res = make_res("aws_eip_association", "assoc", &[
-            ("allocation_id", "aws_eip.my_ip.id"),
-            ("instance_id", "aws_instance.web.id"),
-        ]);
+        let res = make_res(
+            "aws_eip_association",
+            "assoc",
+            &[
+                ("allocation_id", "aws_eip.my_ip.id"),
+                ("instance_id", "aws_instance.web.id"),
+            ],
+        );
         let r = map_eip_association(&res);
         assert_eq!(r.upcloud_type, "mac_address on upcloud_floating_ip_address");
         assert!(r.upcloud_hcl.is_none(), "no standalone HCL resource");
         let snippet = r.snippet.unwrap();
         assert!(snippet.contains("mac_address"), "{snippet}");
-        assert!(snippet.contains("my_ip"), "should reference the EIP resource name\n{snippet}");
+        assert!(
+            snippet.contains("my_ip"),
+            "should reference the EIP resource name\n{snippet}"
+        );
         assert!(snippet.contains("upcloud_server.web"), "{snippet}");
     }
 

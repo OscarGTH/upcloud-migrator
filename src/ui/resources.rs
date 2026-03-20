@@ -1,13 +1,16 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
-    Frame,
+    widgets::{
+        Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table,
+    },
 };
 
+use super::theme;
 use crate::app::App;
 use crate::migration::types::{MigrationResult, MigrationStatus};
-use super::theme;
 
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -16,7 +19,10 @@ pub fn render(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .border_style(theme::primary())
-        .title(Span::styled(" ⚡ RESOURCE MIGRATION MAP ⚡ ", theme::accent_bold()))
+        .title(Span::styled(
+            " ⚡ RESOURCE MIGRATION MAP ⚡ ",
+            theme::accent_bold(),
+        ))
         .title_alignment(Alignment::Center);
     f.render_widget(outer_block, area);
 
@@ -31,11 +37,11 @@ pub fn render(f: &mut Frame, app: &App) {
         .split(area);
 
     // ── Stats bar ──────────────────────────────────────────────────────────────
-    let total  = app.migration_results.len();
+    let total = app.migration_results.len();
     let native = count_status(&app.migration_results, MigrationStatus::Native);
     let compat = count_status(&app.migration_results, MigrationStatus::Compatible);
-    let partial= count_status(&app.migration_results, MigrationStatus::Partial);
-    let unsup  = count_status(&app.migration_results, MigrationStatus::Unsupported);
+    let partial = count_status(&app.migration_results, MigrationStatus::Partial);
+    let unsup = count_status(&app.migration_results, MigrationStatus::Unsupported);
 
     let stats = Paragraph::new(Line::from(vec![
         Span::styled(format!(" {total}"), theme::white_bold()),
@@ -98,7 +104,8 @@ fn render_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .iter()
         .map(|r| {
             let icon = theme::status_icon(r.status.label());
-            let type_label = r.resource_type
+            let type_label = r
+                .resource_type
                 .strip_prefix("aws_")
                 .unwrap_or(&r.resource_type);
 
@@ -133,9 +140,9 @@ fn render_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Min(20),   // type
-            Constraint::Length(16),// name
-            Constraint::Min(14),   // status
+            Constraint::Min(20),    // type
+            Constraint::Length(16), // name
+            Constraint::Min(14),    // status
         ],
     )
     .header(header)
@@ -170,11 +177,8 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .title_alignment(Alignment::Left);
 
     if result.is_none() || app.migration_results.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "  No resource selected",
-            theme::dim(),
-        ))
-        .block(preview_block);
+        let empty = Paragraph::new(Span::styled("  No resource selected", theme::dim()))
+            .block(preview_block);
         f.render_widget(empty, area);
         return;
     }
@@ -186,7 +190,8 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
 
     // ── Header: aws type → upcloud type ────────────────────────────────────────
-    let aws_label = r.resource_type
+    let aws_label = r
+        .resource_type
         .strip_prefix("aws_")
         .unwrap_or(&r.resource_type)
         .to_owned();
@@ -203,7 +208,10 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let icon = theme::status_icon(r.status.label());
     let inner_w = area.width.saturating_sub(2) as usize;
     all_lines.push(Line::from(vec![
-        Span::styled(format!("  {} ", icon), theme::status_style(r.status.label())),
+        Span::styled(
+            format!("  {} ", icon),
+            theme::status_style(r.status.label()),
+        ),
         Span::styled(r.status.label(), theme::status_style(r.status.label())),
     ]));
 
@@ -262,15 +270,16 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     // ── HCL or snippet ────────────────────────────────────────────────────────
-    let hcl_content = r.upcloud_hcl.as_deref()
-        .or(r.snippet.as_deref());
+    let hcl_content = r.upcloud_hcl.as_deref().or(r.snippet.as_deref());
 
     if let Some(hcl) = hcl_content {
-        let label = if r.upcloud_hcl.is_some() { " HCL " } else { " MERGE INTO " };
+        let label = if r.upcloud_hcl.is_some() {
+            " HCL "
+        } else {
+            " MERGE INTO "
+        };
         all_lines.push(Line::from(Span::styled("─".repeat(sep_w), theme::dim())));
-        all_lines.push(Line::from(vec![
-            Span::styled(label, theme::accent()),
-        ]));
+        all_lines.push(Line::from(vec![Span::styled(label, theme::accent())]));
         for line in hcl.lines() {
             all_lines.push(theme::highlight_hcl_line(line));
         }
@@ -284,11 +293,12 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // ── Apply scroll offset ────────────────────────────────────────────────────
     let total_lines = all_lines.len();
-    let scroll = app.preview_scroll.min(total_lines.saturating_sub(inner_height));
+    let scroll = app
+        .preview_scroll
+        .min(total_lines.saturating_sub(inner_height));
     let visible: Vec<Line<'static>> = all_lines.into_iter().skip(scroll).collect();
 
-    let preview = Paragraph::new(visible)
-        .block(preview_block);
+    let preview = Paragraph::new(visible).block(preview_block);
     f.render_widget(preview, area);
 
     // ── Scrollbar ─────────────────────────────────────────────────────────────
@@ -296,11 +306,14 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
-        let mut scrollbar_state = ScrollbarState::new(total_lines.saturating_sub(inner_height))
-            .position(scroll);
+        let mut scrollbar_state =
+            ScrollbarState::new(total_lines.saturating_sub(inner_height)).position(scroll);
         f.render_stateful_widget(
             scrollbar,
-            area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 }),
+            area.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
             &mut scrollbar_state,
         );
     }
@@ -309,7 +322,6 @@ fn render_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn count_status(results: &[MigrationResult], status: MigrationStatus) -> usize {
     results.iter().filter(|r| r.status == status).count()
 }
-
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {

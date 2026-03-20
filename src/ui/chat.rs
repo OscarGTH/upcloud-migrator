@@ -10,11 +10,11 @@ use crate::app::App;
 use crate::ui::theme::*;
 
 // Distinct colors for the chat UI
-const USER_BG:   Color = Color::Rgb(10, 20, 45);   // deep navy for user messages
-const AI_BG:     Color = Color::Rgb(15, 8,  30);   // deep purple for AI messages
-const USER_FG:   Color = Color::Rgb(200, 170, 255); // light lavender text
-const AI_FG:     Color = Color::Rgb(220, 180, 255); // light magenta text
-const AI_BORDER: Color = Color::Rgb(120, 0, 200);   // vivid purple border
+const USER_BG: Color = Color::Rgb(10, 20, 45); // deep navy for user messages
+const AI_BG: Color = Color::Rgb(15, 8, 30); // deep purple for AI messages
+const USER_FG: Color = Color::Rgb(200, 170, 255); // light lavender text
+const AI_FG: Color = Color::Rgb(220, 180, 255); // light magenta text
+const AI_BORDER: Color = Color::Rgb(120, 0, 200); // vivid purple border
 
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -94,15 +94,13 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
     for msg in &app.chat_messages {
         if msg.is_user {
             // User header: bold light purple on dark navy
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  ▶ YOU ",
-                    Style::default()
-                        .fg(Color::Rgb(160, 100, 255))
-                        .bg(USER_BG)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  ▶ YOU ",
+                Style::default()
+                    .fg(Color::Rgb(160, 100, 255))
+                    .bg(USER_BG)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             for content_line in msg.content.lines() {
                 let style = Style::default().fg(USER_FG).bg(USER_BG);
                 for chunk in pre_wrap(content_line, text_width) {
@@ -111,20 +109,16 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
             }
         } else {
             // AI header: vivid magenta on dark purple
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  ◆ AI  ",
-                    Style::default()
-                        .fg(Color::Rgb(230, 100, 255))
-                        .bg(AI_BG)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  ◆ AI  ",
+                Style::default()
+                    .fg(Color::Rgb(230, 100, 255))
+                    .bg(AI_BG)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             for content_line in msg.content.lines() {
                 // Highlight code blocks differently (lines starting with ``` or indented 4 spaces)
-                let style = if content_line.starts_with("```")
-                    || content_line.starts_with("    ")
-                {
+                let style = if content_line.starts_with("```") || content_line.starts_with("    ") {
                     Style::default()
                         .fg(Color::Rgb(185, 145, 255))
                         .bg(Color::Rgb(15, 6, 30))
@@ -148,15 +142,13 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
 
     if app.chat_loading {
         let frame = spinner(app.tick);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  ◆ AI  {} thinking…", frame),
-                Style::default()
-                    .fg(Color::Rgb(230, 100, 255))
-                    .bg(AI_BG)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("  ◆ AI  {} thinking…", frame),
+            Style::default()
+                .fg(Color::Rgb(230, 100, 255))
+                .bg(AI_BG)
+                .add_modifier(Modifier::ITALIC),
+        )]));
         lines.push(Line::from(""));
     }
 

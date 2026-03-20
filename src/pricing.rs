@@ -18,12 +18,16 @@ fn extract_attr(hcl: &str, attr: &str) -> Option<String> {
     for line in hcl.lines() {
         let trimmed = line.trim();
         // Key must match exactly (guard against e.g. "size_gb" when looking for "size")
-        let Some(after_key) = trimmed.strip_prefix(attr) else { continue };
+        let Some(after_key) = trimmed.strip_prefix(attr) else {
+            continue;
+        };
         if !after_key.starts_with(|c: char| c == '=' || c.is_whitespace()) {
             continue;
         }
         let after_eq = after_key.trim_start();
-        let Some(rhs) = after_eq.strip_prefix('=') else { continue };
+        let Some(rhs) = after_eq.strip_prefix('=') else {
+            continue;
+        };
         // Strip trailing comment — the first ` #` that is not inside quotes
         let rhs = rhs.trim();
         let rhs = rhs.find(" #").map(|p| &rhs[..p]).unwrap_or(rhs).trim();
@@ -59,13 +63,11 @@ fn lookup_plan_price(upcloud_type: &str, plan: &str, pricing: &serde_json::Value
                 .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
                 .as_f64()
         }
-        "upcloud_managed_database_valkey" => {
-            pricing["upcloud_managed_database_valkey"]["plans"]
-                .as_array()?
-                .iter()
-                .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
-                .as_f64()
-        }
+        "upcloud_managed_database_valkey" => pricing["upcloud_managed_database_valkey"]["plans"]
+            .as_array()?
+            .iter()
+            .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
+            .as_f64(),
         "upcloud_managed_database_opensearch" => {
             pricing["upcloud_managed_database_opensearch"]["plans"]
                 .as_array()?
@@ -73,27 +75,21 @@ fn lookup_plan_price(upcloud_type: &str, plan: &str, pricing: &serde_json::Value
                 .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
                 .as_f64()
         }
-        "upcloud_loadbalancer" => {
-            pricing["upcloud_loadbalancer"]["plans"]
-                .as_array()?
-                .iter()
-                .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
-                .as_f64()
-        }
-        "upcloud_kubernetes_cluster" => {
-            pricing["upcloud_kubernetes_cluster"]["plans"]
-                .as_array()?
-                .iter()
-                .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
-                .as_f64()
-        }
-        "upcloud_gateway" => {
-            pricing["upcloud_gateway"]["plans"]
-                .as_array()?
-                .iter()
-                .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
-                .as_f64()
-        }
+        "upcloud_loadbalancer" => pricing["upcloud_loadbalancer"]["plans"]
+            .as_array()?
+            .iter()
+            .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
+            .as_f64(),
+        "upcloud_kubernetes_cluster" => pricing["upcloud_kubernetes_cluster"]["plans"]
+            .as_array()?
+            .iter()
+            .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
+            .as_f64(),
+        "upcloud_gateway" => pricing["upcloud_gateway"]["plans"]
+            .as_array()?
+            .iter()
+            .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
+            .as_f64(),
         _ => None,
     }
 }
@@ -144,7 +140,8 @@ pub fn compute_costs(
 
     // Build variable-name → default-value map from Variable passthroughs.
     // Used to resolve plan attributes that reference a variable (e.g. `plan = var.web_instance_type`).
-    let mut var_defaults: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut var_defaults: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for pt in passthroughs {
         if matches!(pt.kind, PassthroughKind::Variable)
             && let (Some(name), Some(default)) = (&pt.name, extract_attr(&pt.raw_hcl, "default"))
@@ -205,9 +202,11 @@ pub fn compute_costs(
             let plan = if let Some(var_name) = raw_plan.strip_prefix("var.") {
                 let default = var_defaults.get(var_name).cloned().unwrap_or(raw_plan);
                 // If the default is still an AWS instance type, convert it to UpCloud plan.
-                crate::migration::providers::aws::compute::aws_instance_type_to_upcloud_plan(&default)
-                    .map(|s| s.to_string())
-                    .unwrap_or(default)
+                crate::migration::providers::aws::compute::aws_instance_type_to_upcloud_plan(
+                    &default,
+                )
+                .map(|s| s.to_string())
+                .unwrap_or(default)
             } else {
                 raw_plan
             };

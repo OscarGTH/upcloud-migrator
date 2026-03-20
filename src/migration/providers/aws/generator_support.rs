@@ -37,7 +37,8 @@ pub fn extract_sg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
 pub fn extract_subnet_id_from_instance_hcl(hcl: &str) -> Option<String> {
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("subnet_id") && trimmed.contains('=')
+        if trimmed.starts_with("subnet_id")
+            && trimmed.contains('=')
             && let Some(pos) = trimmed.find("aws_subnet.")
         {
             let after = &trimmed[pos + "aws_subnet.".len()..];
@@ -77,7 +78,8 @@ pub fn extract_tg_from_listener_source_hcl(hcl: &str) -> Option<String> {
     const PREFIX: &str = "aws_lb_target_group.";
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("target_group_arn") && trimmed.contains(PREFIX)
+        if trimmed.starts_with("target_group_arn")
+            && trimmed.contains(PREFIX)
             && let Some(pos) = trimmed.find(PREFIX)
         {
             let after = &trimmed[pos + PREFIX.len()..];
@@ -99,7 +101,8 @@ pub fn extract_tg_server_from_attachment_source_hcl(hcl: &str) -> Option<(String
     let mut server_name: Option<String> = None;
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if tg_name.is_none() && trimmed.starts_with("target_group_arn")
+        if tg_name.is_none()
+            && trimmed.starts_with("target_group_arn")
             && let Some(pos) = trimmed.find("aws_lb_target_group.")
         {
             let after = &trimmed[pos + "aws_lb_target_group.".len()..];
@@ -108,12 +111,16 @@ pub fn extract_tg_server_from_attachment_source_hcl(hcl: &str) -> Option<(String
                 tg_name = Some(name.to_string());
             }
         }
-        if server_name.is_none() && trimmed.starts_with("target_id")
+        if server_name.is_none()
+            && trimmed.starts_with("target_id")
             && let Some(pos) = trimmed.find("aws_instance.")
         {
             let after = &trimmed[pos + "aws_instance.".len()..];
             // Strip any index suffix like `[0]` — take alphanumeric+underscore only
-            let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
             if !name.is_empty() {
                 server_name = Some(name);
             }
@@ -193,24 +200,21 @@ pub fn sanitize_aws_refs(mut s: String) -> String {
 /// Map an AWS resource type name to its UpCloud equivalent.
 pub fn upcloud_type_for_aws(aws_type: &str) -> Option<&'static str> {
     match aws_type {
-        "aws_instance" | "aws_launch_template" | "aws_launch_configuration"
-            => Some("upcloud_server"),
-        "aws_lb" | "aws_alb" | "aws_elb"
-            => Some("upcloud_loadbalancer"),
-        "aws_vpc"
-            => Some("upcloud_router"),
-        "aws_subnet"
-            => Some("upcloud_network"),
-        "aws_security_group"
-            => Some("upcloud_firewall_rules"),
-        "aws_db_instance" | "aws_rds_cluster" | "aws_rds_cluster_instance"
-            => Some("upcloud_managed_database_postgresql"),
-        "aws_elasticache_cluster" | "aws_elasticache_replication_group"
-            => Some("upcloud_managed_database_valkey"),
-        "aws_eks_cluster"
-            => Some("upcloud_kubernetes_cluster"),
-        "aws_eip"
-            => Some("upcloud_floating_ip_address"),
+        "aws_instance" | "aws_launch_template" | "aws_launch_configuration" => {
+            Some("upcloud_server")
+        }
+        "aws_lb" | "aws_alb" | "aws_elb" => Some("upcloud_loadbalancer"),
+        "aws_vpc" => Some("upcloud_router"),
+        "aws_subnet" => Some("upcloud_network"),
+        "aws_security_group" => Some("upcloud_firewall_rules"),
+        "aws_db_instance" | "aws_rds_cluster" | "aws_rds_cluster_instance" => {
+            Some("upcloud_managed_database_postgresql")
+        }
+        "aws_elasticache_cluster" | "aws_elasticache_replication_group" => {
+            Some("upcloud_managed_database_valkey")
+        }
+        "aws_eks_cluster" => Some("upcloud_kubernetes_cluster"),
+        "aws_eip" => Some("upcloud_floating_ip_address"),
         _ => None,
     }
 }
@@ -230,33 +234,34 @@ pub fn upcloud_resource_name_for(aws_type: &str, resource_name: &str) -> String 
 pub fn upcloud_attr_for(upcloud_type: &str, aws_attr: &str) -> Option<&'static str> {
     match (upcloud_type, aws_attr) {
         // upcloud_server
-        ("upcloud_server", "id")         => Some("id"),
-        ("upcloud_server", "public_ip")  => Some("network_interface[0].ip_address"),
+        ("upcloud_server", "id") => Some("id"),
+        ("upcloud_server", "public_ip") => Some("network_interface[0].ip_address"),
         ("upcloud_server", "private_ip") => Some("network_interface[1].ip_address"),
         // upcloud_loadbalancer
-        ("upcloud_loadbalancer", "id")       => Some("id"),
+        ("upcloud_loadbalancer", "id") => Some("id"),
         ("upcloud_loadbalancer", "dns_name") => None, // handled as special case in rewrite_output_refs
         // upcloud_router
         ("upcloud_router", "id") => Some("id"),
         // upcloud_network
-        ("upcloud_network", "id")         => Some("id"),
+        ("upcloud_network", "id") => Some("id"),
         ("upcloud_network", "cidr_block") => Some("ip_network[0].address"),
         // upcloud_firewall_rules
         ("upcloud_firewall_rules", "id") => Some("id"),
         // upcloud_managed_database_* (postgresql / valkey / mysql / opensearch share these)
-        (t, "id")       if t.starts_with("upcloud_managed_database") => Some("id"),
+        (t, "id") if t.starts_with("upcloud_managed_database") => Some("id"),
         (t, "endpoint") if t.starts_with("upcloud_managed_database") => Some("service_host"),
-        (t, "address")  if t.starts_with("upcloud_managed_database") => Some("service_host"),
-        (t, "port")     if t.starts_with("upcloud_managed_database") => Some("service_port"),
+        (t, "address") if t.starts_with("upcloud_managed_database") => Some("service_host"),
+        (t, "port") if t.starts_with("upcloud_managed_database") => Some("service_port"),
         (t, "username") if t.starts_with("upcloud_managed_database") => Some("service_username"),
         (t, "password") if t.starts_with("upcloud_managed_database") => Some("service_password"),
-        (t, "primary_endpoint_address")
-                        if t.starts_with("upcloud_managed_database") => Some("service_host"),
+        (t, "primary_endpoint_address") if t.starts_with("upcloud_managed_database") => {
+            Some("service_host")
+        }
         // upcloud_kubernetes_cluster
         ("upcloud_kubernetes_cluster", "id") => Some("id"),
         // upcloud_floating_ip_address
-        ("upcloud_floating_ip_address", "id")            => Some("id"),
-        ("upcloud_floating_ip_address", "public_ip")     => Some("ip_address"),
+        ("upcloud_floating_ip_address", "id") => Some("id"),
+        ("upcloud_floating_ip_address", "public_ip") => Some("ip_address"),
         ("upcloud_floating_ip_address", "allocation_id") => Some("id"),
         _ => None,
     }
@@ -294,18 +299,14 @@ pub fn rewrite_output_refs(s: &str) -> String {
         }
 
         // Split into aws_type / resource_name / attr_path
-        let first_dot  = candidate.find('.').unwrap();
-        let second_dot = first_dot + 1
-            + candidate[first_dot + 1..].find('.').unwrap();
-        let aws_type      = &candidate[..first_dot];
+        let first_dot = candidate.find('.').unwrap();
+        let second_dot = first_dot + 1 + candidate[first_dot + 1..].find('.').unwrap();
+        let aws_type = &candidate[..first_dot];
         let resource_name = &candidate[first_dot + 1..second_dot];
-        let attr_path     = &candidate[second_dot + 1..];
+        let attr_path = &candidate[second_dot + 1..];
 
         // The lookup key is just the first identifier segment (before '[' or '.')
-        let attr_key = attr_path
-            .split(['[', '.'])
-            .next()
-            .unwrap_or(attr_path);
+        let attr_key = attr_path.split(['[', '.']).next().unwrap_or(attr_path);
 
         let new_ref = if let Some(upcloud_type) = upcloud_type_for_aws(aws_type) {
             let upcloud_name = upcloud_resource_name_for(aws_type, resource_name);
@@ -349,14 +350,20 @@ mod tests {
             "}\n"
         );
         let refs = extract_sg_refs_from_instance_hcl(hcl);
-        assert!(refs.contains(&"docker_demo".to_string()), "should extract SG name: {refs:?}");
+        assert!(
+            refs.contains(&"docker_demo".to_string()),
+            "should extract SG name: {refs:?}"
+        );
     }
 
     #[test]
     fn todo_interpolation_stripped_from_heredoc() {
         let input = "proxy_pass http://${<TODO: remove AWS resource ref>[0].private_ip}:3000;";
         let out = remove_todo_interpolations(input.to_string());
-        assert_eq!(out, "proxy_pass http://<TODO: remove AWS resource ref>:3000;");
+        assert_eq!(
+            out,
+            "proxy_pass http://<TODO: remove AWS resource ref>:3000;"
+        );
     }
 
     #[test]
@@ -375,8 +382,7 @@ mod tests {
 
     #[test]
     fn multiple_todo_interpolations_all_replaced() {
-        let input =
-            "a=${<TODO: remove AWS resource ref>.x} b=${<TODO: remove AWS resource ref>.y}";
+        let input = "a=${<TODO: remove AWS resource ref>.x} b=${<TODO: remove AWS resource ref>.y}";
         let out = remove_todo_interpolations(input.to_string());
         assert_eq!(
             out,

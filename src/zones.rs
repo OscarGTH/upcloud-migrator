@@ -7,23 +7,83 @@ pub struct ZoneInfo {
 
 pub const ZONES: &[ZoneInfo] = &[
     // Europe
-    ZoneInfo { slug: "nl-ams1", city: "Amsterdam",  region: "Europe" },
-    ZoneInfo { slug: "dk-cph1", city: "Copenhagen", region: "Europe" },
-    ZoneInfo { slug: "de-fra1", city: "Frankfurt",  region: "Europe" },
-    ZoneInfo { slug: "fi-hel1", city: "Helsinki",   region: "Europe" },
-    ZoneInfo { slug: "fi-hel2", city: "Helsinki 2", region: "Europe" },
-    ZoneInfo { slug: "uk-lon1", city: "London",     region: "Europe" },
-    ZoneInfo { slug: "es-mad1", city: "Madrid",     region: "Europe" },
-    ZoneInfo { slug: "no-svg1", city: "Stavanger",  region: "Europe" },
-    ZoneInfo { slug: "se-sto1", city: "Stockholm",  region: "Europe" },
-    ZoneInfo { slug: "pl-waw1", city: "Warsaw",     region: "Europe" },
+    ZoneInfo {
+        slug: "nl-ams1",
+        city: "Amsterdam",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "dk-cph1",
+        city: "Copenhagen",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "de-fra1",
+        city: "Frankfurt",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "fi-hel1",
+        city: "Helsinki",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "fi-hel2",
+        city: "Helsinki 2",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "uk-lon1",
+        city: "London",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "es-mad1",
+        city: "Madrid",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "no-svg1",
+        city: "Stavanger",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "se-sto1",
+        city: "Stockholm",
+        region: "Europe",
+    },
+    ZoneInfo {
+        slug: "pl-waw1",
+        city: "Warsaw",
+        region: "Europe",
+    },
     // Americas
-    ZoneInfo { slug: "us-chi1", city: "Chicago",    region: "Americas" },
-    ZoneInfo { slug: "us-nyc1", city: "New York",   region: "Americas" },
-    ZoneInfo { slug: "us-sjo1", city: "San Jose",   region: "Americas" },
+    ZoneInfo {
+        slug: "us-chi1",
+        city: "Chicago",
+        region: "Americas",
+    },
+    ZoneInfo {
+        slug: "us-nyc1",
+        city: "New York",
+        region: "Americas",
+    },
+    ZoneInfo {
+        slug: "us-sjo1",
+        city: "San Jose",
+        region: "Americas",
+    },
     // Asia-Pacific
-    ZoneInfo { slug: "sg-sin1", city: "Singapore",  region: "Asia-Pacific" },
-    ZoneInfo { slug: "au-syd1", city: "Sydney",     region: "Asia-Pacific" },
+    ZoneInfo {
+        slug: "sg-sin1",
+        city: "Singapore",
+        region: "Asia-Pacific",
+    },
+    ZoneInfo {
+        slug: "au-syd1",
+        city: "Sydney",
+        region: "Asia-Pacific",
+    },
 ];
 
 /// Return the index of `slug` in ZONES, defaulting to fi-hel2 (index 4).

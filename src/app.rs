@@ -1,6 +1,10 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::{backend::Backend, widgets::{ListState, TableState}, Terminal};
+use ratatui::{
+    Terminal,
+    backend::Backend,
+    widgets::{ListState, TableState},
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -9,14 +13,14 @@ use std::collections::HashMap;
 
 use crate::ai::ChatMessage;
 use crate::migration::generator::ResolvedHclMap;
-use crate::pricing::{compute_costs, CostEntry};
 use crate::migration::mapper::map_resource;
 use crate::migration::types::MigrationResult;
+use crate::pricing::{CostEntry, compute_costs};
 use crate::terraform::parser::parse_tf_file;
 use crate::terraform::scanner::find_tf_files;
 use crate::terraform::types::PassthroughBlock;
-use crate::todo::{scan_output_todos, apply_resolution, TodoItem, TodoStatus};
-use crate::zones::{find_zone_idx, ZONES};
+use crate::todo::{TodoItem, TodoStatus, apply_resolution, scan_output_todos};
+use crate::zones::{ZONES, find_zone_idx};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
@@ -293,7 +297,8 @@ impl App {
                     && is_dir
                 {
                     let new_path = if name == "[..]" {
-                        self.fb_cwd.parent()
+                        self.fb_cwd
+                            .parent()
                             .map(|p| p.to_path_buf())
                             .unwrap_or_else(|| self.fb_cwd.clone())
                     } else {
@@ -303,7 +308,9 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                let parent = self.fb_cwd.parent()
+                let parent = self
+                    .fb_cwd
+                    .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| self.fb_cwd.clone());
                 self.fb_load_dir(Some(parent));
@@ -335,7 +342,9 @@ impl App {
             for entry in read.flatten() {
                 let path = entry.path();
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') { continue; }
+                if name.starts_with('.') {
+                    continue;
+                }
                 if path.is_dir() {
                     dirs.push(name);
                 } else if name.ends_with(".tf") {
@@ -346,11 +355,19 @@ impl App {
             dirs.sort_by_key(|a| a.to_lowercase());
             tf_files.sort();
 
-            for d in dirs    { self.fb_entries.push((d, true)); }
-            for f in tf_files { self.fb_entries.push((f, false)); }
+            for d in dirs {
+                self.fb_entries.push((d, true));
+            }
+            for f in tf_files {
+                self.fb_entries.push((f, false));
+            }
         }
 
-        self.fb_state.select(if self.fb_entries.is_empty() { None } else { Some(0) });
+        self.fb_state.select(if self.fb_entries.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
     }
 
     fn handle_scanner_key(&mut self, code: KeyCode) {
@@ -425,8 +442,12 @@ impl App {
         // Commands are blocked to prevent 'q', 'd', 't', etc. from firing while typing.
         if self.gen_step == GenStep::AskOutputDir {
             match code {
-                KeyCode::Char(c) => { self.input_buf.push(c); }
-                KeyCode::Backspace => { self.input_buf.pop(); }
+                KeyCode::Char(c) => {
+                    self.input_buf.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.input_buf.pop();
+                }
                 KeyCode::Enter => {
                     if !self.input_buf.trim().is_empty() {
                         let out = PathBuf::from(self.input_buf.trim());
@@ -466,8 +487,11 @@ impl App {
                 self.enter_chat_view().await;
             }
             KeyCode::Char('p') | KeyCode::Char('P') if self.gen_complete => {
-                self.pricing_costs =
-                    compute_costs(&self.migration_results, &self.resolved_hcl_map, &self.passthroughs);
+                self.pricing_costs = compute_costs(
+                    &self.migration_results,
+                    &self.resolved_hcl_map,
+                    &self.passthroughs,
+                );
                 self.pricing_scroll = 0;
                 self.view = View::Pricing;
             }
@@ -506,8 +530,12 @@ impl App {
                     self.todo_input_active = false;
                     self.view = View::Generator;
                 }
-                KeyCode::Backspace => { self.todo_input.pop(); }
-                KeyCode::Char(c) => { self.todo_input.push(c); }
+                KeyCode::Backspace => {
+                    self.todo_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.todo_input.push(c);
+                }
                 KeyCode::Enter => {
                     self.apply_todo_resolution().await;
                     self.todo_input_active = false;
@@ -563,16 +591,20 @@ impl App {
                     (self.api_key.clone(), self.todos.get_mut(self.todo_idx))
                     && (item.status == TodoStatus::Pending || item.status == TodoStatus::Resolved)
                 {
-                        item.status = TodoStatus::Loading;
-                        let item_clone = item.clone();
-                        let idx = self.todo_idx;
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            match crate::ai::get_todo_suggestion(&item_clone, &api_key).await {
-                                Ok(s) => { let _ = tx.send(AppMessage::AiSuggestion(idx, s)).await; }
-                                Err(e) => { let _ = tx.send(AppMessage::AiError(idx, e.to_string())).await; }
+                    item.status = TodoStatus::Loading;
+                    let item_clone = item.clone();
+                    let idx = self.todo_idx;
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        match crate::ai::get_todo_suggestion(&item_clone, &api_key).await {
+                            Ok(s) => {
+                                let _ = tx.send(AppMessage::AiSuggestion(idx, s)).await;
                             }
-                        });
+                            Err(e) => {
+                                let _ = tx.send(AppMessage::AiError(idx, e.to_string())).await;
+                            }
+                        }
+                    });
                 }
             }
 
@@ -603,7 +635,9 @@ impl App {
         let resolution = if !self.todo_input.is_empty() {
             Some(self.todo_input.clone())
         } else {
-            self.todos.get(self.todo_idx).and_then(|i| i.ai_suggestion.clone())
+            self.todos
+                .get(self.todo_idx)
+                .and_then(|i| i.ai_suggestion.clone())
         };
         // Strip markdown backtick wrapping that AI models sometimes emit (e.g. `value`).
         let resolution = resolution.map(|r| {
@@ -618,15 +652,15 @@ impl App {
         if let (Some(res), Some(output_dir)) = (resolution, self.output_path.clone())
             && let Some(item) = self.todos.get_mut(self.todo_idx)
         {
-                let _ = apply_resolution(&output_dir, item, &res);
-                item.resolution = Some(res.clone());
-                item.status = TodoStatus::Resolved;
-                self.todo_input.clear();
-                self.todo_input_active = false;
-                let next = (self.todo_idx + 1).min(self.todos.len().saturating_sub(1));
-                if next > self.todo_idx || self.todos.len() == 1 {
-                    self.todo_idx = next;
-                }
+            let _ = apply_resolution(&output_dir, item, &res);
+            item.resolution = Some(res.clone());
+            item.status = TodoStatus::Resolved;
+            self.todo_input.clear();
+            self.todo_input_active = false;
+            let next = (self.todo_idx + 1).min(self.todos.len().saturating_sub(1));
+            if next > self.todo_idx || self.todos.len() == 1 {
+                self.todo_idx = next;
+            }
         }
     }
 
@@ -673,7 +707,8 @@ impl App {
             }
             AppMessage::ChatError(err) => {
                 self.chat_loading = false;
-                self.chat_messages.push(ChatMessage::ai(format!("[Error: {}]", err)));
+                self.chat_messages
+                    .push(ChatMessage::ai(format!("[Error: {}]", err)));
                 self.chat_scroll = 9999;
             }
             AppMessage::Error(e) => {
@@ -688,7 +723,9 @@ impl App {
             let tf_files = match find_tf_files(&path) {
                 Ok(files) => files,
                 Err(e) => {
-                    let _ = tx.send(AppMessage::Error(format!("Scan error: {}", e))).await;
+                    let _ = tx
+                        .send(AppMessage::Error(format!("Scan error: {}", e)))
+                        .await;
                     return;
                 }
             };
@@ -713,13 +750,19 @@ impl App {
                     }
                     Err(e) => {
                         let _ = tx
-                            .send(AppMessage::Error(format!("Parse error in {}: {}", file.display(), e)))
+                            .send(AppMessage::Error(format!(
+                                "Parse error in {}: {}",
+                                file.display(),
+                                e
+                            )))
                             .await;
                     }
                 }
             }
 
-            let _ = tx.send(AppMessage::ScanComplete(all_results, all_passthroughs)).await;
+            let _ = tx
+                .send(AppMessage::ScanComplete(all_results, all_passthroughs))
+                .await;
         });
     }
 
@@ -727,7 +770,8 @@ impl App {
         self.is_generating = true;
         self.gen_log.clear();
         self.gen_log.push(format!(">> Zone: {}", self.target_zone));
-        self.gen_log.push(format!(">> Generating to: {}", output_dir.display()));
+        self.gen_log
+            .push(format!(">> Generating to: {}", output_dir.display()));
 
         let tx = self.tx.clone();
         let results = self.migration_results.clone();
@@ -737,7 +781,14 @@ impl App {
 
         tokio::spawn(async move {
             let mut log: Vec<String> = Vec::new();
-            match crate::migration::generator::generate_files(&results, &passthroughs, &output_dir, source_dir.as_deref(), &zone, &mut log) {
+            match crate::migration::generator::generate_files(
+                &results,
+                &passthroughs,
+                &output_dir,
+                source_dir.as_deref(),
+                &zone,
+                &mut log,
+            ) {
                 Ok((count, resolved_map)) => {
                     for line in log {
                         let _ = tx.send(AppMessage::GenerateLog(line)).await;
@@ -748,20 +799,33 @@ impl App {
                         .output()
                     {
                         Ok(out) if out.status.success() => {
-                            let _ = tx.send(AppMessage::GenerateLog("[terraform fmt] OK".into())).await;
+                            let _ = tx
+                                .send(AppMessage::GenerateLog("[terraform fmt] OK".into()))
+                                .await;
                         }
                         Ok(out) => {
                             let stderr = String::from_utf8_lossy(&out.stderr);
-                            let _ = tx.send(AppMessage::GenerateLog(format!("[terraform fmt] {}", stderr.trim()))).await;
+                            let _ = tx
+                                .send(AppMessage::GenerateLog(format!(
+                                    "[terraform fmt] {}",
+                                    stderr.trim()
+                                )))
+                                .await;
                         }
                         Err(_) => {
-                            let _ = tx.send(AppMessage::GenerateLog("[terraform fmt] not found — skipping".into())).await;
+                            let _ = tx
+                                .send(AppMessage::GenerateLog(
+                                    "[terraform fmt] not found — skipping".into(),
+                                ))
+                                .await;
                         }
                     }
                     let _ = tx.send(AppMessage::GenerateDone(count, resolved_map)).await;
                 }
                 Err(e) => {
-                    let _ = tx.send(AppMessage::Error(format!("Generation failed: {}", e))).await;
+                    let _ = tx
+                        .send(AppMessage::Error(format!("Generation failed: {}", e)))
+                        .await;
                 }
             }
         });
@@ -778,7 +842,10 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 // Max scroll is capped in the render function; we just add here and let render clamp
                 if count > 0 {
-                    self.pricing_scroll = self.pricing_scroll.saturating_add(1).min(count.saturating_sub(1));
+                    self.pricing_scroll = self
+                        .pricing_scroll
+                        .saturating_add(1)
+                        .min(count.saturating_sub(1));
                 }
             }
             _ => {}
@@ -792,7 +859,11 @@ impl App {
             KeyCode::Esc | KeyCode::Backspace => self.view = View::Generator,
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
                 if total > 0 {
-                    self.diff_idx = if self.diff_idx == 0 { total - 1 } else { self.diff_idx - 1 };
+                    self.diff_idx = if self.diff_idx == 0 {
+                        total - 1
+                    } else {
+                        self.diff_idx - 1
+                    };
                     self.diff_scroll = 0;
                 }
             }

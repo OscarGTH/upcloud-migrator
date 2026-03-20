@@ -26,7 +26,10 @@ pub fn parse_tf_file(path: &PathBuf) -> Result<TerraformFile> {
 
                 let raw_hcl = extract_raw_block(&content, &resource_type, &resource_name)
                     .unwrap_or_else(|| {
-                        format!("resource \"{}\" \"{}\" {{ ... }}", resource_type, resource_name)
+                        format!(
+                            "resource \"{}\" \"{}\" {{ ... }}",
+                            resource_type, resource_name
+                        )
                     });
 
                 resources.push(TerraformResource {
@@ -40,8 +43,7 @@ pub fn parse_tf_file(path: &PathBuf) -> Result<TerraformFile> {
             kind @ ("variable" | "output" | "locals") => {
                 let name = block.labels().first().map(|l| l.as_str().to_string());
                 let raw_hcl =
-                    extract_passthrough_block(&content, kind, name.as_deref())
-                        .unwrap_or_default();
+                    extract_passthrough_block(&content, kind, name.as_deref()).unwrap_or_default();
                 if !raw_hcl.is_empty() {
                     let pt_kind = match kind {
                         "output" => PassthroughKind::Output,
@@ -92,9 +94,7 @@ fn extract_block_by_header(content: &str, header: &str) -> Option<String> {
     let mut block_lines: Vec<&str> = Vec::new();
 
     for line in content.lines() {
-        if !collecting
-            && line.trim_start().starts_with(header)
-        {
+        if !collecting && line.trim_start().starts_with(header) {
             collecting = true;
         }
         if collecting {

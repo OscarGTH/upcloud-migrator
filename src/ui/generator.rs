@@ -1,14 +1,14 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame,
 };
 
-use crate::app::{App, GenStep};
-use crate::zones::{zone_idx_to_visual_row, ZONES, ZONE_LIST_VISUAL_ROWS};
 use super::theme;
+use crate::app::{App, GenStep};
+use crate::zones::{ZONE_LIST_VISUAL_ROWS, ZONES, zone_idx_to_visual_row};
 
 // How many ticks to show the victory animation after generation completes.
 const VICTORY_TICKS: u64 = 60; // ~3 seconds at 50ms tick
@@ -26,8 +26,7 @@ pub fn render(f: &mut Frame, app: &App) {
         f.render_widget(outer, area);
         render_zone_picker(f, app);
     } else if app.is_generating
-        || (app.gen_complete
-            && app.tick.saturating_sub(app.gen_complete_tick) <= VICTORY_TICKS)
+        || (app.gen_complete && app.tick.saturating_sub(app.gen_complete_tick) <= VICTORY_TICKS)
     {
         render_generating_animation(f, app);
     } else {
@@ -172,8 +171,8 @@ fn rain_cell(col: u16, row: u16, tick: u64, height: u16, victory: bool) -> (char
         .wrapping_add(tick / 5);
 
     const CHARS: &[char] = &[
-        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
-        '┼', '╬', '│', '─', '╭', '╮', '╰', '╯', '░', '▒', '>', '<', '=', '+', '~',
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', '┼', '╬',
+        '│', '─', '╭', '╮', '╰', '╯', '░', '▒', '>', '<', '=', '+', '~',
     ];
     let ch = CHARS[(char_seed as usize) % CHARS.len()];
 
@@ -183,9 +182,9 @@ fn rain_cell(col: u16, row: u16, tick: u64, height: u16, victory: bool) -> (char
         match dist {
             0 => Color::Rgb(255, 255, 255),
             1 => Color::Rgb(160, 100, 255),
-            2 => Color::Rgb(120,  65, 220),
-            3 => Color::Rgb( 90,  40, 180),
-            4 => Color::Rgb( 65,  20, 140),
+            2 => Color::Rgb(120, 65, 220),
+            3 => Color::Rgb(90, 40, 180),
+            4 => Color::Rgb(65, 20, 140),
             5 | 6 => Color::Rgb(40, 10, 100),
             _ => Color::Rgb(22, 5, 60),
         }
@@ -250,7 +249,11 @@ fn render_zone_picker(f: &mut Frame, app: &App) {
             Span::styled(format!("  {}{}", prefix, zone.slug), slug_style),
             Span::styled(
                 format!("  {}{}", zone.city, saved_marker),
-                if is_hover { theme::accent() } else { theme::dim() },
+                if is_hover {
+                    theme::accent()
+                } else {
+                    theme::dim()
+                },
             ),
         ]);
         items.push(ListItem::new(row));
@@ -268,13 +271,11 @@ fn render_zone_picker(f: &mut Frame, app: &App) {
             theme::primary_bold(),
         ));
 
-    let list = List::new(items)
-        .block(list_block)
-        .highlight_style(
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(list_block).highlight_style(
+        Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    );
 
     f.render_stateful_widget(list, layout[0], &mut list_state);
 
@@ -315,16 +316,17 @@ fn render_generation_view(f: &mut Frame, app: &App) {
         .border_type(BorderType::Rounded)
         .border_style(theme::dim())
         .title(Span::styled(" TARGET ZONE ", theme::dim()));
-    let zone_widget = Paragraph::new(Span::styled(
-        app.target_zone.clone(),
-        theme::success(),
-    ))
-    .block(zone_block);
+    let zone_widget =
+        Paragraph::new(Span::styled(app.target_zone.clone(), theme::success())).block(zone_block);
     f.render_widget(zone_widget, layout[0]);
 
     // Output dir input
     let outdir_active = app.gen_step == GenStep::AskOutputDir;
-    let cursor = if outdir_active && (app.tick / 4).is_multiple_of(2) { "█" } else { " " };
+    let cursor = if outdir_active && (app.tick / 4).is_multiple_of(2) {
+        "█"
+    } else {
+        " "
+    };
     let outdir_text = if outdir_active {
         format!("{}{}", app.input_buf, cursor)
     } else if let Some(p) = &app.output_path {
@@ -335,14 +337,26 @@ fn render_generation_view(f: &mut Frame, app: &App) {
     let outdir_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(if outdir_active { theme::accent() } else { theme::dim() })
+        .border_style(if outdir_active {
+            theme::accent()
+        } else {
+            theme::dim()
+        })
         .title(Span::styled(
             " OUTPUT DIRECTORY ",
-            if outdir_active { theme::primary_bold() } else { theme::dim() },
+            if outdir_active {
+                theme::primary_bold()
+            } else {
+                theme::dim()
+            },
         ));
     let outdir_widget = Paragraph::new(Span::styled(
         outdir_text,
-        if outdir_active { theme::primary() } else { theme::dim() },
+        if outdir_active {
+            theme::primary()
+        } else {
+            theme::dim()
+        },
     ))
     .block(outdir_block);
     f.render_widget(outdir_widget, layout[1]);

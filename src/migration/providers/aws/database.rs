@@ -104,13 +104,14 @@ fn map_instance_class(class: &str) -> &'static str {
     }
 }
 
-
 /// Extract the resource name from a `parameter_group_name` attribute value.
 /// Handles references like `aws_db_parameter_group.NAME.name` → `NAME`.
 fn param_group_resource_name(attr_value: &str) -> Option<String> {
     let v = attr_value.trim_matches('"');
     let parts: Vec<&str> = v.split('.').collect();
-    if parts.len() >= 2 && (parts[0] == "aws_db_parameter_group" || parts[0] == "aws_elasticache_parameter_group") {
+    if parts.len() >= 2
+        && (parts[0] == "aws_db_parameter_group" || parts[0] == "aws_elasticache_parameter_group")
+    {
         Some(parts[1].to_string())
     } else {
         None
@@ -136,23 +137,38 @@ fn subnet_group_resource_name(attr_value: &str) -> Option<String> {
 }
 
 pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
-    let engine = res.attributes.get("engine").map(|e| e.trim_matches('"')).unwrap_or("postgres");
+    let engine = res
+        .attributes
+        .get("engine")
+        .map(|e| e.trim_matches('"'))
+        .unwrap_or("postgres");
     let (upcloud_type, engine_short) = map_engine(engine);
-    let instance_class = res.attributes.get("instance_class").map(|c| c.trim_matches('"')).unwrap_or("db.t3.medium");
+    let instance_class = res
+        .attributes
+        .get("instance_class")
+        .map(|c| c.trim_matches('"'))
+        .unwrap_or("db.t3.medium");
     let plan = map_instance_class(instance_class);
-    let _db_name = res.attributes.get("db_name").or_else(|| res.attributes.get("name"))
+    let _db_name = res
+        .attributes
+        .get("db_name")
+        .or_else(|| res.attributes.get("name"))
         .map(|n| n.trim_matches('"').to_string())
         .unwrap_or_else(|| "mydb".into());
 
     // If the instance references a parameter group, embed a marker so the generator
     // can inject those properties inline after cross-resolving.
-    let param_group_marker = res.attributes.get("parameter_group_name")
+    let param_group_marker = res
+        .attributes
+        .get("parameter_group_name")
         .and_then(|v| param_group_resource_name(v))
         .map(|group_name| format!("\n    # __DB_PROPS:{}:{}__", engine_short, group_name))
         .unwrap_or_default();
 
     // Embed the subnet group name so the generator can resolve it to the right network.
-    let network_uuid_placeholder = res.attributes.get("db_subnet_group_name")
+    let network_uuid_placeholder = res
+        .attributes
+        .get("db_subnet_group_name")
         .and_then(|v| subnet_group_resource_name(v))
         .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
         .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
@@ -210,15 +226,23 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
-    let engine = res.attributes.get("engine").map(|e| e.trim_matches('"')).unwrap_or("aurora-postgresql");
+    let engine = res
+        .attributes
+        .get("engine")
+        .map(|e| e.trim_matches('"'))
+        .unwrap_or("aurora-postgresql");
     let (upcloud_type, engine_short) = map_engine(engine);
 
-    let param_group_marker = res.attributes.get("db_cluster_parameter_group_name")
+    let param_group_marker = res
+        .attributes
+        .get("db_cluster_parameter_group_name")
         .and_then(|v| param_group_resource_name(v))
         .map(|group_name| format!("\n    # __DB_PROPS:{}:{}__", engine_short, group_name))
         .unwrap_or_default();
 
-    let network_uuid_placeholder = res.attributes.get("db_subnet_group_name")
+    let network_uuid_placeholder = res
+        .attributes
+        .get("db_subnet_group_name")
         .and_then(|v| subnet_group_resource_name(v))
         .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
         .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
@@ -261,7 +285,7 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
             "Aurora cluster → UpCloud Managed Database (no multi-master equivalent)".into(),
             "Review cluster-specific features like read replicas".into(),
         ],
-            source_hcl: None,
+        source_hcl: None,
     }
 }
 
@@ -299,7 +323,11 @@ pub(crate) fn extract_parameter_blocks(raw_hcl: &str) -> Vec<(String, String)> {
 }
 
 pub fn map_db_parameter_group(res: &TerraformResource) -> MigrationResult {
-    let family = res.attributes.get("family").map(|f| f.trim_matches('"')).unwrap_or("postgres");
+    let family = res
+        .attributes
+        .get("family")
+        .map(|f| f.trim_matches('"'))
+        .unwrap_or("postgres");
     let (db_type, props_prefix) = if family.contains("mysql") || family.contains("mariadb") {
         ("upcloud_managed_database_mysql", "mysql")
     } else {
@@ -308,19 +336,23 @@ pub fn map_db_parameter_group(res: &TerraformResource) -> MigrationResult {
 
     let params = extract_parameter_blocks(&res.raw_hcl);
 
-    let (valid, invalid): (Vec<_>, Vec<_>) = params.iter().partition(|(n, _)| is_valid_pg_property(n));
+    let (valid, invalid): (Vec<_>, Vec<_>) =
+        params.iter().partition(|(n, _)| is_valid_pg_property(n));
 
-    let mut notes = vec![
-        format!(
-            "No standalone UpCloud equivalent — {} parameter(s) merged inline into the target {} properties block.",
-            params.len(), db_type
-        ),
-    ];
+    let mut notes = vec![format!(
+        "No standalone UpCloud equivalent — {} parameter(s) merged inline into the target {} properties block.",
+        params.len(),
+        db_type
+    )];
     if !invalid.is_empty() {
         notes.push(format!(
             "{} unsupported parameter(s) commented out: {}",
             invalid.len(),
-            invalid.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+            invalid
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     let _ = (valid, props_prefix); // used only for notes above
@@ -410,7 +442,10 @@ pub fn map_elasticache_parameter_group(res: &TerraformResource) -> MigrationResu
         parent_resource: None,
         notes: vec![
             "aws_elasticache_parameter_group has no UpCloud equivalent resource.".into(),
-            format!("Add the {} properties shown above to your upcloud_managed_database_valkey resource.", params.len()),
+            format!(
+                "Add the {} properties shown above to your upcloud_managed_database_valkey resource.",
+                params.len()
+            ),
         ],
         source_hcl: None,
     }
@@ -429,11 +464,21 @@ fn map_elasticache_node_type(node_type: &str) -> &'static str {
 }
 
 pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
-    let engine = res.attributes.get("engine").map(|e| e.trim_matches('"')).unwrap_or("redis");
-    let node_type = res.attributes.get("node_type").map(|v| v.trim_matches('"')).unwrap_or("");
+    let engine = res
+        .attributes
+        .get("engine")
+        .map(|e| e.trim_matches('"'))
+        .unwrap_or("redis");
+    let node_type = res
+        .attributes
+        .get("node_type")
+        .map(|v| v.trim_matches('"'))
+        .unwrap_or("");
     let plan = map_elasticache_node_type(node_type);
 
-    let network_uuid_placeholder = res.attributes.get("subnet_group_name")
+    let network_uuid_placeholder = res
+        .attributes
+        .get("subnet_group_name")
         .and_then(|v| subnet_group_resource_name(v))
         .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
         .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
@@ -463,7 +508,10 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
     );
 
     let mut notes = vec![
-        format!("ElastiCache ({}) → UpCloud Managed Valkey (Redis-compatible)", engine),
+        format!(
+            "ElastiCache ({}) → UpCloud Managed Valkey (Redis-compatible)",
+            engine
+        ),
         "Update connection strings to point to UpCloud Valkey endpoint".into(),
     ];
     if !node_type.is_empty() {
@@ -484,7 +532,6 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,7 +541,10 @@ mod tests {
         TerraformResource {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("test.tf"),
             raw_hcl: String::new(),
         }
@@ -504,14 +554,18 @@ mod tests {
 
     #[test]
     fn rds_postgres_maps_to_postgresql_resource() {
-        let res = make_res("aws_db_instance", "db", &[
-            ("engine", "postgres"),
-            ("instance_class", "db.t3.medium"),
-        ]);
+        let res = make_res(
+            "aws_db_instance",
+            "db",
+            &[("engine", "postgres"), ("instance_class", "db.t3.medium")],
+        );
         let r = map_rds_instance(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"db\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_managed_database_postgresql\" \"db\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("zone  = \"__ZONE__\""), "{hcl}");
     }
 
@@ -520,7 +574,11 @@ mod tests {
         let res = make_res("aws_db_instance", "mydb", &[("engine", "mysql")]);
         let r = map_rds_instance(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_mysql");
-        assert!(r.upcloud_hcl.unwrap().contains("upcloud_managed_database_mysql"));
+        assert!(
+            r.upcloud_hcl
+                .unwrap()
+                .contains("upcloud_managed_database_mysql")
+        );
     }
 
     #[test]
@@ -540,19 +598,23 @@ mod tests {
     #[test]
     fn rds_instance_class_maps_to_plan() {
         let cases = [
-            ("db.t3.micro",  "1x1xCPU-2GB-25GB"),
-            ("db.t3.small",  "1x1xCPU-2GB-25GB"),
+            ("db.t3.micro", "1x1xCPU-2GB-25GB"),
+            ("db.t3.small", "1x1xCPU-2GB-25GB"),
             ("db.t3.medium", "1x2xCPU-4GB-50GB"),
-            ("db.r5.large",  "2x4xCPU-8GB-100GB"),
+            ("db.r5.large", "2x4xCPU-8GB-100GB"),
             ("db.r5.xlarge", "2x6xCPU-16GB-100GB"),
         ];
         for (class, expected_plan) in &cases {
-            let res = make_res("aws_db_instance", "db", &[
-                ("engine", "postgres"),
-                ("instance_class", class),
-            ]);
+            let res = make_res(
+                "aws_db_instance",
+                "db",
+                &[("engine", "postgres"), ("instance_class", class)],
+            );
             let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
-            assert!(hcl.contains(expected_plan), "class {class} should map to plan {expected_plan}\n{hcl}");
+            assert!(
+                hcl.contains(expected_plan),
+                "class {class} should map to plan {expected_plan}\n{hcl}"
+            );
         }
     }
 
@@ -567,9 +629,15 @@ mod tests {
     fn rds_instance_has_private_network_block() {
         let res = make_res("aws_db_instance", "db", &[("engine", "postgres")]);
         let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("network {"), "must have a network block\n{hcl}");
+        assert!(
+            hcl.contains("network {"),
+            "must have a network block\n{hcl}"
+        );
         assert!(hcl.contains("type   = \"private\""), "{hcl}");
-        assert!(hcl.contains("upcloud_network UUID"), "must have a TODO for network uuid\n{hcl}");
+        assert!(
+            hcl.contains("upcloud_network UUID"),
+            "must have a TODO for network uuid\n{hcl}"
+        );
     }
 
     #[test]
@@ -584,17 +652,27 @@ mod tests {
 
     #[test]
     fn rds_cluster_aurora_pg_maps_to_postgresql() {
-        let res = make_res("aws_rds_cluster", "cluster", &[("engine", "aurora-postgresql")]);
+        let res = make_res(
+            "aws_rds_cluster",
+            "cluster",
+            &[("engine", "aurora-postgresql")],
+        );
         let r = map_rds_cluster(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"cluster\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_managed_database_postgresql\" \"cluster\""),
+            "{hcl}"
+        );
     }
 
     #[test]
     fn rds_cluster_aurora_mysql_maps_to_mysql() {
         let res = make_res("aws_rds_cluster", "c", &[("engine", "aurora-mysql")]);
-        assert_eq!(map_rds_cluster(&res).upcloud_type, "upcloud_managed_database_mysql");
+        assert_eq!(
+            map_rds_cluster(&res).upcloud_type,
+            "upcloud_managed_database_mysql"
+        );
     }
 
     // ── map_elasticache_cluster ───────────────────────────────────────────────
@@ -605,7 +683,10 @@ mod tests {
         let r = map_elasticache_cluster(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_valkey");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_valkey\" \"cache\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_managed_database_valkey\" \"cache\""),
+            "{hcl}"
+        );
     }
 
     #[test]

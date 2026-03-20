@@ -20,17 +20,33 @@ use crate::migration::providers::aws::compute::aws_instance_type_to_upcloud_plan
 // ---------------------------------------------------------------------------
 
 const AWS_REGIONS: &[&str] = &[
-    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
-    "ca-central-1", "ca-west-1",
-    "eu-west-1", "eu-west-2", "eu-west-3",
-    "eu-central-1", "eu-central-2",
-    "eu-north-1", "eu-south-1", "eu-south-2",
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "ca-central-1",
+    "ca-west-1",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "eu-central-1",
+    "eu-central-2",
+    "eu-north-1",
+    "eu-south-1",
+    "eu-south-2",
     "ap-east-1",
-    "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4",
-    "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
-    "ap-south-1", "ap-south-2",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-southeast-3",
+    "ap-southeast-4",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-northeast-3",
+    "ap-south-1",
+    "ap-south-2",
     "sa-east-1",
-    "me-south-1", "me-central-1",
+    "me-south-1",
+    "me-central-1",
     "af-south-1",
     "il-central-1",
 ];
@@ -46,7 +62,9 @@ pub fn aws_region_to_upcloud_zone(region: &str) -> Option<&'static str> {
         "eu-north-1" => Some("fi-hel1"),
         "eu-south-1" | "eu-south-2" => Some("pl-waw1"),
         "ap-east-1" => Some("sg-sin1"),
-        "ap-southeast-1" | "ap-southeast-2" | "ap-southeast-3" | "ap-southeast-4" => Some("sg-sin1"),
+        "ap-southeast-1" | "ap-southeast-2" | "ap-southeast-3" | "ap-southeast-4" => {
+            Some("sg-sin1")
+        }
         "ap-northeast-1" | "ap-northeast-2" | "ap-northeast-3" => Some("sg-sin1"),
         "ap-south-1" | "ap-south-2" => Some("sg-sin1"),
         "sa-east-1" => Some("us-nyc1"),
@@ -75,7 +93,7 @@ impl VarKind {
     pub fn label(&self) -> &'static str {
         match self {
             VarKind::InstanceType => "EC2 instance type → UpCloud plan",
-            VarKind::Region       => "AWS region → UpCloud zone",
+            VarKind::Region => "AWS region → UpCloud zone",
         }
     }
 }
@@ -97,8 +115,8 @@ impl VarConversion {
     pub fn confidence_label(&self) -> &'static str {
         match self.confidence {
             8..=u8::MAX => "HIGH",
-            5..=7       => "MEDIUM",
-            _           => "LOW",
+            5..=7 => "MEDIUM",
+            _ => "LOW",
         }
     }
 }
@@ -120,17 +138,27 @@ pub fn analyze_variable(
     usage_attrs: &[String],
 ) -> Option<VarConversion> {
     let instance = score_instance_type(name, default_val, description, usage_attrs);
-    let region   = score_region(name, default_val, description, usage_attrs);
+    let region = score_region(name, default_val, description, usage_attrs);
 
     let best = match (instance, region) {
-        (Some(i), Some(r)) => if i.confidence >= r.confidence { i } else { r },
-        (Some(i), None)    => i,
-        (None, Some(r))    => r,
-        (None, None)       => return None,
+        (Some(i), Some(r)) => {
+            if i.confidence >= r.confidence {
+                i
+            } else {
+                r
+            }
+        }
+        (Some(i), None) => i,
+        (None, Some(r)) => r,
+        (None, None) => return None,
     };
 
     // Only report if there's at least some evidence.
-    if best.confidence >= 3 { Some(best) } else { None }
+    if best.confidence >= 3 {
+        Some(best)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +193,10 @@ fn score_instance_type(
         && let Some(plan) = rds_or_cache_class_to_upcloud_plan(dv)
     {
         score += 5;
-        signals.push(format!("default '{}' is an AWS RDS/ElastiCache instance class", dv));
+        signals.push(format!(
+            "default '{}' is an AWS RDS/ElastiCache instance class",
+            dv
+        ));
         converted_value = Some(plan.to_string());
     }
 
@@ -187,7 +218,15 @@ fn score_instance_type(
     // Signal 3: description keywords
     if let Some(desc) = description {
         let dl = desc.to_lowercase();
-        let kw = ["instance type", "machine type", "server size", "ec2 instance", "instance class", "compute type", "node type"];
+        let kw = [
+            "instance type",
+            "machine type",
+            "server size",
+            "ec2 instance",
+            "instance class",
+            "compute type",
+            "node type",
+        ];
         if kw.iter().any(|k| dl.contains(k)) {
             score += 2;
             signals.push("description mentions instance/machine type".to_string());
@@ -196,15 +235,26 @@ fn score_instance_type(
 
     // Signal 4: variable name keywords
     let nl = name.to_lowercase();
-    if nl.contains("instance_type") || nl.contains("machine_type") || nl.contains("server_size")
-        || nl.contains("instance_class") || nl.contains("node_type")
+    if nl.contains("instance_type")
+        || nl.contains("machine_type")
+        || nl.contains("server_size")
+        || nl.contains("instance_class")
+        || nl.contains("node_type")
     {
         score += 1;
         signals.push("variable name suggests instance type".to_string());
     }
 
-    if score == 0 { return None; }
-    Some(VarConversion { kind: VarKind::InstanceType, confidence: score.min(10), converted_value, original_default, signals })
+    if score == 0 {
+        return None;
+    }
+    Some(VarConversion {
+        kind: VarKind::InstanceType,
+        confidence: score.min(10),
+        converted_value,
+        original_default,
+        signals,
+    })
 }
 
 /// Map an AWS RDS instance class or ElastiCache node type to the corresponding UpCloud
@@ -226,19 +276,39 @@ fn rds_or_cache_class_to_upcloud_plan(class: &str) -> Option<&'static str> {
     let size = stripped.rsplit('.').next().unwrap_or(stripped);
     match size {
         "nano" | "micro" | "small" => {
-            if is_rds { Some("1x1xCPU-2GB-25GB") } else { Some("1x1xCPU-2GB") }
+            if is_rds {
+                Some("1x1xCPU-2GB-25GB")
+            } else {
+                Some("1x1xCPU-2GB")
+            }
         }
         "medium" => {
-            if is_rds { Some("1x2xCPU-4GB-50GB") } else { Some("1x2xCPU-4GB") }
+            if is_rds {
+                Some("1x2xCPU-4GB-50GB")
+            } else {
+                Some("1x2xCPU-4GB")
+            }
         }
         "large" => {
-            if is_rds { Some("2x4xCPU-8GB-100GB") } else { Some("1x2xCPU-8GB") }
+            if is_rds {
+                Some("2x4xCPU-8GB-100GB")
+            } else {
+                Some("1x2xCPU-8GB")
+            }
         }
         "xlarge" => {
-            if is_rds { Some("2x6xCPU-16GB-100GB") } else { Some("1x4xCPU-28GB") }
+            if is_rds {
+                Some("2x6xCPU-16GB-100GB")
+            } else {
+                Some("1x4xCPU-28GB")
+            }
         }
         s if s.ends_with("xlarge") => {
-            if is_rds { Some("2x8xCPU-32GB-100GB") } else { Some("1x8xCPU-56GB") }
+            if is_rds {
+                Some("2x8xCPU-32GB-100GB")
+            } else {
+                Some("1x8xCPU-56GB")
+            }
         }
         _ => None,
     }
@@ -269,7 +339,8 @@ fn score_region(
         match attr.as_str() {
             "region" => {
                 score += 5;
-                signals.push("referenced as 'region' attribute in a resource or provider".to_string());
+                signals
+                    .push("referenced as 'region' attribute in a resource or provider".to_string());
                 break;
             }
             "availability_zone" | "az" => {
@@ -284,7 +355,14 @@ fn score_region(
     // Signal 3: description keywords
     if let Some(desc) = description {
         let dl = desc.to_lowercase();
-        let kw = ["region", "location", "datacenter", "data center", "geography", "area"];
+        let kw = [
+            "region",
+            "location",
+            "datacenter",
+            "data center",
+            "geography",
+            "area",
+        ];
         if kw.iter().any(|k| dl.contains(k)) {
             score += 2;
             signals.push("description mentions region/location".to_string());
@@ -293,15 +371,26 @@ fn score_region(
 
     // Signal 4: variable name keywords
     let nl = name.to_lowercase();
-    if nl.contains("region") || nl.contains("location") || nl == "zone"
-        || nl.contains("datacenter") || nl.contains("data_center")
+    if nl.contains("region")
+        || nl.contains("location")
+        || nl == "zone"
+        || nl.contains("datacenter")
+        || nl.contains("data_center")
     {
         score += 1;
         signals.push("variable name suggests region/zone".to_string());
     }
 
-    if score == 0 { return None; }
-    Some(VarConversion { kind: VarKind::Region, confidence: score.min(10), converted_value, original_default, signals })
+    if score == 0 {
+        return None;
+    }
+    Some(VarConversion {
+        kind: VarKind::Region,
+        confidence: score.min(10),
+        converted_value,
+        original_default,
+        signals,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -320,12 +409,18 @@ pub fn extract_variable_info(raw_hcl: &str) -> (Option<String>, Option<String>) 
         let trimmed = line.trim_start();
 
         // Track brace depth so we skip nested validation { } blocks.
-        let opens  = trimmed.chars().filter(|&c| c == '{').count();
+        let opens = trimmed.chars().filter(|&c| c == '{').count();
         let closes = trimmed.chars().filter(|&c| c == '}').count();
-        if trimmed.starts_with("validation") { in_validation = depth == 1; }
+        if trimmed.starts_with("validation") {
+            in_validation = depth == 1;
+        }
         depth = depth.saturating_add(opens).saturating_sub(closes);
-        if in_validation && depth > 1 { continue; }
-        if depth == 0 { in_validation = false; }
+        if in_validation && depth > 1 {
+            continue;
+        }
+        if depth == 0 {
+            in_validation = false;
+        }
 
         if trimmed.starts_with("default") && !in_validation {
             if let Some(rest) = trimmed.strip_prefix("default").map(|s| s.trim_start())
@@ -336,7 +431,8 @@ pub fn extract_variable_info(raw_hcl: &str) -> (Option<String>, Option<String>) 
                     default_val = Some(val[1..val.len() - 1].to_string());
                 }
             }
-        } else if trimmed.starts_with("description") && !in_validation
+        } else if trimmed.starts_with("description")
+            && !in_validation
             && let Some(rest) = trimmed.strip_prefix("description").map(|s| s.trim_start())
             && let Some(rest) = rest.strip_prefix('=')
         {
@@ -363,14 +459,12 @@ pub fn build_var_usage_map(source_hcl_blocks: &[&str]) -> HashMap<String, Vec<St
         for line in hcl.lines() {
             let trimmed = line.trim_start();
             // Skip comments and pure block lines.
-            if trimmed.starts_with('#')
-                || trimmed.is_empty()
-                || trimmed == "{"
-                || trimmed == "}"
-            {
+            if trimmed.starts_with('#') || trimmed.is_empty() || trimmed == "{" || trimmed == "}" {
                 continue;
             }
-            let Some(eq_pos) = trimmed.find('=') else { continue };
+            let Some(eq_pos) = trimmed.find('=') else {
+                continue;
+            };
             let attr = trimmed[..eq_pos].trim();
             // Skip block headers (contain spaces/quotes) and comparison operators.
             if attr.contains('"') || attr.contains(' ') || attr.is_empty() {
@@ -387,9 +481,13 @@ pub fn build_var_usage_map(source_hcl_blocks: &[&str]) -> HashMap<String, Vec<St
                     .unwrap_or(search.len());
                 let var_name = &search[var_start..var_end];
                 if !var_name.is_empty() {
-                    map.entry(var_name.to_string()).or_default().push(attr.to_string());
+                    map.entry(var_name.to_string())
+                        .or_default()
+                        .push(attr.to_string());
                 }
-                if var_start >= search.len() { break; }
+                if var_start >= search.len() {
+                    break;
+                }
                 search = &search[var_start..];
             }
         }
@@ -404,14 +502,16 @@ pub fn build_var_usage_map(source_hcl_blocks: &[&str]) -> HashMap<String, Vec<St
 /// Return annotation comment lines to prepend to the variable block.
 pub fn build_var_annotation(name: &str, conversion: &VarConversion) -> String {
     let label = conversion.confidence_label();
-    let kind  = conversion.kind.label();
+    let kind = conversion.kind.label();
 
     let mut out = String::new();
 
     match conversion.confidence {
         8..=u8::MAX => {
             // HIGH: brief one-liner
-            if let (Some(orig), Some(cv)) = (&conversion.original_default, &conversion.converted_value) {
+            if let (Some(orig), Some(cv)) =
+                (&conversion.original_default, &conversion.converted_value)
+            {
                 out.push_str(&format!(
                     "# AUTO-CONVERTED [{}]: '{}' → '{}' ({})\n",
                     label, orig, cv, kind
@@ -428,7 +528,9 @@ pub fn build_var_annotation(name: &str, conversion: &VarConversion) -> String {
         }
         5..=7 => {
             // MEDIUM: conversion note + verify prompt
-            if let (Some(orig), Some(cv)) = (&conversion.original_default, &conversion.converted_value) {
+            if let (Some(orig), Some(cv)) =
+                (&conversion.original_default, &conversion.converted_value)
+            {
                 out.push_str(&format!(
                     "# AUTO-CONVERTED [{}]: '{}' → '{}' ({})\n",
                     label, orig, cv, kind
@@ -446,10 +548,15 @@ pub fn build_var_annotation(name: &str, conversion: &VarConversion) -> String {
         }
         _ => {
             // LOW: flag only; convert the default if it's unambiguous, but warn clearly
-            if let (Some(orig), Some(cv)) = (&conversion.original_default, &conversion.converted_value) {
+            if let (Some(orig), Some(cv)) =
+                (&conversion.original_default, &conversion.converted_value)
+            {
                 out.push_str(&format!(
                     "# AUTO-CONVERTED [{}confidence]: '{}' → '{}' ({})\n",
-                    label.to_lowercase(), orig, cv, kind
+                    label.to_lowercase(),
+                    orig,
+                    cv,
+                    kind
                 ));
                 out.push_str("#   Low confidence — verify this is correct before applying\n");
             } else {
@@ -472,10 +579,14 @@ pub fn build_var_annotation(name: &str, conversion: &VarConversion) -> String {
 /// Rewrite the `default = "..."` line in a variable block to use the converted value.
 /// All other lines are preserved verbatim.
 pub fn apply_conversion_to_hcl(raw_hcl: &str, conversion: &VarConversion) -> String {
-    let Some(orig) = &conversion.original_default else { return raw_hcl.to_string(); };
-    let Some(cv)   = &conversion.converted_value   else { return raw_hcl.to_string(); };
+    let Some(orig) = &conversion.original_default else {
+        return raw_hcl.to_string();
+    };
+    let Some(cv) = &conversion.converted_value else {
+        return raw_hcl.to_string();
+    };
 
-    let target      = format!("\"{}\"", orig);
+    let target = format!("\"{}\"", orig);
     let replacement = format!("\"{}\"", cv);
 
     let mut out = String::with_capacity(raw_hcl.len());
@@ -531,7 +642,11 @@ mod tests {
             "}\n"
         );
         let (d, _) = extract_variable_info(hcl);
-        assert_eq!(d.as_deref(), Some("us-east-1"), "real default must be found");
+        assert_eq!(
+            d.as_deref(),
+            Some("us-east-1"),
+            "real default must be found"
+        );
     }
 
     // ── build_var_usage_map ───────────────────────────────────────────────────
@@ -559,7 +674,8 @@ mod tests {
             Some("t3.micro"),
             Some("EC2 instance type"),
             &[String::from("instance_type")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.kind, VarKind::InstanceType);
         assert!(conv.confidence >= 8, "should be HIGH: {}", conv.confidence);
         assert_eq!(conv.converted_value.as_deref(), Some("1xCPU-1GB"));
@@ -572,7 +688,8 @@ mod tests {
             Some("us-east-1"),
             Some("AWS region to deploy resources"),
             &[String::from("region")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.kind, VarKind::Region);
         assert!(conv.confidence >= 8, "should be HIGH: {}", conv.confidence);
         assert_eq!(conv.converted_value.as_deref(), Some("us-nyc1"));
@@ -580,15 +697,14 @@ mod tests {
 
     #[test]
     fn medium_confidence_region_from_name_and_default_only() {
-        let conv = analyze_variable(
-            "deploy_region",
-            Some("eu-west-1"),
-            None,
-            &[],
-        ).unwrap();
+        let conv = analyze_variable("deploy_region", Some("eu-west-1"), None, &[]).unwrap();
         assert_eq!(conv.kind, VarKind::Region);
         // default match (+5) + name (+1) = 6 → MEDIUM
-        assert!(conv.confidence >= 5, "should be at least MEDIUM: {}", conv.confidence);
+        assert!(
+            conv.confidence >= 5,
+            "should be at least MEDIUM: {}",
+            conv.confidence
+        );
         assert_eq!(conv.converted_value.as_deref(), Some("de-fra1"));
     }
 
@@ -596,7 +712,10 @@ mod tests {
     fn low_confidence_instance_type_from_name_only() {
         let conv = analyze_variable("instance_type", None, None, &[]);
         // Only name signal (+1) — below threshold of 3, should be None
-        assert!(conv.is_none(), "name-only should not reach confidence threshold");
+        assert!(
+            conv.is_none(),
+            "name-only should not reach confidence threshold"
+        );
     }
 
     #[test]
@@ -613,7 +732,8 @@ mod tests {
             Some("ap-southeast-1"),
             None,
             &[String::from("region")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.kind, VarKind::Region);
     }
 
@@ -631,7 +751,10 @@ mod tests {
         };
         let out = apply_conversion_to_hcl(hcl, &conv);
         assert!(out.contains("default = \"us-nyc1\""), "{out}");
-        assert!(!out.contains("us-east-1"), "original value should be replaced\n{out}");
+        assert!(
+            !out.contains("us-east-1"),
+            "original value should be replaced\n{out}"
+        );
     }
 
     #[test]
@@ -651,8 +774,14 @@ mod tests {
         };
         let out = apply_conversion_to_hcl(hcl, &conv);
         // Description must be untouched; only the default line is rewritten.
-        assert!(out.contains("description = \"default is us-east-1\""), "description unchanged\n{out}");
-        assert!(out.contains("default = \"us-nyc1\""), "default rewritten\n{out}");
+        assert!(
+            out.contains("description = \"default is us-east-1\""),
+            "description unchanged\n{out}"
+        );
+        assert!(
+            out.contains("default = \"us-nyc1\""),
+            "default rewritten\n{out}"
+        );
     }
 
     // ── RDS instance class / ElastiCache node type detection ─────────────────
@@ -664,9 +793,14 @@ mod tests {
             Some("db.t3.medium"),
             Some("RDS instance class for PostgreSQL"),
             &[String::from("instance_class")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.kind, VarKind::InstanceType);
-        assert!(conv.confidence >= 8, "confidence too low: {}", conv.confidence);
+        assert!(
+            conv.confidence >= 8,
+            "confidence too low: {}",
+            conv.confidence
+        );
         assert_eq!(conv.converted_value.as_deref(), Some("1x2xCPU-4GB-50GB"));
     }
 
@@ -677,9 +811,14 @@ mod tests {
             Some("cache.t3.micro"),
             Some("ElastiCache node type"),
             &[String::from("node_type")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.kind, VarKind::InstanceType);
-        assert!(conv.confidence >= 8, "confidence too low: {}", conv.confidence);
+        assert!(
+            conv.confidence >= 8,
+            "confidence too low: {}",
+            conv.confidence
+        );
         assert_eq!(conv.converted_value.as_deref(), Some("1x1xCPU-2GB"));
     }
 
@@ -690,7 +829,8 @@ mod tests {
             Some("db.m5.xlarge"),
             None,
             &[String::from("instance_class")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.converted_value.as_deref(), Some("2x6xCPU-16GB-100GB"));
     }
 
@@ -701,7 +841,8 @@ mod tests {
             Some("db.r5.2xlarge"),
             None,
             &[String::from("instance_class")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.converted_value.as_deref(), Some("2x8xCPU-32GB-100GB"));
     }
 
@@ -712,7 +853,8 @@ mod tests {
             Some("cache.r6g.xlarge"),
             None,
             &[String::from("node_type")],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conv.converted_value.as_deref(), Some("1x4xCPU-28GB"));
     }
 
@@ -721,6 +863,10 @@ mod tests {
         // Variable named "db_class" with no default and no usage signals
         // should not reach the threshold
         let result = analyze_variable("db_class", None, None, &[]);
-        assert!(result.is_none(), "name-only RDS variable should not convert: {:?}", result);
+        assert!(
+            result.is_none(),
+            "name-only RDS variable should not convert: {:?}",
+            result
+        );
     }
 }

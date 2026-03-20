@@ -1,14 +1,14 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
+use super::theme;
 use crate::app::App;
 use crate::todo::TodoStatus;
-use super::theme;
 
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -65,7 +65,11 @@ fn todo_icon(status: &TodoStatus) -> &'static str {
 }
 
 fn render_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let resolved = app.todos.iter().filter(|t| t.status == TodoStatus::Resolved).count();
+    let resolved = app
+        .todos
+        .iter()
+        .filter(|t| t.status == TodoStatus::Resolved)
+        .count();
     let total = app.todos.len();
 
     let block = Block::default()
@@ -90,11 +94,19 @@ fn render_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 TodoStatus::Skipped => theme::dim(),
                 TodoStatus::Loading => theme::warning(),
                 TodoStatus::Pending => {
-                    if is_current { theme::accent() } else { theme::dim() }
+                    if is_current {
+                        theme::accent()
+                    } else {
+                        theme::dim()
+                    }
                 }
             };
 
-            let file_style = if is_current { theme::primary() } else { theme::muted() };
+            let file_style = if is_current {
+                theme::primary()
+            } else {
+                theme::muted()
+            };
 
             let short = if todo.placeholder.len() > 22 {
                 format!("{}…", &todo.placeholder[..21])
@@ -114,13 +126,11 @@ fn render_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let mut list_state = ListState::default();
     list_state.select(Some(app.todo_idx));
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    );
 
     f.render_stateful_widget(list, area, &mut list_state);
 }
@@ -228,7 +238,11 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // ── Input field ───────────────────────────────────────────────────────────
     let (input_text, input_border_style, input_title) = if app.todo_input_active {
-        let cursor = if (app.tick / 4).is_multiple_of(2) { "█" } else { " " };
+        let cursor = if (app.tick / 4).is_multiple_of(2) {
+            "█"
+        } else {
+            " "
+        };
         (
             format!("{}{}", app.todo_input, cursor),
             theme::accent(),
@@ -248,8 +262,7 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .border_style(input_border_style)
         .title(Span::styled(input_title, theme::primary_bold()));
 
-    let input = Paragraph::new(Span::styled(input_text, theme::primary()))
-        .block(input_block);
+    let input = Paragraph::new(Span::styled(input_text, theme::primary())).block(input_block);
     f.render_widget(input, layout[1]);
 
     // ── Hints ─────────────────────────────────────────────────────────────────
@@ -271,7 +284,14 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled(" nav  ", theme::dim()),
             Span::styled("[N]", theme::accent_bold()),
             Span::styled(" next pending  ", theme::dim()),
-            Span::styled("[A]", if has_key { theme::accent_bold() } else { theme::dim() }),
+            Span::styled(
+                "[A]",
+                if has_key {
+                    theme::accent_bold()
+                } else {
+                    theme::dim()
+                },
+            ),
             Span::styled(" AI suggest  ", theme::dim()),
             Span::styled("[Enter]", theme::accent_bold()),
             Span::styled(" edit  ", theme::dim()),

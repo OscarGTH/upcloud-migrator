@@ -3,10 +3,13 @@ use crate::migration::types::{MigrationResult, MigrationStatus};
 #[cfg(test)]
 use crate::terraform::types::TerraformResource;
 
-
 #[cfg(test)]
 pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
-    let k8s_version = res.attributes.get("version").map(|v| v.trim_matches('"')).unwrap_or("1.28");
+    let k8s_version = res
+        .attributes
+        .get("version")
+        .map(|v| v.trim_matches('"'))
+        .unwrap_or("1.28");
 
     let hcl = format!(
         r#"resource "upcloud_kubernetes_cluster" "{name}" {{
@@ -36,13 +39,15 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
             "Update kubeconfig after cluster creation".into(),
             "IAM roles for service accounts → UpCloud API credentials".into(),
         ],
-            source_hcl: None,
+        source_hcl: None,
     }
 }
 
 #[cfg(test)]
 pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
-    let instance_types = res.attributes.get("instance_types")
+    let instance_types = res
+        .attributes
+        .get("instance_types")
         .map(|t| {
             // hcl-rs formats list expressions with newlines (e.g. "[\n  var.x\n]").
             // Collapse to a single line so the value can be safely embedded in
@@ -50,9 +55,21 @@ pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
             t.split_whitespace().collect::<Vec<_>>().join(" ")
         })
         .unwrap_or_else(|| "t3.medium".into());
-    let min_size = res.attributes.get("scaling_config.min_size").map(|s| s.trim_matches('"')).unwrap_or("1");
-    let desired = res.attributes.get("scaling_config.desired_size").map(|s| s.trim_matches('"')).unwrap_or("2");
-    let max_size = res.attributes.get("scaling_config.max_size").map(|s| s.trim_matches('"')).unwrap_or("3");
+    let min_size = res
+        .attributes
+        .get("scaling_config.min_size")
+        .map(|s| s.trim_matches('"'))
+        .unwrap_or("1");
+    let desired = res
+        .attributes
+        .get("scaling_config.desired_size")
+        .map(|s| s.trim_matches('"'))
+        .unwrap_or("2");
+    let max_size = res
+        .attributes
+        .get("scaling_config.max_size")
+        .map(|s| s.trim_matches('"'))
+        .unwrap_or("3");
 
     let hcl = format!(
         r#"resource "upcloud_kubernetes_node_group" "{name}" {{
@@ -82,11 +99,9 @@ pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
             format!("Node group ({}) → UpCloud k8s Node Group", instance_types),
             "UpCloud node groups don't auto-scale; set count explicitly".into(),
         ],
-            source_hcl: None,
+        source_hcl: None,
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -97,7 +112,10 @@ mod tests {
         TerraformResource {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("test.tf"),
             raw_hcl: String::new(),
         }
@@ -111,7 +129,10 @@ mod tests {
         let r = map_eks_cluster(&res);
         assert_eq!(r.upcloud_type, "upcloud_kubernetes_cluster");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_kubernetes_cluster\" \"prod\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_kubernetes_cluster\" \"prod\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("version             = \"1.29\""), "{hcl}");
     }
 
@@ -145,15 +166,22 @@ mod tests {
 
     #[test]
     fn eks_node_group_generates_kubernetes_node_group() {
-        let res = make_res("aws_eks_node_group", "workers", &[
-            ("scaling_config.desired_size", "3"),
-            ("scaling_config.min_size", "1"),
-            ("scaling_config.max_size", "5"),
-        ]);
+        let res = make_res(
+            "aws_eks_node_group",
+            "workers",
+            &[
+                ("scaling_config.desired_size", "3"),
+                ("scaling_config.min_size", "1"),
+                ("scaling_config.max_size", "5"),
+            ],
+        );
         let r = map_eks_node_group(&res);
         assert_eq!(r.upcloud_type, "upcloud_kubernetes_node_group");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_kubernetes_node_group\" \"workers\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_kubernetes_node_group\" \"workers\""),
+            "{hcl}"
+        );
         // desired_size drives the node_count
         assert!(hcl.contains("node_count = 3"), "{hcl}");
     }
@@ -181,16 +209,18 @@ mod tests {
     #[test]
     fn eks_node_group_multiline_instance_types_produces_valid_hcl() {
         // Simulate the value hcl-rs produces for `instance_types = [var.eks_instance_type]`
-        let res = make_res("aws_eks_node_group", "ng", &[
-            ("instance_types", "[\n  var.eks_instance_type\n]"),
-        ]);
+        let res = make_res(
+            "aws_eks_node_group",
+            "ng",
+            &[("instance_types", "[\n  var.eks_instance_type\n]")],
+        );
         let hcl = map_eks_node_group(&res).upcloud_hcl.unwrap();
 
         // No line may start with whitespace-only content that looks like a continuation
         // of a broken comment — the simplest check is that no line is purely `]`.
         for line in hcl.lines() {
             assert!(
-                !line.trim() .eq("]"),
+                !line.trim().eq("]"),
                 "stray `]` on its own line — comment was broken:\n{hcl}"
             );
         }

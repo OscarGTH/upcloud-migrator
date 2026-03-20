@@ -2,9 +2,12 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::migration::providers::{detect_provider, ResourceRole, SourceProvider};
+use crate::migration::providers::{ResourceRole, SourceProvider, detect_provider};
 use crate::migration::types::{MigrationResult, MigrationStatus};
-use crate::migration::var_detector::{analyze_variable, apply_conversion_to_hcl, build_var_annotation, build_var_usage_map, extract_variable_info, VarKind};
+use crate::migration::var_detector::{
+    VarKind, analyze_variable, apply_conversion_to_hcl, build_var_annotation, build_var_usage_map,
+    extract_variable_info,
+};
 use crate::terraform::types::{PassthroughBlock, PassthroughKind};
 use crate::zones::zone_to_objstorage_region;
 
@@ -16,7 +19,6 @@ pub(crate) const TODO_PLACEHOLDER_PREFIX: &str = "<TODO";
 /// skipped during generation (e.g. firewall rules with no resolvable server_id).
 /// The diff view uses this to show a "skipped" note instead of partial HCL.
 pub const SKIPPED_SENTINEL: &str = "\x00SKIPPED";
-
 
 /// Resolved HCL map: maps `(resource_type, resource_name)` to the fully-resolved HCL string
 /// (zone injected, cross-references resolved, source refs sanitised).
@@ -46,24 +48,31 @@ struct CrossRefTables {
 /// Build all cross-reference lookup tables from the migration results.
 /// These tables enable efficient resolution of source resource references to UpCloud equivalents
 /// and tracking of resource relationships (e.g., which servers reference which firewall rules).
-fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProvider) -> CrossRefTables {
+fn build_cross_ref_tables(
+    results: &[MigrationResult],
+    provider: &dyn SourceProvider,
+) -> CrossRefTables {
     // Collect resource names by type for direct lookups
-    let lb_names: Vec<String> = results.iter()
+    let lb_names: Vec<String> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_loadbalancer")
         .map(|r| r.resource_name.clone())
         .collect();
 
-    let network_names: Vec<String> = results.iter()
+    let network_names: Vec<String> = results
+        .iter()
         .filter(|r| r.upcloud_type.contains("upcloud_network"))
         .map(|r| r.resource_name.clone())
         .collect();
 
-    let server_names: Vec<String> = results.iter()
+    let server_names: Vec<String> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_server")
         .map(|r| r.resource_name.clone())
         .collect();
 
-    let k8s_names: Vec<String> = results.iter()
+    let k8s_names: Vec<String> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_kubernetes_cluster")
         .map(|r| r.resource_name.clone())
         .collect();
@@ -79,19 +88,22 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
         }
     }
 
-    let backend_names: Vec<String> = results.iter()
+    let backend_names: Vec<String> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_loadbalancer_backend")
         .map(|r| r.resource_name.clone())
         .collect();
 
-    let cert_bundle_names: Vec<String> = results.iter()
+    let cert_bundle_names: Vec<String> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_loadbalancer_manual_certificate_bundle")
         .map(|r| r.resource_name.clone())
         .collect();
 
     // Build server_info_map: server resource_name → Option<count string>
     // Used for name-based firewall server_id resolution and IP ref indexing.
-    let server_info_map: HashMap<String, Option<String>> = results.iter()
+    let server_info_map: HashMap<String, Option<String>> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_server")
         .map(|r| {
             let count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl);
@@ -101,51 +113,80 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
 
     // Build firewall_to_server_map: firewall resource_name → Vec<server resource_name>
     let mut firewall_to_server_map: HashMap<String, Vec<String>> = HashMap::new();
-    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance) {
+    for r in results
+        .iter()
+        .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance)
+    {
         if let Some(hcl) = r.source_hcl.as_deref() {
             for fw_name in provider.extract_security_refs_from_instance(hcl) {
-                firewall_to_server_map.entry(fw_name).or_default().push(r.resource_name.clone());
+                firewall_to_server_map
+                    .entry(fw_name)
+                    .or_default()
+                    .push(r.resource_name.clone());
             }
         }
     }
 
     // Build network_count_map: network resource_name → whether it has count
-    let network_count_map: HashMap<String, bool> = results.iter()
+    let network_count_map: HashMap<String, bool> = results
+        .iter()
         .filter(|r| r.upcloud_type.contains("upcloud_network"))
         .map(|r| {
-            let has_count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl).is_some();
+            let has_count = r
+                .upcloud_hcl
+                .as_deref()
+                .and_then(extract_count_from_hcl)
+                .is_some();
             (r.resource_name.clone(), has_count)
         })
         .collect();
 
     // Build param_group_map: parameter group resource_name → Vec<(param_name, value)>
-    let param_group_map: HashMap<String, Vec<(String, String)>> = results.iter()
+    let param_group_map: HashMap<String, Vec<(String, String)>> = results
+        .iter()
         .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ParameterGroup)
-        .filter_map(|r| r.source_hcl.as_ref().map(|hcl| {
-            (r.resource_name.clone(), provider.extract_parameter_blocks(hcl))
-        }))
+        .filter_map(|r| {
+            r.source_hcl.as_ref().map(|hcl| {
+                (
+                    r.resource_name.clone(),
+                    provider.extract_parameter_blocks(hcl),
+                )
+            })
+        })
         .collect();
 
     // Build subnet_group_subnets_map: subnet group resource_name → Vec<subnet resource_name>
-    let subnet_group_subnets_map: HashMap<String, Vec<String>> = results.iter()
+    let subnet_group_subnets_map: HashMap<String, Vec<String>> = results
+        .iter()
         .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::SubnetGroup)
-        .filter_map(|r| r.source_hcl.as_deref().map(|hcl| {
-            (r.resource_name.clone(), provider.extract_subnet_names_from_subnet_group(hcl))
-        }))
+        .filter_map(|r| {
+            r.source_hcl.as_deref().map(|hcl| {
+                (
+                    r.resource_name.clone(),
+                    provider.extract_subnet_names_from_subnet_group(hcl),
+                )
+            })
+        })
         .filter(|(_, subnets)| !subnets.is_empty())
         .collect();
 
     // Build server_subnet_map and related tables for load balancer network resolution
-    let server_subnet_map: HashMap<String, String> = results.iter()
+    let server_subnet_map: HashMap<String, String> = results
+        .iter()
         .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance)
-        .filter_map(|r| r.source_hcl.as_deref().and_then(|hcl| {
-            provider.extract_subnet_from_instance(hcl)
-                .map(|subnet| (r.resource_name.clone(), subnet))
-        }))
+        .filter_map(|r| {
+            r.source_hcl.as_deref().and_then(|hcl| {
+                provider
+                    .extract_subnet_from_instance(hcl)
+                    .map(|subnet| (r.resource_name.clone(), subnet))
+            })
+        })
         .collect();
 
     let mut tg_servers_map: HashMap<String, Vec<String>> = HashMap::new();
-    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbTargetGroupAttachment) {
+    for r in results.iter().filter(|r| {
+        provider.resource_role(&r.resource_type) == ResourceRole::LbTargetGroupAttachment
+    }) {
         if let Some(hcl) = r.source_hcl.as_deref()
             && let Some((tg, srv)) = provider.extract_tg_server_from_attachment(hcl)
         {
@@ -154,13 +195,17 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
     }
 
     let mut lb_tgs_map: HashMap<String, Vec<String>> = HashMap::new();
-    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener) {
+    for r in results
+        .iter()
+        .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener)
+    {
         if let Some(hcl) = r.source_hcl.as_deref()
             && let Some(tg) = provider.extract_tg_from_listener(hcl)
         {
             let lb_name = r.parent_resource.clone().unwrap_or_default();
             let lb_name = if lb_name.is_empty() {
-                provider.extract_lb_name_from_listener(hcl)
+                provider
+                    .extract_lb_name_from_listener(hcl)
                     .unwrap_or_default()
             } else {
                 lb_name
@@ -189,10 +234,15 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
     }
 
     // Build storage-related maps
-    let storage_count_map: HashMap<String, bool> = results.iter()
+    let storage_count_map: HashMap<String, bool> = results
+        .iter()
         .filter(|r| r.upcloud_type == "upcloud_storage")
         .map(|r| {
-            let has_count = r.upcloud_hcl.as_deref().and_then(extract_count_from_hcl).is_some();
+            let has_count = r
+                .upcloud_hcl
+                .as_deref()
+                .and_then(extract_count_from_hcl)
+                .is_some();
             (r.resource_name.clone(), has_count)
         })
         .collect();
@@ -200,7 +250,10 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
     let mut storage_inject_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut storage_promote_count: HashMap<String, String> = HashMap::new();
 
-    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::VolumeAttachment) {
+    for r in results
+        .iter()
+        .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::VolumeAttachment)
+    {
         let server_name = match r.parent_resource.as_deref() {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => continue,
@@ -221,7 +274,10 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
 
         let server_count_val = server_info_map.get(&server_name).and_then(|c| c.clone());
         let server_has_count = server_count_val.is_some();
-        let storage_has_count = storage_count_map.get(&storage_name).copied().unwrap_or(false);
+        let storage_has_count = storage_count_map
+            .get(&storage_name)
+            .copied()
+            .unwrap_or(false);
 
         let storage_ref = if server_has_count && !storage_has_count {
             if let Some(ref count_val) = server_count_val {
@@ -240,7 +296,10 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
             "  storage_devices {{\n    storage = {}\n    type    = \"disk\"\n  }}\n",
             storage_ref
         );
-        storage_inject_map.entry(server_name).or_default().push(block);
+        storage_inject_map
+            .entry(server_name)
+            .or_default()
+            .push(block);
     }
 
     CrossRefTables {
@@ -289,35 +348,46 @@ fn replace_indexed_placeholders(hcl: &str, pattern: &str, replacements: &[String
 /// Resolve load balancer, backend, and certificate placeholders using indexed replacement.
 fn resolve_load_balancer_refs(hcl: &str, xref: &CrossRefTables) -> String {
     let mut s = hcl.to_string();
-    
+
     // Resolve indexed load balancer references
-    let lb_refs: Vec<String> = xref.lb_names
+    let lb_refs: Vec<String> = xref
+        .lb_names
         .iter()
         .map(|lb| format!("upcloud_loadbalancer.{}.id", lb))
         .collect();
     s = replace_indexed_placeholders(&s, "upcloud_loadbalancer.<TODO>.id", &lb_refs);
-    
+
     // Resolve indexed backend references
-    let backend_refs: Vec<String> = xref.backend_names
+    let backend_refs: Vec<String> = xref
+        .backend_names
         .iter()
         .map(|b| format!("upcloud_loadbalancer_backend.{}.name", b))
         .collect();
-    s = replace_indexed_placeholders(&s, "upcloud_loadbalancer_backend.<TODO>.name", &backend_refs);
-    
+    s = replace_indexed_placeholders(
+        &s,
+        "upcloud_loadbalancer_backend.<TODO>.name",
+        &backend_refs,
+    );
+
     // Resolve indexed certificate bundle references
-    let cert_refs: Vec<String> = xref.cert_bundle_names
+    let cert_refs: Vec<String> = xref
+        .cert_bundle_names
         .iter()
         .map(|c| format!("upcloud_loadbalancer_manual_certificate_bundle.{}.id", c))
         .collect();
-    s = replace_indexed_placeholders(&s, "upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id", &cert_refs);
-    
+    s = replace_indexed_placeholders(
+        &s,
+        "upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id",
+        &cert_refs,
+    );
+
     s
 }
 
 /// Resolve Kubernetes and general resource references.
 fn resolve_k8s_and_generic_refs(hcl: &str, xref: &CrossRefTables) -> String {
     let mut s = hcl.to_string();
-    
+
     // Resolve Kubernetes cluster references for node groups
     if let Some(k8s) = xref.k8s_names.first() {
         s = s.replace(
@@ -325,7 +395,7 @@ fn resolve_k8s_and_generic_refs(hcl: &str, xref: &CrossRefTables) -> String {
             &format!("upcloud_kubernetes_cluster.{}.id", k8s),
         );
     }
-    
+
     s
 }
 
@@ -377,7 +447,11 @@ fn resolve_network_refs(hcl: &str, resource_name: &str, xref: &CrossRefTables) -
     for net_name in &xref.network_names {
         let specific = format!("\"<TODO: upcloud_network.{} reference>\"", net_name);
         if s.contains(&specific) {
-            let net_has_count = xref.network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
+            let net_has_count = xref
+                .network_count_map
+                .get(net_name.as_str())
+                .copied()
+                .unwrap_or(false);
             let net_ref = if net_has_count {
                 if extract_count_from_hcl(&s).is_some() {
                     format!("upcloud_network.{}[count.index].id", net_name)
@@ -395,11 +469,16 @@ fn resolve_network_refs(hcl: &str, resource_name: &str, xref: &CrossRefTables) -
     for (sg_name, subnets) in &xref.subnet_group_subnets_map {
         let placeholder = format!("\"<TODO: upcloud_network UUID subnet_group={}>\"", sg_name);
         if s.contains(&placeholder) {
-            let net = subnets.iter()
+            let net = subnets
+                .iter()
                 .find(|sn| xref.network_names.contains(sn))
                 .or_else(|| xref.network_names.first());
             if let Some(net_name) = net {
-                let net_has_count = xref.network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
+                let net_has_count = xref
+                    .network_count_map
+                    .get(net_name.as_str())
+                    .copied()
+                    .unwrap_or(false);
                 let net_ref = if net_has_count {
                     format!("upcloud_network.{}[0].id", net_name)
                 } else {
@@ -411,14 +490,27 @@ fn resolve_network_refs(hcl: &str, resource_name: &str, xref: &CrossRefTables) -
     }
 
     // Generic network fallback with heuristics
-    let preferred_net = xref.lb_backend_net_map
+    let preferred_net = xref
+        .lb_backend_net_map
         .get(resource_name)
         .and_then(|net| xref.network_names.iter().find(|n| *n == net))
-        .or_else(|| xref.network_names.iter().find(|n| n.to_lowercase().contains("private")))
-        .or_else(|| xref.network_names.iter().find(|n| !n.to_lowercase().contains("public")))
+        .or_else(|| {
+            xref.network_names
+                .iter()
+                .find(|n| n.to_lowercase().contains("private"))
+        })
+        .or_else(|| {
+            xref.network_names
+                .iter()
+                .find(|n| !n.to_lowercase().contains("public"))
+        })
         .or_else(|| xref.network_names.first());
     if let Some(net) = preferred_net {
-        let net_has_count = xref.network_count_map.get(net.as_str()).copied().unwrap_or(false);
+        let net_has_count = xref
+            .network_count_map
+            .get(net.as_str())
+            .copied()
+            .unwrap_or(false);
         let net_ref = if net_has_count {
             if extract_count_from_hcl(&s).is_some() {
                 format!("upcloud_network.{}[count.index].id", net)
@@ -433,7 +525,11 @@ fn resolve_network_refs(hcl: &str, resource_name: &str, xref: &CrossRefTables) -
 
     // Resolve server IP references for load balancer backends
     if let Some(srv) = xref.server_names.first() {
-        let srv_has_count = xref.server_info_map.get(srv.as_str()).map(|c| c.is_some()).unwrap_or(false);
+        let srv_has_count = xref
+            .server_info_map
+            .get(srv.as_str())
+            .map(|c| c.is_some())
+            .unwrap_or(false);
         let srv_ref = if srv_has_count {
             format!("upcloud_server.{}[0].network_interface[0].ip_address", srv)
         } else {
@@ -470,7 +566,11 @@ fn resolve_ssh_key_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn SourceP
 }
 
 /// Resolve database parameter group properties.
-fn resolve_db_parameter_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn SourceProvider) -> String {
+fn resolve_db_parameter_refs(
+    hcl: &str,
+    xref: &CrossRefTables,
+    provider: &dyn SourceProvider,
+) -> String {
     if !hcl.contains("# __DB_PROPS:") {
         return hcl.to_string();
     }
@@ -482,31 +582,31 @@ fn resolve_db_parameter_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn So
             && let Some(inner) = inner.strip_suffix("__")
             && let Some((prefix, group_name)) = inner.split_once(':')
         {
-                if let Some(params) = xref.param_group_map.get(group_name)
-                    && !params.is_empty()
-                {
-                    let _ = prefix;
-                    for (name, value) in params {
-                        if provider.is_valid_db_property(name) {
-                            if name == "max_connections" {
-                                out.push_str(&format!(
+            if let Some(params) = xref.param_group_map.get(group_name)
+                && !params.is_empty()
+            {
+                let _ = prefix;
+                for (name, value) in params {
+                    if provider.is_valid_db_property(name) {
+                        if name == "max_connections" {
+                            out.push_str(&format!(
                                     "    # max_connections = \"{}\"  # requires pg_user_config_max_connections account permission\n",
                                     value
                                 ));
-                            } else {
-                                out.push_str(&format!("    {} = \"{}\"\n", name, value));
-                            }
                         } else {
-                            out.push_str(&format!(
+                            out.push_str(&format!("    {} = \"{}\"\n", name, value));
+                        }
+                    } else {
+                        out.push_str(&format!(
                                 "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
                                 name, value
                             ));
-                        }
                     }
-                    continue;
                 }
-                out.push_str(&provider.parameter_group_todo_text(group_name));
                 continue;
+            }
+            out.push_str(&provider.parameter_group_todo_text(group_name));
+            continue;
         }
         out.push_str(line);
         out.push('\n');
@@ -560,12 +660,17 @@ fn group_resources_and_passthroughs<'a>(
     // Detect whether ssh_public_key variable needs to be synthesized.
     // This happens when any server uses var.ssh_public_key (key_name was a variable reference)
     // but the source code doesn't already declare that variable.
-    let needs_ssh_public_key = results.iter()
-        .any(|r| r.upcloud_hcl.as_deref().unwrap_or("").contains("var.ssh_public_key"))
-        && !passthroughs.iter()
-            .any(|p| p.kind == PassthroughKind::Variable && p.name.as_deref() == Some("ssh_public_key"));
+    let needs_ssh_public_key = results.iter().any(|r| {
+        r.upcloud_hcl
+            .as_deref()
+            .unwrap_or("")
+            .contains("var.ssh_public_key")
+    }) && !passthroughs.iter().any(|p| {
+        p.kind == PassthroughKind::Variable && p.name.as_deref() == Some("ssh_public_key")
+    });
     let ssh_var_target_file: String = if needs_ssh_public_key {
-        passthrough_map.iter()
+        passthrough_map
+            .iter()
             .filter(|(_, pts)| pts.iter().any(|p| p.kind == PassthroughKind::Variable))
             .map(|(name, _)| name.clone())
             .next()
@@ -577,7 +682,12 @@ fn group_resources_and_passthroughs<'a>(
         file_map.entry(ssh_var_target_file.clone()).or_default();
     }
 
-    (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key)
+    (
+        file_map,
+        passthrough_map,
+        ssh_var_target_file,
+        needs_ssh_public_key,
+    )
 }
 
 pub fn generate_files(
@@ -601,7 +711,8 @@ pub fn generate_files(
     let xref = build_cross_ref_tables(results, &*provider);
 
     // Group resources and passthroughs by source file basename
-    let (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key) = group_resources_and_passthroughs(results, passthroughs);
+    let (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key) =
+        group_resources_and_passthroughs(results, passthroughs);
 
     // Build a usage map so the variable detector can score each variable by where it is referenced.
     // Gather all source HCL from mapped resources (best-effort — not every resource has source_hcl).
@@ -639,29 +750,42 @@ provider "upcloud" {
 
     // Track servers that have already had their firewall rules written (across all files).
     // UpCloud allows only one upcloud_firewall_rules resource per server.
-    let mut written_fw_servers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut written_fw_servers: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for (filename, file_results) in &file_map {
         let out_path = output_dir.join(filename);
         let mut content = String::new();
         content.push_str(&format!(
             "# Migrated from {} Terraform\n# Source: {}\n# Target zone: {}\n\n",
-            provider.display_name(), filename, zone
+            provider.display_name(),
+            filename,
+            zone
         ));
 
         // Collect per-file pending firewall rules
         #[allow(clippy::type_complexity)]
-        let mut fw_by_server: indexmap::IndexMap<String, (String, Option<String>, Vec<String>, Vec<String>)> =
-            indexmap::IndexMap::new();
+        let mut fw_by_server: indexmap::IndexMap<
+            String,
+            (String, Option<String>, Vec<String>, Vec<String>),
+        > = indexmap::IndexMap::new();
 
         for result in file_results {
             if let Some(hcl) = &result.upcloud_hcl {
-                let resolved = resolve_placeholders(hcl, &result.resource_name, zone, objstorage_region, &xref, &*provider);
+                let resolved = resolve_placeholders(
+                    hcl,
+                    &result.resource_name,
+                    zone,
+                    objstorage_region,
+                    &xref,
+                    &*provider,
+                );
 
                 // Name-based firewall server_id resolution with rule merging
                 if result.upcloud_type == "upcloud_firewall_rules" {
                     // Collect all servers that reference this firewall
-                    let servers: Vec<String> = xref.firewall_to_server_map
+                    let servers: Vec<String> = xref
+                        .firewall_to_server_map
                         .get(&result.resource_name)
                         .cloned()
                         .unwrap_or_else(|| vec![result.resource_name.clone()]);
@@ -686,15 +810,27 @@ provider "upcloud" {
                         }
 
                         // Collect rules into the per-server merge map.
-                        if let Some(server_id_expr) = extract_fw_server_id_expr(&resolved_for_server) {
+                        if let Some(server_id_expr) =
+                            extract_fw_server_id_expr(&resolved_for_server)
+                        {
                             let rule_blocks = extract_fw_rule_blocks(&resolved_for_server);
                             let count_line = extract_fw_count_line(&resolved_for_server);
-                            let entry = fw_by_server
-                                .entry(server_id_expr)
-                                .or_insert_with(|| (result.resource_name.clone(), count_line, Vec::new(), Vec::new()));
+                            let entry = fw_by_server.entry(server_id_expr).or_insert_with(|| {
+                                (
+                                    result.resource_name.clone(),
+                                    count_line,
+                                    Vec::new(),
+                                    Vec::new(),
+                                )
+                            });
                             entry.2.extend(rule_blocks);
                             // Tag each note with its source firewall rule so the merged resource is traceable.
-                            entry.3.extend(result.notes.iter().map(|n| format!("[{}] {}", result.resource_name, n)));
+                            entry.3.extend(
+                                result
+                                    .notes
+                                    .iter()
+                                    .map(|n| format!("[{}] {}", result.resource_name, n)),
+                            );
                         }
                     }
 
@@ -702,7 +838,11 @@ provider "upcloud" {
                     let diff_hcl = first_resolved_hcl.unwrap_or_else(|| resolved.clone());
                     resolved_hcl_map.insert(
                         (result.resource_type.clone(), result.resource_name.clone()),
-                        if any_resolved { diff_hcl } else { SKIPPED_SENTINEL.to_string() },
+                        if any_resolved {
+                            diff_hcl
+                        } else {
+                            SKIPPED_SENTINEL.to_string()
+                        },
                     );
 
                     if !any_resolved {
@@ -746,10 +886,15 @@ provider "upcloud" {
                     server_name
                 ));
                 // Still emit the rules as comments so the user can copy them.
-                let commented: String = build_merged_fw_hcl(resource_name, server_id_expr, count_line.as_deref(), rule_blocks)
-                    .lines()
-                    .map(|l| format!("# {}\n", l))
-                    .collect();
+                let commented: String = build_merged_fw_hcl(
+                    resource_name,
+                    server_id_expr,
+                    count_line.as_deref(),
+                    rule_blocks,
+                )
+                .lines()
+                .map(|l| format!("# {}\n", l))
+                .collect();
                 content.push_str(&commented);
                 content.push('\n');
                 continue;
@@ -757,7 +902,8 @@ provider "upcloud" {
             written_fw_servers.insert(server_name);
 
             // Count how many distinct SGs contributed (notes are tagged "[sg_name] ...").
-            let sg_count = notes.iter()
+            let sg_count = notes
+                .iter()
                 .filter_map(|n| n.strip_prefix('[').and_then(|s| s.split(']').next()))
                 .collect::<std::collections::HashSet<_>>()
                 .len();
@@ -777,7 +923,12 @@ provider "upcloud" {
                     resource_name
                 ));
             }
-            let merged_hcl = build_merged_fw_hcl(resource_name, server_id_expr, count_line.as_deref(), rule_blocks);
+            let merged_hcl = build_merged_fw_hcl(
+                resource_name,
+                server_id_expr,
+                count_line.as_deref(),
+                rule_blocks,
+            );
             content.push_str(&merged_hcl);
             content.push('\n');
         }
@@ -810,35 +961,33 @@ provider "upcloud" {
                 }
                 // Rewrite source provider resource references inside output/locals blocks.
                 // Variables: run multi-signal detection and auto-convert instance types / regions.
-                let hcl = if pt.kind == PassthroughKind::Output || pt.kind == PassthroughKind::Locals {
-                    provider.rewrite_output_refs(&pt.raw_hcl)
-                } else if pt.kind == PassthroughKind::Variable {
-                    let var_name = pt.name.as_deref().unwrap_or("");
-                    let (default_val, description) = extract_variable_info(&pt.raw_hcl);
-                    let usage_attrs = var_usage_map
-                        .get(var_name)
-                        .cloned()
-                        .unwrap_or_default();
-                    if let Some(mut conv) = analyze_variable(
-                        var_name,
-                        default_val.as_deref(),
-                        description.as_deref(),
-                        &usage_attrs,
-                    ) {
-                        // For region variables, always use the zone the user selected in the app
-                        // rather than the geographically closest zone from the detector.
-                        if conv.kind == VarKind::Region && conv.converted_value.is_some() {
-                            conv.converted_value = Some(zone.to_string());
+                let hcl =
+                    if pt.kind == PassthroughKind::Output || pt.kind == PassthroughKind::Locals {
+                        provider.rewrite_output_refs(&pt.raw_hcl)
+                    } else if pt.kind == PassthroughKind::Variable {
+                        let var_name = pt.name.as_deref().unwrap_or("");
+                        let (default_val, description) = extract_variable_info(&pt.raw_hcl);
+                        let usage_attrs = var_usage_map.get(var_name).cloned().unwrap_or_default();
+                        if let Some(mut conv) = analyze_variable(
+                            var_name,
+                            default_val.as_deref(),
+                            description.as_deref(),
+                            &usage_attrs,
+                        ) {
+                            // For region variables, always use the zone the user selected in the app
+                            // rather than the geographically closest zone from the detector.
+                            if conv.kind == VarKind::Region && conv.converted_value.is_some() {
+                                conv.converted_value = Some(zone.to_string());
+                            }
+                            let annotation = build_var_annotation(var_name, &conv);
+                            let converted_hcl = apply_conversion_to_hcl(&pt.raw_hcl, &conv);
+                            format!("{}{}", annotation, converted_hcl)
+                        } else {
+                            pt.raw_hcl.clone()
                         }
-                        let annotation = build_var_annotation(var_name, &conv);
-                        let converted_hcl = apply_conversion_to_hcl(&pt.raw_hcl, &conv);
-                        format!("{}{}", annotation, converted_hcl)
                     } else {
                         pt.raw_hcl.clone()
-                    }
-                } else {
-                    pt.raw_hcl.clone()
-                };
+                    };
                 content.push_str(&hcl);
                 content.push('\n');
                 content.push('\n');
@@ -865,7 +1014,10 @@ provider "upcloud" {
             if content.contains(&sentinel) {
                 let injection: String = blocks.join("");
                 content = content.replace(&sentinel, &injection);
-                log.push(format!("  [INJECT] storage_devices → upcloud_server.{}", server_name));
+                log.push(format!(
+                    "  [INJECT] storage_devices → upcloud_server.{}",
+                    server_name
+                ));
             }
         }
 
@@ -882,7 +1034,10 @@ provider "upcloud" {
                 content.insert_str(after_brace, &count_line);
                 content = content.replace(&old_title, &new_title);
                 // Insert a NOTE comment before the resource
-                let note = format!("# NOTE: One storage device per server instance (count = {})\n", count_val);
+                let note = format!(
+                    "# NOTE: One storage device per server instance (count = {})\n",
+                    count_val
+                );
                 content = content.replacen(&header, &format!("{}{}", note, header), 1);
                 log.push(format!(
                     "  [PROMOTE] count = {} → upcloud_storage.{} (one per server instance)",
@@ -890,7 +1045,10 @@ provider "upcloud" {
                 ));
                 // Keep resolved_hcl_map in sync so the pricing calculator sees the count.
                 // The map is keyed by (source_resource_type, resource_name).
-                let key = (provider.volume_resource_type().to_string(), storage_name.clone());
+                let key = (
+                    provider.volume_resource_type().to_string(),
+                    storage_name.clone(),
+                );
                 if let Some(existing) = resolved_hcl_map.get(&key).cloned()
                     && let Some(brace_pos) = existing.find('{')
                 {
@@ -906,9 +1064,14 @@ provider "upcloud" {
         }
 
         // Remove any uninjected sentinels (servers with no attachments)
-        let content_cleaned: String = content.lines()
+        let content_cleaned: String = content
+            .lines()
             .filter(|l| !l.trim_start().starts_with("# __STORAGE_END_"))
-            .map(|l| { let mut s = l.to_string(); s.push('\n'); s })
+            .map(|l| {
+                let mut s = l.to_string();
+                s.push('\n');
+                s
+            })
             .collect();
         content = content_cleaned;
 
@@ -945,19 +1108,26 @@ provider "upcloud" {
 
     let unsupported: Vec<&MigrationResult> = results
         .iter()
-        .filter(|r| r.status == MigrationStatus::Unsupported || r.status == MigrationStatus::Unknown)
+        .filter(|r| {
+            r.status == MigrationStatus::Unsupported || r.status == MigrationStatus::Unknown
+        })
         .collect();
 
     if !partial.is_empty() || !unsupported.is_empty() {
         let notes_path = output_dir.join("MIGRATION_NOTES.md");
         let mut notes = String::from("# Migration Notes\n\n");
         notes.push_str(&format!("Target zone: **{}**  \n", zone));
-        notes.push_str(&format!("Object storage region: **{}**\n\n", objstorage_region));
+        notes.push_str(&format!(
+            "Object storage region: **{}**\n\n",
+            objstorage_region
+        ));
 
         if !partial.is_empty() {
             notes.push_str("## Partial Resources — Manual Action Required\n\n");
-            notes.push_str("These resources have no standalone UpCloud equivalent. \
-                The code snippets below must be merged into the appropriate resource blocks.\n\n");
+            notes.push_str(
+                "These resources have no standalone UpCloud equivalent. \
+                The code snippets below must be merged into the appropriate resource blocks.\n\n",
+            );
 
             for r in &partial {
                 notes.push_str(&format!(
@@ -1174,7 +1344,10 @@ pub(crate) fn remove_todo_interpolations(mut s: String) -> String {
         let inner = s[start + 2..end - 1].trim().to_string();
         let replacement = if let Some(todo_start) = inner.find("<TODO:") {
             // Find the end of the TODO marker
-            let todo_end = inner[todo_start..].find('>').map(|p| todo_start + p + 1).unwrap_or(inner.len());
+            let todo_end = inner[todo_start..]
+                .find('>')
+                .map(|p| todo_start + p + 1)
+                .unwrap_or(inner.len());
             inner[todo_start..todo_end].to_string()
         } else {
             "<TODO: remove source provider resource ref>".to_string()
@@ -1254,7 +1427,10 @@ fn build_merged_fw_hcl(
     count_line: Option<&str>,
     rule_blocks: &[String],
 ) -> String {
-    let mut s = format!("resource \"upcloud_firewall_rules\" \"{}\" {{\n", resource_name);
+    let mut s = format!(
+        "resource \"upcloud_firewall_rules\" \"{}\" {{\n",
+        resource_name
+    );
     if let Some(count) = count_line {
         s.push_str(count);
     }
@@ -1619,36 +1795,48 @@ mod tests {
         // Chain: aws_lb.main → listener (TG=web) → attachment (web[0] → public_a) →
         //        aws_instance.web (subnet_id = aws_subnet.public_a) → upcloud_network.public_a
         let public_net = make_result(
-            "aws_subnet", "public_a", "upcloud_network",
-            Some(r#"resource "upcloud_network" "public_a" {
+            "aws_subnet",
+            "public_a",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "public_a" {
   zone = "__ZONE__"
   name = "public-a"
   ip_network { address = "10.0.1.0/24" dhcp = true family = "IPv4" }
 }
-"#),
+"#,
+            ),
             None,
         );
         let private_net = make_result(
-            "aws_subnet", "private_a", "upcloud_network",
-            Some(r#"resource "upcloud_network" "private_a" {
+            "aws_subnet",
+            "private_a",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "private_a" {
   zone = "__ZONE__"
   name = "private-a"
   ip_network { address = "10.0.2.0/24" dhcp = true family = "IPv4" }
 }
-"#),
+"#,
+            ),
             None,
         );
 
         // aws_instance.web lives in public_a
         let mut instance = make_result(
-            "aws_instance", "web", "upcloud_server",
-            Some(r#"resource "upcloud_server" "web" {
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
   hostname = "web"
   zone     = "__ZONE__"
   plan     = "1xCPU-1GB"
   template { storage = "Ubuntu Server 24.04 LTS (Noble Numbat)" size = 50 }
 }
-"#),
+"#,
+            ),
             None,
         );
         instance.source_hcl = Some(
@@ -1657,13 +1845,17 @@ mod tests {
   instance_type = "t3.micro"
   subnet_id     = aws_subnet.public_a.id
 }
-"#.to_string(),
+"#
+            .to_string(),
         );
 
         // aws_lb_target_group_attachment: TG=web, server=web[0]
         let mut attachment = make_result(
-            "aws_lb_target_group_attachment", "web_1", "upcloud_loadbalancer_static_backend_member",
-            Some(r#"resource "upcloud_loadbalancer_static_backend_member" "web_1" {
+            "aws_lb_target_group_attachment",
+            "web_1",
+            "upcloud_loadbalancer_static_backend_member",
+            Some(
+                r#"resource "upcloud_loadbalancer_static_backend_member" "web_1" {
   backend      = upcloud_loadbalancer_backend.<TODO>.name
   name         = "web-1"
   ip           = "<TODO: server IP>"
@@ -1671,7 +1863,8 @@ mod tests {
   weight       = 100
   max_sessions = 1000
 }
-"#),
+"#,
+            ),
             None,
         );
         attachment.source_hcl = Some(
@@ -1680,20 +1873,25 @@ mod tests {
   target_id        = aws_instance.web[0].id
   port             = 80
 }
-"#.to_string(),
+"#
+            .to_string(),
         );
 
         // aws_lb_listener: lb=main, TG=web
         let mut listener = make_result(
-            "aws_lb_listener", "https", "upcloud_loadbalancer_frontend",
-            Some(r#"resource "upcloud_loadbalancer_frontend" "https" {
+            "aws_lb_listener",
+            "https",
+            "upcloud_loadbalancer_frontend",
+            Some(
+                r#"resource "upcloud_loadbalancer_frontend" "https" {
   name             = "https"
   mode             = "tcp"
   port             = 443
   loadbalancer     = upcloud_loadbalancer.<TODO>.id
   default_backend_name = upcloud_loadbalancer_backend.<TODO>.name
 }
-"#),
+"#,
+            ),
             None,
         );
         listener.source_hcl = Some(
@@ -1706,13 +1904,17 @@ mod tests {
     target_group_arn = aws_lb_target_group.web.arn
   }
 }
-"#.to_string(),
+"#
+            .to_string(),
         );
 
         // aws_lb.main: has the generic network placeholder
         let lb = make_result(
-            "aws_lb", "main", "upcloud_loadbalancer",
-            Some(r#"resource "upcloud_loadbalancer" "main" {
+            "aws_lb",
+            "main",
+            "upcloud_loadbalancer",
+            Some(
+                r#"resource "upcloud_loadbalancer" "main" {
   name              = "main"
   plan              = "development"
   zone              = "__ZONE__"
@@ -1729,7 +1931,8 @@ mod tests {
     family = "IPv4"
   }
 }
-"#),
+"#,
+            ),
             None,
         );
 
@@ -1816,7 +2019,8 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
 
     #[test]
     fn extract_count_finds_count_line() {
-        let hcl = "resource \"upcloud_server\" \"web\" {\n  count    = 2\n  hostname = \"web\"\n}\n";
+        let hcl =
+            "resource \"upcloud_server\" \"web\" {\n  count    = 2\n  hostname = \"web\"\n}\n";
         assert_eq!(extract_count_from_hcl(hcl), Some("2".to_string()));
     }
 
@@ -1894,7 +2098,10 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
             "}\n"
         );
         let refs = provider.extract_security_refs_from_instance(instance_hcl);
-        assert!(refs.contains(&"docker_demo".to_string()), "should extract firewall name: {refs:?}");
+        assert!(
+            refs.contains(&"docker_demo".to_string()),
+            "should extract firewall name: {refs:?}"
+        );
 
         // When the firewall_to_server_map is used, the firewall rule should resolve to docker_server.
         let fw_hcl = "resource \"upcloud_firewall_rules\" \"docker_demo\" {\n  server_id = upcloud_server.<TODO>.id\n}\n";
@@ -1903,7 +2110,10 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
         // effective_server comes from firewall_to_server_map lookup
         let effective_server = "docker_server";
         let out = resolve_firewall_server(fw_hcl, effective_server, &server_map);
-        assert!(out.contains("upcloud_server.docker_server.id"), "should resolve to docker_server: {out}");
+        assert!(
+            out.contains("upcloud_server.docker_server.id"),
+            "should resolve to docker_server: {out}"
+        );
         assert!(!out.contains("<TODO>"), "no TODO should remain: {out}");
     }
 
@@ -1964,14 +2174,12 @@ resource "aws_instance" "app" {
         std::fs::write(&tf_path, tf_source).unwrap();
 
         let parsed = parse_tf_file(&tf_path).expect("source terraform should parse");
-        let results: Vec<MigrationResult> =
-            parsed.resources.iter().map(map_resource).collect();
+        let results: Vec<MigrationResult> = parsed.resources.iter().map(map_resource).collect();
 
         let out_dir = dir.join("out");
         let mut log = vec![];
         generate_files(&results, &[], &out_dir, None, "fi-hel2", &mut log).unwrap();
-        let output =
-            std::fs::read_to_string(out_dir.join("main.tf"))
+        let output = std::fs::read_to_string(out_dir.join("main.tf"))
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -1988,8 +2196,7 @@ resource "aws_instance" "app" {
         );
 
         // The generated file must be parseable by hcl-rs (i.e. valid HCL syntax).
-        hcl::from_str::<hcl::Body>(&output)
-            .expect("generated output must be valid HCL");
+        hcl::from_str::<hcl::Body>(&output).expect("generated output must be valid HCL");
     }
 
     // ── End-to-end: test-fixtures/webapp-e2e.tf ───────────────────────────────
@@ -2066,20 +2273,50 @@ resource "aws_instance" "app" {
         );
 
         // Server resources.
-        assert!(output.contains("resource \"upcloud_server\" \"web\""), "{output}");
-        assert!(output.contains("resource \"upcloud_server\" \"app\""), "{output}");
-        assert!(output.contains("resource \"upcloud_server\" \"database\""), "{output}");
-        assert!(output.contains("resource \"upcloud_server\" \"redis\""), "{output}");
+        assert!(
+            output.contains("resource \"upcloud_server\" \"web\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_server\" \"app\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_server\" \"database\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_server\" \"redis\""),
+            "{output}"
+        );
 
         // Networking: VPC → router, subnet → network.
-        assert!(output.contains("resource \"upcloud_router\" \"main_router\""), "{output}");
-        assert!(output.contains("resource \"upcloud_network\" \"public\""), "{output}");
+        assert!(
+            output.contains("resource \"upcloud_router\" \"main_router\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_network\" \"public\""),
+            "{output}"
+        );
 
         // Load balancer and its components.
-        assert!(output.contains("resource \"upcloud_loadbalancer\" \"main\""), "{output}");
-        assert!(output.contains("type   = \"public\""), "LB must have public networks block\n{output}");
-        assert!(output.contains("resource \"upcloud_loadbalancer_backend\" \"web\""), "{output}");
-        assert!(output.contains("resource \"upcloud_loadbalancer_frontend\" \"http\""), "{output}");
+        assert!(
+            output.contains("resource \"upcloud_loadbalancer\" \"main\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("type   = \"public\""),
+            "LB must have public networks block\n{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_loadbalancer_backend\" \"web\""),
+            "{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_loadbalancer_frontend\" \"http\""),
+            "{output}"
+        );
     }
 
     // ── Multi-SG merge ────────────────────────────────────────────────────────
@@ -2141,20 +2378,40 @@ resource "aws_instance" "app" {
         let output = run_generate(&[fw_web, fw_db, server], "multi_sg");
 
         // Must have exactly one upcloud_firewall_rules resource.
-        let fw_count = output.matches("resource \"upcloud_firewall_rules\"").count();
-        assert_eq!(fw_count, 1, "must have exactly 1 upcloud_firewall_rules resource\n{output}");
+        let fw_count = output
+            .matches("resource \"upcloud_firewall_rules\"")
+            .count();
+        assert_eq!(
+            fw_count, 1,
+            "must have exactly 1 upcloud_firewall_rules resource\n{output}"
+        );
 
         // Must contain rules from BOTH security groups.
-        assert!(output.contains("destination_port_start = \"80\""), "must contain web_sg port-80 rule\n{output}");
-        assert!(output.contains("destination_port_start = \"5432\""), "must contain db_sg port-5432 rule\n{output}");
+        assert!(
+            output.contains("destination_port_start = \"80\""),
+            "must contain web_sg port-80 rule\n{output}"
+        );
+        assert!(
+            output.contains("destination_port_start = \"5432\""),
+            "must contain db_sg port-5432 rule\n{output}"
+        );
 
         // Catch-all outbound rule must appear only once (deduplicated).
         let outbound_count = output.matches("Allow all outbound").count();
-        assert_eq!(outbound_count, 1, "catch-all outbound rule must be deduplicated\n{output}");
+        assert_eq!(
+            outbound_count, 1,
+            "catch-all outbound rule must be deduplicated\n{output}"
+        );
 
         // server_id must be resolved (no TODO).
-        assert!(!output.contains("<TODO>"), "no TODO must remain in merged firewall resource\n{output}");
-        assert!(output.contains("upcloud_server.app.id"), "server_id must be resolved to 'app'\n{output}");
+        assert!(
+            !output.contains("<TODO>"),
+            "no TODO must remain in merged firewall resource\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.app.id"),
+            "server_id must be resolved to 'app'\n{output}"
+        );
     }
 
     #[test]
@@ -2176,7 +2433,12 @@ resource "aws_instance" "app" {
 }
 "#;
         let blocks = extract_fw_rule_blocks(hcl);
-        assert_eq!(blocks.len(), 2, "should extract 2 rule blocks: {:?}", blocks);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "should extract 2 rule blocks: {:?}",
+            blocks
+        );
         assert!(blocks[0].contains("direction = \"in\""), "{:?}", blocks[0]);
         assert!(blocks[1].contains("direction = \"out\""), "{:?}", blocks[1]);
     }
@@ -2184,7 +2446,7 @@ resource "aws_instance" "app" {
     #[test]
     fn build_merged_fw_hcl_deduplicates_identical_blocks() {
         let outbound = "  firewall_rule {\n    direction = \"out\"\n    action = \"accept\"\n  }\n";
-        let inbound  = "  firewall_rule {\n    direction = \"in\"\n    action = \"accept\"\n  }\n";
+        let inbound = "  firewall_rule {\n    direction = \"in\"\n    action = \"accept\"\n  }\n";
         let blocks = vec![
             outbound.to_string(),
             inbound.to_string(),
@@ -2192,13 +2454,19 @@ resource "aws_instance" "app" {
         ];
         let merged = build_merged_fw_hcl("web_sg", "upcloud_server.web.id", None, &blocks);
         let outbound_count = merged.matches("direction = \"out\"").count();
-        assert_eq!(outbound_count, 1, "duplicate outbound rule must be deduplicated\n{merged}");
+        assert_eq!(
+            outbound_count, 1,
+            "duplicate outbound rule must be deduplicated\n{merged}"
+        );
         assert!(merged.contains("direction = \"in\""), "{merged}");
     }
 
     #[test]
     fn server_name_from_server_id_expr_plain() {
-        assert_eq!(server_name_from_server_id_expr("upcloud_server.myserver.id"), "myserver");
+        assert_eq!(
+            server_name_from_server_id_expr("upcloud_server.myserver.id"),
+            "myserver"
+        );
     }
 
     #[test]
@@ -2261,8 +2529,8 @@ resource "aws_instance" "app" {
 
     #[test]
     fn variables_are_passed_through_unchanged() {
-        use crate::terraform::parser::parse_tf_file;
         use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
         use crate::terraform::types::PassthroughBlock;
 
         let tf_source = r#"
@@ -2287,10 +2555,13 @@ resource "aws_instance" "web" {
         std::fs::write(&tf_path, tf_source).unwrap();
 
         let parsed = parse_tf_file(&tf_path).expect("should parse");
-        assert_eq!(parsed.passthroughs.len(), 2, "should find 2 variable blocks");
+        assert_eq!(
+            parsed.passthroughs.len(),
+            2,
+            "should find 2 variable blocks"
+        );
 
-        let results: Vec<MigrationResult> =
-            parsed.resources.iter().map(map_resource).collect();
+        let results: Vec<MigrationResult> = parsed.resources.iter().map(map_resource).collect();
         let pts: Vec<PassthroughBlock> = parsed.passthroughs.clone();
 
         let out_dir = dir.join("out");
@@ -2300,11 +2571,23 @@ resource "aws_instance" "web" {
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert!(output.contains("variable \"db_username\""), "db_username variable must appear\n{output}");
-        assert!(output.contains("variable \"db_password\""), "db_password variable must appear\n{output}");
-        assert!(output.contains("sensitive   = true"), "variable body must be preserved\n{output}");
+        assert!(
+            output.contains("variable \"db_username\""),
+            "db_username variable must appear\n{output}"
+        );
+        assert!(
+            output.contains("variable \"db_password\""),
+            "db_password variable must appear\n{output}"
+        );
+        assert!(
+            output.contains("sensitive   = true"),
+            "variable body must be preserved\n{output}"
+        );
         // Non-AWS names must not get a NOTE comment.
-        assert!(!output.contains("NOTE: Variable name 'db_username'"), "{output}");
+        assert!(
+            !output.contains("NOTE: Variable name 'db_username'"),
+            "{output}"
+        );
 
         // Must still be valid HCL.
         hcl::from_str::<hcl::Body>(&output).expect("output with variables must be valid HCL");
@@ -2332,8 +2615,14 @@ resource "aws_instance" "web" {
         let _ = std::fs::remove_dir_all(&dir);
 
         // Must have the review comment (but NOT a <TODO:> in the name — that breaks HCL).
-        assert!(output.contains("# NOTE: Variable name 'aws_region'"), "{output}");
-        assert!(!output.contains("<TODO:"), "must not inject TODO into variable name\n{output}");
+        assert!(
+            output.contains("# NOTE: Variable name 'aws_region'"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("<TODO:"),
+            "must not inject TODO into variable name\n{output}"
+        );
         // The variable block itself must still be present with the original name.
         assert!(output.contains("variable \"aws_region\""), "{output}");
 
@@ -2343,8 +2632,8 @@ resource "aws_instance" "web" {
 
     #[test]
     fn locals_block_passed_through() {
-        use crate::terraform::parser::parse_tf_file;
         use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
         use crate::terraform::types::PassthroughBlock;
 
         let tf_source = r#"
@@ -2366,8 +2655,7 @@ resource "aws_instance" "web" {
 
         let parsed = parse_tf_file(&tf_path).expect("should parse");
         let pts: Vec<PassthroughBlock> = parsed.passthroughs.clone();
-        let results: Vec<MigrationResult> =
-            parsed.resources.iter().map(map_resource).collect();
+        let results: Vec<MigrationResult> = parsed.resources.iter().map(map_resource).collect();
 
         let out_dir = dir.join("out");
         let mut log = vec![];
@@ -2376,7 +2664,10 @@ resource "aws_instance" "web" {
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert!(output.contains("locals {"), "locals block must appear\n{output}");
+        assert!(
+            output.contains("locals {"),
+            "locals block must appear\n{output}"
+        );
         assert!(output.contains("common_tags"), "{output}");
         hcl::from_str::<hcl::Body>(&output).expect("output must be valid HCL");
     }
@@ -2391,7 +2682,10 @@ resource "aws_instance" "web" {
             rewritten.contains("upcloud_server.web.network_interface[0].ip_address"),
             "public_ip should map to network_interface[0].ip_address\n{rewritten}"
         );
-        assert!(!rewritten.contains("aws_instance"), "no AWS ref should remain\n{rewritten}");
+        assert!(
+            !rewritten.contains("aws_instance"),
+            "no AWS ref should remain\n{rewritten}"
+        );
     }
 
     #[test]
@@ -2451,7 +2745,10 @@ resource "aws_instance" "web" {
         let hcl = "output \"x\" {\n  value = \"<TODO: was aws_instance.web.arn>\"\n}";
         let rewritten = rewrite_output_refs(hcl);
         // Should be unchanged — the aws_instance ref is inside a TODO marker
-        assert_eq!(rewritten, hcl, "refs inside TODO markers must not be rewritten");
+        assert_eq!(
+            rewritten, hcl,
+            "refs inside TODO markers must not be rewritten"
+        );
     }
 
     #[test]
@@ -2494,8 +2791,8 @@ resource "aws_instance" "web" {
 
     #[test]
     fn output_block_refs_rewritten_in_generated_file() {
-        use crate::terraform::parser::parse_tf_file;
         use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
 
         let tf_source = r#"
 resource "aws_instance" "web" {
@@ -2521,7 +2818,15 @@ output "server_id" {
 
         let out_dir = dir.join("out");
         let mut log = vec![];
-        generate_files(&results, &parsed.passthroughs, &out_dir, None, "fi-hel1", &mut log).unwrap();
+        generate_files(
+            &results,
+            &parsed.passthroughs,
+            &out_dir,
+            None,
+            "fi-hel1",
+            &mut log,
+        )
+        .unwrap();
         let output = std::fs::read_to_string(out_dir.join("main.tf"))
             .expect("generate_files must produce main.tf");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2534,7 +2839,10 @@ output "server_id" {
             output.contains("upcloud_server.web.id"),
             "server_id output should be rewritten\n{output}"
         );
-        assert!(!output.contains("aws_instance.web"), "no AWS resource traversals in output\n{output}");
+        assert!(
+            !output.contains("aws_instance.web"),
+            "no AWS resource traversals in output\n{output}"
+        );
     }
 
     // ── Subnet group → database network resolution ────────────────────────────
@@ -2633,7 +2941,10 @@ output "server_id" {
             None,
         );
 
-        let output = run_generate(&[pg, valkey, sg, cache_sg, public_a, data], "db_subnet_group");
+        let output = run_generate(
+            &[pg, valkey, sg, cache_sg, public_a, data],
+            "db_subnet_group",
+        );
 
         assert!(
             output.contains("uuid   = upcloud_network.data.id"),
@@ -2661,7 +2972,10 @@ output "server_id" {
             result.contains("upcloud_router.main_router.id"),
             "aws_vpc.main.id must map to upcloud_router.main_router.id\n{result}"
         );
-        assert!(!result.contains("upcloud_router.main.id"), "must not use bare 'main'\n{result}");
+        assert!(
+            !result.contains("upcloud_router.main.id"),
+            "must not use bare 'main'\n{result}"
+        );
     }
 
     // ── DB network [0] index for counted network ───────────────────────────────
@@ -2673,8 +2987,10 @@ output "server_id" {
             "aws_db_instance",
             "main",
             "upcloud_managed_database_postgresql",
-            Some("resource \"upcloud_managed_database_postgresql\" \"main\" {\n  \
-                  network {\n    uuid = \"<TODO: upcloud_network UUID subnet_group=main>\"\n  }\n}\n"),
+            Some(
+                "resource \"upcloud_managed_database_postgresql\" \"main\" {\n  \
+                  network {\n    uuid = \"<TODO: upcloud_network UUID subnet_group=main>\"\n  }\n}\n",
+            ),
             None,
         );
         // Subnet group "main" maps to subnet "database"
@@ -2690,7 +3006,9 @@ output "server_id" {
             "aws_subnet",
             "database",
             "upcloud_network",
-            Some("resource \"upcloud_network\" \"database\" {\n  count = 2\n  zone = \"__ZONE__\"\n}\n"),
+            Some(
+                "resource \"upcloud_network\" \"database\" {\n  count = 2\n  zone = \"__ZONE__\"\n}\n",
+            ),
             None,
         );
 
@@ -2700,7 +3018,8 @@ output "server_id" {
         sg_with_hcl.source_hcl = Some(
             r#"resource "aws_db_subnet_group" "main" {
   subnet_ids = [aws_subnet.database[0].id, aws_subnet.database[1].id]
-}"#.to_string()
+}"#
+            .to_string(),
         );
         results.push(sg_with_hcl);
 
@@ -2712,7 +3031,8 @@ output "server_id" {
 
         assert!(
             output.contains("upcloud_network.database[0].id"),
-            "counted database network must be indexed with [0]\n{output}\nlog: {:?}", log
+            "counted database network must be indexed with [0]\n{output}\nlog: {:?}",
+            log
         );
     }
 
@@ -2727,41 +3047,65 @@ output "server_id" {
         let make = |rt: &str, name: &str, attrs: &[(&str, &str)]| TerraformResource {
             resource_type: rt.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("main.tf"),
             raw_hcl: String::new(),
         };
 
         // web server with count
-        let web_res = make("aws_instance", "web", &[
-            ("instance_type", "t3.micro"),
-            ("count", "2"),
-            ("subnet_id", "aws_subnet.private.id"),
-        ]);
+        let web_res = make(
+            "aws_instance",
+            "web",
+            &[
+                ("instance_type", "t3.micro"),
+                ("count", "2"),
+                ("subnet_id", "aws_subnet.private.id"),
+            ],
+        );
         let mut web_result = map_instance(&web_res);
         web_result.source_hcl = Some(web_result.upcloud_hcl.clone().unwrap());
 
         // EBS volume with count
-        let vol_res = make("aws_ebs_volume", "data", &[("type", "gp3"), ("size", "50"), ("count", "2")]);
+        let vol_res = make(
+            "aws_ebs_volume",
+            "data",
+            &[("type", "gp3"), ("size", "50"), ("count", "2")],
+        );
         let vol_result = map_ebs_volume(&vol_res);
 
         // Attachment
-        let att_res = make("aws_volume_attachment", "data", &[
-            ("volume_id", "aws_ebs_volume.data[count.index].id"),
-            ("instance_id", "aws_instance.web[count.index].id"),
-        ]);
+        let att_res = make(
+            "aws_volume_attachment",
+            "data",
+            &[
+                ("volume_id", "aws_ebs_volume.data[count.index].id"),
+                ("instance_id", "aws_instance.web[count.index].id"),
+            ],
+        );
         use crate::migration::providers::aws::storage::map_volume_attachment;
         let att_result = map_volume_attachment(&att_res);
 
         let out_dir = std::env::temp_dir().join("upcloud_storage_inject_test");
         let mut log = vec![];
-        generate_files(&[web_result, vol_result, att_result], &[], &out_dir, None, "fi-hel1", &mut log).unwrap();
+        generate_files(
+            &[web_result, vol_result, att_result],
+            &[],
+            &out_dir,
+            None,
+            "fi-hel1",
+            &mut log,
+        )
+        .unwrap();
         let output = std::fs::read_to_string(out_dir.join("main.tf")).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&out_dir);
 
         assert!(
             output.contains("storage_devices {"),
-            "storage_devices block must be injected into server\n{output}\nlog: {:?}", log
+            "storage_devices block must be injected into server\n{output}\nlog: {:?}",
+            log
         );
         assert!(
             output.contains("upcloud_storage.data[count.index].id"),
@@ -2775,41 +3119,67 @@ output "server_id" {
 
     #[test]
     fn storage_count_promoted_when_server_has_count_but_storage_does_not() {
-        use crate::migration::providers::aws::{compute::map_instance, storage::{map_ebs_volume, map_volume_attachment}};
+        use crate::migration::providers::aws::{
+            compute::map_instance,
+            storage::{map_ebs_volume, map_volume_attachment},
+        };
         use crate::terraform::types::TerraformResource;
         use std::path::PathBuf;
 
         let make = |rt: &str, name: &str, attrs: &[(&str, &str)]| TerraformResource {
             resource_type: rt.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("main.tf"),
             raw_hcl: String::new(),
         };
 
         // Server with count = 2
-        let srv_res = make("aws_instance", "api", &[
-            ("instance_type", "t3.micro"),
-            ("count", "2"),
-            ("subnet_id", "aws_subnet.private.id"),
-        ]);
+        let srv_res = make(
+            "aws_instance",
+            "api",
+            &[
+                ("instance_type", "t3.micro"),
+                ("count", "2"),
+                ("subnet_id", "aws_subnet.private.id"),
+            ],
+        );
         let mut srv_result = map_instance(&srv_res);
         srv_result.source_hcl = Some(srv_result.upcloud_hcl.clone().unwrap());
 
         // EBS volume WITHOUT count (single volume in AWS, attached to api[0])
-        let vol_res = make("aws_ebs_volume", "api_data", &[("type", "gp3"), ("size", "200")]);
+        let vol_res = make(
+            "aws_ebs_volume",
+            "api_data",
+            &[("type", "gp3"), ("size", "200")],
+        );
         let vol_result = map_ebs_volume(&vol_res);
 
         // Attachment: volume → api[0]
-        let att_res = make("aws_volume_attachment", "api_data", &[
-            ("volume_id", "aws_ebs_volume.api_data.id"),
-            ("instance_id", "aws_instance.api[0].id"),
-        ]);
+        let att_res = make(
+            "aws_volume_attachment",
+            "api_data",
+            &[
+                ("volume_id", "aws_ebs_volume.api_data.id"),
+                ("instance_id", "aws_instance.api[0].id"),
+            ],
+        );
         let att_result = map_volume_attachment(&att_res);
 
         let out_dir = std::env::temp_dir().join("upcloud_storage_promote_count_test");
         let mut log = vec![];
-        generate_files(&[srv_result, vol_result, att_result], &[], &out_dir, None, "fi-hel1", &mut log).unwrap();
+        generate_files(
+            &[srv_result, vol_result, att_result],
+            &[],
+            &out_dir,
+            None,
+            "fi-hel1",
+            &mut log,
+        )
+        .unwrap();
         let output = std::fs::read_to_string(out_dir.join("main.tf")).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&out_dir);
 
@@ -2817,7 +3187,8 @@ output "server_id" {
         assert!(
             output.contains("resource \"upcloud_storage\" \"api_data\"")
                 && output.contains("count = 2"),
-            "storage must have count promoted from server\n{output}\nlog: {:?}", log
+            "storage must have count promoted from server\n{output}\nlog: {:?}",
+            log
         );
         // Title must be indexed
         assert!(
@@ -2832,8 +3203,8 @@ output "server_id" {
         // Log must show promotion
         assert!(
             log.iter().any(|l| l.contains("[PROMOTE]")),
-            "log must contain PROMOTE entry\nlog: {:?}", log
+            "log must contain PROMOTE entry\nlog: {:?}",
+            log
         );
     }
 }
-

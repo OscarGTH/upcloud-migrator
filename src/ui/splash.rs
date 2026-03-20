@@ -1,13 +1,13 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
-    Frame,
 };
 
-use crate::app::App;
 use super::theme;
+use crate::app::App;
 
 /// Pseudo-random sparkle: deterministic given (tick, row, col) so no RNG needed.
 fn is_sparkle(tick: u64, row: usize, col: usize) -> bool {
@@ -61,15 +61,15 @@ pub fn render(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(1),                    // top flex spacer
-            Constraint::Length(logo_height),        // UpCloud brand logo
-            Constraint::Length(1),                 // gap
-            Constraint::Length(1),                 // title line
-            Constraint::Length(1),                 // subtitle line
-            Constraint::Length(1),                 // gap
-            Constraint::Length(3),                 // path input box
-            Constraint::Min(1),                    // bottom flex spacer
-            Constraint::Length(1),                 // hint bar
+            Constraint::Min(1),              // top flex spacer
+            Constraint::Length(logo_height), // UpCloud brand logo
+            Constraint::Length(1),           // gap
+            Constraint::Length(1),           // title line
+            Constraint::Length(1),           // subtitle line
+            Constraint::Length(1),           // gap
+            Constraint::Length(3),           // path input box
+            Constraint::Min(1),              // bottom flex spacer
+            Constraint::Length(1),           // hint bar
         ])
         .split(area);
 
@@ -100,7 +100,9 @@ pub fn render(f: &mut Frame, app: &App) {
         Span::styled(" Terraform code to ", theme::dim()),
         Span::styled(
             "UpCloud",
-            Style::default().fg(theme::UPCLOUD_PURPLE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::UPCLOUD_PURPLE)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" Terraform!", theme::dim()),
     ]))
@@ -108,7 +110,11 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(subtitle, inner[4]);
 
     // ── Path input ───────────────────────────────────────────────────────────
-    let cursor = if (app.tick / 4).is_multiple_of(2) { "█" } else { " " };
+    let cursor = if (app.tick / 4).is_multiple_of(2) {
+        "█"
+    } else {
+        " "
+    };
     let input_text = format!("{}{}", app.input_buf, cursor);
 
     let input_block = Block::default()

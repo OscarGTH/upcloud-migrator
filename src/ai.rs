@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::todo::TodoItem;
+use anyhow::Result;
 
 /// Shared helper to call an OpenAI-compatible LLM API endpoint.
 async fn call_llm_api(
@@ -9,7 +9,9 @@ async fn call_llm_api(
     api_key: &str,
     api_url: Option<String>,
 ) -> Result<String> {
-    let api_url = api_url.unwrap_or_else(|| std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://llm-proxy.edgez.live".to_string()));
+    let api_url = api_url.unwrap_or_else(|| {
+        std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://llm-proxy.edgez.live".to_string())
+    });
     let model = if model.is_empty() {
         std::env::var("LLM_MODEL").unwrap_or_else(|_| "claude-latest".to_string())
     } else {
@@ -55,10 +57,16 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { is_user: true, content: content.into() }
+        Self {
+            is_user: true,
+            content: content.into(),
+        }
     }
     pub fn ai(content: impl Into<String>) -> Self {
-        Self { is_user: false, content: content.into() }
+        Self {
+            is_user: false,
+            content: content.into(),
+        }
     }
 }
 

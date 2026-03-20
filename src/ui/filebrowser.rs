@@ -1,12 +1,12 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
-use crate::app::App;
 use super::theme;
+use crate::app::App;
 
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -36,7 +36,11 @@ pub fn render(f: &mut Frame, app: &App) {
     // Current directory line
     let cwd_str = app.fb_cwd.display().to_string();
     let tf_count = app.fb_entries.iter().filter(|(_, is_dir)| !is_dir).count();
-    let cwd_style = if tf_count > 0 { theme::success() } else { theme::warning() };
+    let cwd_style = if tf_count > 0 {
+        theme::success()
+    } else {
+        theme::warning()
+    };
 
     let cwd_widget = Paragraph::new(Line::from(vec![
         Span::styled("  DIR: ", theme::dim()),
@@ -49,40 +53,50 @@ pub fn render(f: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("  ◆ ", theme::success()),
             Span::styled(
-                format!("{} .tf file{} found — press [S] to scan this directory",
-                    tf_count, if tf_count == 1 { "" } else { "s" }),
+                format!(
+                    "{} .tf file{} found — press [S] to scan this directory",
+                    tf_count,
+                    if tf_count == 1 { "" } else { "s" }
+                ),
                 theme::success(),
             ),
         ])
     } else {
         Line::from(vec![
             Span::styled("  ◇ ", theme::dim()),
-            Span::styled("No .tf files here — navigate to your terraform directory", theme::dim()),
+            Span::styled(
+                "No .tf files here — navigate to your terraform directory",
+                theme::dim(),
+            ),
         ])
     };
     f.render_widget(Paragraph::new(tf_line), layout[1]);
 
     // Directory list
-    let items: Vec<ListItem> = app.fb_entries.iter().map(|(name, is_dir)| {
-        if name == "[..]" {
-            ListItem::new(Line::from(vec![
-                Span::styled("  ↑ ", theme::accent()),
-                Span::styled(".. (go up)", theme::accent()),
-            ]))
-        } else if *is_dir {
-            ListItem::new(Line::from(vec![
-                Span::styled("  ▶ ", theme::primary()),
-                Span::styled(name.clone(), theme::primary()),
-                Span::styled("/", theme::dim()),
-            ]))
-        } else {
-            // .tf file
-            ListItem::new(Line::from(vec![
-                Span::styled("    ", theme::dim()),
-                Span::styled(name.clone(), theme::success()),
-            ]))
-        }
-    }).collect();
+    let items: Vec<ListItem> = app
+        .fb_entries
+        .iter()
+        .map(|(name, is_dir)| {
+            if name == "[..]" {
+                ListItem::new(Line::from(vec![
+                    Span::styled("  ↑ ", theme::accent()),
+                    Span::styled(".. (go up)", theme::accent()),
+                ]))
+            } else if *is_dir {
+                ListItem::new(Line::from(vec![
+                    Span::styled("  ▶ ", theme::primary()),
+                    Span::styled(name.clone(), theme::primary()),
+                    Span::styled("/", theme::dim()),
+                ]))
+            } else {
+                // .tf file
+                ListItem::new(Line::from(vec![
+                    Span::styled("    ", theme::dim()),
+                    Span::styled(name.clone(), theme::success()),
+                ]))
+            }
+        })
+        .collect();
 
     let list_block = Block::default()
         .borders(Borders::ALL)

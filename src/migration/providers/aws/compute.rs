@@ -5,36 +5,36 @@ use crate::terraform::types::TerraformResource;
 pub fn aws_instance_type_to_upcloud_plan(instance_type: &str) -> Option<&'static str> {
     match instance_type {
         // T-series (burstable)
-        "t2.nano"  | "t3.nano"    => Some("1xCPU-1GB"),
-        "t2.micro" | "t3.micro"   => Some("1xCPU-1GB"),
-        "t2.small" | "t3.small"   => Some("2xCPU-2GB"),
-        "t2.medium"| "t3.medium"  => Some("2xCPU-4GB"),
-        "t2.large" | "t3.large"   => Some("2xCPU-8GB"),
-        "t2.xlarge"| "t3.xlarge"  => Some("6xCPU-16GB"),  // 4 vCPU 16 GB
-        "t2.2xlarge"|"t3.2xlarge" => Some("8xCPU-32GB"),  // 8 vCPU 32 GB
+        "t2.nano" | "t3.nano" => Some("1xCPU-1GB"),
+        "t2.micro" | "t3.micro" => Some("1xCPU-1GB"),
+        "t2.small" | "t3.small" => Some("2xCPU-2GB"),
+        "t2.medium" | "t3.medium" => Some("2xCPU-4GB"),
+        "t2.large" | "t3.large" => Some("2xCPU-8GB"),
+        "t2.xlarge" | "t3.xlarge" => Some("6xCPU-16GB"), // 4 vCPU 16 GB
+        "t2.2xlarge" | "t3.2xlarge" => Some("8xCPU-32GB"), // 8 vCPU 32 GB
 
         // M-series (general purpose)
-        "m5.large"               => Some("2xCPU-8GB"),   // 2 vCPU 8 GB
-        "m5.xlarge"              => Some("6xCPU-16GB"),  // 4 vCPU 16 GB
-        "m5.2xlarge"             => Some("8xCPU-32GB"),  // 8 vCPU 32 GB
-        "m5.4xlarge"             => Some("16xCPU-64GB"), // 16 vCPU 64 GB
-        "m6i.large"              => Some("2xCPU-8GB"),
-        "m6i.xlarge"             => Some("6xCPU-16GB"),
-        "m6i.2xlarge"            => Some("8xCPU-32GB"),
-        "m6i.4xlarge"            => Some("16xCPU-64GB"),
+        "m5.large" => Some("2xCPU-8GB"),     // 2 vCPU 8 GB
+        "m5.xlarge" => Some("6xCPU-16GB"),   // 4 vCPU 16 GB
+        "m5.2xlarge" => Some("8xCPU-32GB"),  // 8 vCPU 32 GB
+        "m5.4xlarge" => Some("16xCPU-64GB"), // 16 vCPU 64 GB
+        "m6i.large" => Some("2xCPU-8GB"),
+        "m6i.xlarge" => Some("6xCPU-16GB"),
+        "m6i.2xlarge" => Some("8xCPU-32GB"),
+        "m6i.4xlarge" => Some("16xCPU-64GB"),
 
         // C-series (compute optimized)
-        "c5.large"               => Some("2xCPU-4GB"),   // 2 vCPU 4 GB
-        "c5.xlarge"              => Some("4xCPU-8GB"),   // 4 vCPU 8 GB
-        "c5.2xlarge"             => Some("6xCPU-16GB"),  // 8 vCPU 16 GB
-        "c6i.large"              => Some("2xCPU-4GB"),
-        "c6i.xlarge"             => Some("4xCPU-8GB"),
-        "c6i.2xlarge"            => Some("6xCPU-16GB"),
+        "c5.large" => Some("2xCPU-4GB"),    // 2 vCPU 4 GB
+        "c5.xlarge" => Some("4xCPU-8GB"),   // 4 vCPU 8 GB
+        "c5.2xlarge" => Some("6xCPU-16GB"), // 8 vCPU 16 GB
+        "c6i.large" => Some("2xCPU-4GB"),
+        "c6i.xlarge" => Some("4xCPU-8GB"),
+        "c6i.2xlarge" => Some("6xCPU-16GB"),
 
         // R-series (memory optimized) — map by RAM, upscaling CPU if needed
-        "r5.large"               => Some("2xCPU-8GB"),   // 2 vCPU 16 GB → nearest
-        "r5.xlarge"              => Some("6xCPU-16GB"),  // 4 vCPU 32 GB → nearest
-        "r5.2xlarge"             => Some("8xCPU-32GB"),  // 8 vCPU 64 GB → nearest
+        "r5.large" => Some("2xCPU-8GB"),    // 2 vCPU 16 GB → nearest
+        "r5.xlarge" => Some("6xCPU-16GB"),  // 4 vCPU 32 GB → nearest
+        "r5.2xlarge" => Some("8xCPU-32GB"), // 8 vCPU 64 GB → nearest
 
         _ => None,
     }
@@ -65,14 +65,26 @@ fn is_instance_type_expression(s: &str) -> bool {
 }
 
 pub fn map_instance(res: &TerraformResource) -> MigrationResult {
-    let instance_type = res.attributes.get("instance_type").map(|s| s.trim_matches('"')).unwrap_or("t3.micro");
+    let instance_type = res
+        .attributes
+        .get("instance_type")
+        .map(|s| s.trim_matches('"'))
+        .unwrap_or("t3.micro");
     let is_expr = is_instance_type_expression(instance_type);
-    let plan = if is_expr { "" } else { map_instance_type(instance_type) };
-    let zone = res.attributes.get("availability_zone")
+    let plan = if is_expr {
+        ""
+    } else {
+        map_instance_type(instance_type)
+    };
+    let zone = res
+        .attributes
+        .get("availability_zone")
         .map(|az| map_region(az.trim_matches('"')))
         .unwrap_or("__ZONE__");
     let hostname = res.name.replace('_', "-");
-    let tags = res.attributes.get("tags.Name")
+    let tags = res
+        .attributes
+        .get("tags.Name")
         .map(|v| v.trim_matches('"').to_string())
         .unwrap_or_else(|| hostname.clone());
 
@@ -88,7 +100,9 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     });
 
     let login_block = match &key_ref {
-        Some(kref) if kref.starts_with("var.") || kref.starts_with("local.") || kref.starts_with("${") => {
+        Some(kref)
+            if kref.starts_with("var.") || kref.starts_with("local.") || kref.starts_with("${") =>
+        {
             // Variable expression for key_name — can't look up the literal key.
             // Reference a new variable that the user should add to variables.tf.
             format!(
@@ -98,7 +112,10 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         Some(kref) => format!(
             "\n  login {{\n    user = \"root\"\n    keys = [\"<TODO: SSH public key for aws_key_pair.{kref}>\"]\n  }}\n"
         ),
-        None => "\n  login {\n    user = \"root\"\n    keys = [\"<TODO: paste SSH public key>\"]\n  }\n".to_string(),
+        None => {
+            "\n  login {\n    user = \"root\"\n    keys = [\"<TODO: paste SSH public key>\"]\n  }\n"
+                .to_string()
+        }
     };
 
     // Extract subnet name and optional index expression from subnet_id.
@@ -106,33 +123,46 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     //   aws_subnet.public[0].id            → name="public", idx=Some("0")
     //   aws_subnet.private[count.index % 2].id → name="private", idx=Some("count.index % 2")
     //   aws_subnet.NAME.id                 → name="NAME",   idx=None
-    let subnet_parse: Option<(String, Option<String>)> = res.attributes.get("subnet_id").and_then(|v| {
-        let v = v.trim_matches('"');
-        if !v.starts_with("aws_subnet.") { return None; }
-        let rest = &v["aws_subnet.".len()..];
-        if let Some(bracket_pos) = rest.find('[') {
-            let base = &rest[..bracket_pos];
-            if base.is_empty() { return None; }
-            let after = &rest[bracket_pos + 1..];
-            let close_pos = after.find(']')?;
-            let idx_expr = after[..close_pos].trim().to_string();
-            Some((base.to_string(), Some(idx_expr)))
-        } else {
-            let base = rest.split('.').next().unwrap_or(rest);
-            if base.is_empty() { return None; }
-            Some((base.to_string(), None))
-        }
-    });
+    let subnet_parse: Option<(String, Option<String>)> =
+        res.attributes.get("subnet_id").and_then(|v| {
+            let v = v.trim_matches('"');
+            if !v.starts_with("aws_subnet.") {
+                return None;
+            }
+            let rest = &v["aws_subnet.".len()..];
+            if let Some(bracket_pos) = rest.find('[') {
+                let base = &rest[..bracket_pos];
+                if base.is_empty() {
+                    return None;
+                }
+                let after = &rest[bracket_pos + 1..];
+                let close_pos = after.find(']')?;
+                let idx_expr = after[..close_pos].trim().to_string();
+                Some((base.to_string(), Some(idx_expr)))
+            } else {
+                let base = rest.split('.').next().unwrap_or(rest);
+                if base.is_empty() {
+                    return None;
+                }
+                Some((base.to_string(), None))
+            }
+        });
     let (subnet_name, subnet_index_expr) = match subnet_parse {
         Some((name, idx)) => (Some(name), idx),
         None => (None, None),
     };
 
     // Propagate count if set (e.g. count = 2)
-    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
+    let count_attr = res
+        .attributes
+        .get("count")
+        .map(|v| v.trim_matches('"').to_string());
     let count_line = match &count_attr {
-        Some(n) => format!("  count    = {}\n  hostname = \"{}-${{count.index + 1}}\"\n", n, hostname),
-        None    => format!("  hostname = \"{}\"\n", hostname),
+        Some(n) => format!(
+            "  count    = {}\n  hostname = \"{}-${{count.index + 1}}\"\n",
+            n, hostname
+        ),
+        None => format!("  hostname = \"{}\"\n", hostname),
     };
 
     // Propagate user_data if present. The value from hcl-rs attr.expr() Display is
@@ -143,13 +173,17 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     let user_data_raw = res.attributes.get("user_data").map(|v| v.as_str());
     // Scan user_data for AWS-specific patterns that won't work on UpCloud
     let aws_ud_patterns: &[(&str, &str)] = &[
-        ("ec2-metadata", "ec2-metadata CLI (instance metadata service)"),
+        (
+            "ec2-metadata",
+            "ec2-metadata CLI (instance metadata service)",
+        ),
         ("169.254.169.254", "AWS metadata endpoint (169.254.169.254)"),
         ("aws-cli", "aws CLI commands"),
     ];
     let ud_warnings: Vec<&str> = user_data_raw
         .map(|ud| {
-            aws_ud_patterns.iter()
+            aws_ud_patterns
+                .iter()
                 .filter(|(pat, _)| ud.contains(pat))
                 .map(|(_, desc)| *desc)
                 .collect()
@@ -158,11 +192,23 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     let ud_warning_comment = if ud_warnings.is_empty() {
         String::new()
     } else {
-        let items: String = ud_warnings.iter().map(|w| format!("#   - {}\n", w)).collect();
-        format!("  # WARNING: user_data contains AWS-specific commands that won't work on UpCloud:\n{}  # Review and update the user_data script before applying.\n", items)
+        let items: String = ud_warnings
+            .iter()
+            .map(|w| format!("#   - {}\n", w))
+            .collect();
+        format!(
+            "  # WARNING: user_data contains AWS-specific commands that won't work on UpCloud:\n{}  # Review and update the user_data script before applying.\n",
+            items
+        )
     };
     let user_data_line = user_data_raw
-        .map(|v| format!("\n{}  user_data = {}", ud_warning_comment, normalize_heredoc(v)))
+        .map(|v| {
+            format!(
+                "\n{}  user_data = {}",
+                ud_warning_comment,
+                normalize_heredoc(v)
+            )
+        })
         .unwrap_or_default();
 
     // metadata must always be true when using cloud-init templates (Ubuntu 24.04 is cloud-init).
@@ -177,7 +223,9 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     };
 
     // Use root_block_device.volume_size if set; fall back to 50 GiB.
-    let root_size = res.attributes.get("root_block_device.volume_size")
+    let root_size = res
+        .attributes
+        .get("root_block_device.volume_size")
         .and_then(|v| v.trim_matches('"').parse::<u32>().ok())
         .unwrap_or(50);
 
@@ -242,7 +290,10 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
 
     let mut notes = vec![
         if is_expr {
-            format!("instance_type '{}' is a variable — update its default in variables.tf to an UpCloud plan.", instance_type)
+            format!(
+                "instance_type '{}' is a variable — update its default in variables.tf to an UpCloud plan.",
+                instance_type
+            )
         } else {
             format!("instance_type '{}' → plan '{}'", instance_type, plan)
         },
@@ -252,7 +303,9 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         notes.push(format!("count = {} propagated.", n));
     }
     match &key_ref {
-        Some(kref) if kref.starts_with("var.") || kref.starts_with("local.") || kref.starts_with("${") => {
+        Some(kref)
+            if kref.starts_with("var.") || kref.starts_with("local.") || kref.starts_with("${") =>
+        {
             notes.push(format!("key_name = {} is a variable — login.keys set to var.ssh_public_key; add that variable to variables.tf.", kref));
         }
         Some(_) => {
@@ -264,23 +317,37 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     }
     match (&subnet_name, &subnet_index_expr) {
         (Some(name), Some(expr)) => {
-            notes.push(format!("Private network: upcloud_network.{}[{}].id (direct reference).", name, expr));
+            notes.push(format!(
+                "Private network: upcloud_network.{}[{}].id (direct reference).",
+                name, expr
+            ));
         }
         (Some(name), None) => {
-            notes.push(format!("Private network resolved from subnet_id → upcloud_network.{}.", name));
+            notes.push(format!(
+                "Private network resolved from subnet_id → upcloud_network.{}.",
+                name
+            ));
         }
         _ => {
-            notes.push("Private network interface resolved from the first upcloud_network resource.".into());
+            notes.push(
+                "Private network interface resolved from the first upcloud_network resource."
+                    .into(),
+            );
         }
     }
     if let Some(ud) = res.attributes.get("user_data") {
         if ud_warnings.is_empty() {
             notes.push("user_data propagated — review AWS-specific refs (IPs, metadata).".into());
         } else {
-            notes.push(format!("user_data propagated — WARNING: contains AWS-specific patterns: {}.", ud_warnings.join(", ")));
+            notes.push(format!(
+                "user_data propagated — WARNING: contains AWS-specific patterns: {}.",
+                ud_warnings.join(", ")
+            ));
         }
         if ud.contains("base64encode(") {
-            notes.push("user_data: remove base64encode() — UpCloud cloud-init expects plain text.".into());
+            notes.push(
+                "user_data: remove base64encode() — UpCloud cloud-init expects plain text.".into(),
+            );
         }
         if ud.contains("templatefile(") {
             notes.push("user_data uses templatefile() — review vars for AWS-specific refs.".into());
@@ -316,7 +383,9 @@ pub fn map_key_pair(res: &TerraformResource) -> MigrationResult {
         }
     });
 
-    let key_value = public_key.as_deref().unwrap_or("<TODO: paste SSH public key>");
+    let key_value = public_key
+        .as_deref()
+        .unwrap_or("<TODO: paste SSH public key>");
     // A HCL expression (ternary, var reference, etc.) must not be wrapped in
     // extra quotes — only plain literal keys belong inside "...".
     let is_expression = !key_value.starts_with("ssh-")
@@ -450,7 +519,6 @@ fn normalize_heredoc(value: &str) -> String {
     result
 }
 
-
 pub fn map_autoscaling_group(res: &TerraformResource) -> MigrationResult {
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -466,8 +534,6 @@ pub fn map_autoscaling_group(res: &TerraformResource) -> MigrationResult {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,7 +543,10 @@ mod tests {
         TerraformResource {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("test.tf"),
             raw_hcl: String::new(),
         }
@@ -493,7 +562,10 @@ mod tests {
         assert_eq!(r.resource_name, "web");
         let hcl = r.upcloud_hcl.unwrap();
         assert!(hcl.contains("resource \"upcloud_server\" \"web\""), "{hcl}");
-        assert!(hcl.contains("plan     = \"1xCPU-1GB\""), "t3.micro should map to 1xCPU-1GB\n{hcl}");
+        assert!(
+            hcl.contains("plan     = \"1xCPU-1GB\""),
+            "t3.micro should map to 1xCPU-1GB\n{hcl}"
+        );
     }
 
     #[test]
@@ -512,14 +584,18 @@ mod tests {
 
     #[test]
     fn instance_with_count_generates_count_line() {
-        let res = make_res("aws_instance", "web", &[
-            ("instance_type", "t3.micro"),
-            ("count", "3"),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "web",
+            &[("instance_type", "t3.micro"), ("count", "3")],
+        );
         let r = map_instance(&res);
         let hcl = r.upcloud_hcl.unwrap();
         assert!(hcl.contains("count    = 3"), "{hcl}");
-        assert!(hcl.contains("count.index"), "hostname should use count.index\n{hcl}");
+        assert!(
+            hcl.contains("count.index"),
+            "hostname should use count.index\n{hcl}"
+        );
     }
 
     #[test]
@@ -527,7 +603,10 @@ mod tests {
         let res = make_res("aws_instance", "solo", &[("instance_type", "t3.small")]);
         let r = map_instance(&res);
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(!hcl.contains("count    ="), "should not generate count line\n{hcl}");
+        assert!(
+            !hcl.contains("count    ="),
+            "should not generate count line\n{hcl}"
+        );
         assert!(hcl.contains("hostname = \"solo\""), "{hcl}");
     }
 
@@ -541,11 +620,18 @@ mod tests {
         );
         let r = map_instance(&res);
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("user_data ="), "user_data attribute must appear\n{hcl}");
-        assert!(hcl.contains("apt-get update"), "user_data content must be present\n{hcl}");
+        assert!(
+            hcl.contains("user_data ="),
+            "user_data attribute must appear\n{hcl}"
+        );
+        assert!(
+            hcl.contains("apt-get update"),
+            "user_data content must be present\n{hcl}"
+        );
         assert!(
             r.notes.iter().any(|n| n.contains("user_data propagated")),
-            "must add a note about user_data\n{:?}", r.notes
+            "must add a note about user_data\n{:?}",
+            r.notes
         );
     }
 
@@ -554,14 +640,20 @@ mod tests {
         let res = make_res("aws_instance", "web", &[("instance_type", "t3.micro")]);
         let r = map_instance(&res);
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(!hcl.contains("user_data"), "user_data must not appear when absent\n{hcl}");
+        assert!(
+            !hcl.contains("user_data"),
+            "user_data must not appear when absent\n{hcl}"
+        );
     }
 
     #[test]
     fn instance_always_has_firewall_true() {
         let res = make_res("aws_instance", "web", &[("instance_type", "t3.micro")]);
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("firewall = true"), "firewall must be enabled on all servers\n{hcl}");
+        assert!(
+            hcl.contains("firewall = true"),
+            "firewall must be enabled on all servers\n{hcl}"
+        );
     }
 
     #[test]
@@ -569,60 +661,102 @@ mod tests {
         let res = make_res(
             "aws_instance",
             "web",
-            &[("instance_type", "t3.micro"), ("user_data", "\"#!/bin/bash\"")],
+            &[
+                ("instance_type", "t3.micro"),
+                ("user_data", "\"#!/bin/bash\""),
+            ],
         );
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("metadata  = true"), "metadata must be true when user_data is present\n{hcl}");
+        assert!(
+            hcl.contains("metadata  = true"),
+            "metadata must be true when user_data is present\n{hcl}"
+        );
     }
 
     #[test]
     fn user_data_base64encode_adds_warning_note() {
         let res = make_res(
-            "aws_instance", "web",
-            &[("instance_type", "t3.micro"), ("user_data", "base64encode(file(\"init.sh\"))")],
+            "aws_instance",
+            "web",
+            &[
+                ("instance_type", "t3.micro"),
+                ("user_data", "base64encode(file(\"init.sh\"))"),
+            ],
         );
         let r = map_instance(&res);
-        assert!(r.notes.iter().any(|n| n.contains("base64encode")),
-            "must warn about base64encode\n{:?}", r.notes);
-        assert!(r.notes.iter().any(|n| n.contains("plain text")),
-            "must say UpCloud expects plain text\n{:?}", r.notes);
+        assert!(
+            r.notes.iter().any(|n| n.contains("base64encode")),
+            "must warn about base64encode\n{:?}",
+            r.notes
+        );
+        assert!(
+            r.notes.iter().any(|n| n.contains("plain text")),
+            "must say UpCloud expects plain text\n{:?}",
+            r.notes
+        );
     }
 
     #[test]
     fn user_data_templatefile_adds_warning_note() {
         let res = make_res(
-            "aws_instance", "web",
-            &[("instance_type", "t3.micro"), ("user_data", "templatefile(\"init.sh.tpl\", { region = var.region })")],
+            "aws_instance",
+            "web",
+            &[
+                ("instance_type", "t3.micro"),
+                (
+                    "user_data",
+                    "templatefile(\"init.sh.tpl\", { region = var.region })",
+                ),
+            ],
         );
         let r = map_instance(&res);
-        assert!(r.notes.iter().any(|n| n.contains("templatefile")),
-            "must warn about templatefile\n{:?}", r.notes);
+        assert!(
+            r.notes.iter().any(|n| n.contains("templatefile")),
+            "must warn about templatefile\n{:?}",
+            r.notes
+        );
     }
 
     #[test]
     fn user_data_file_ref_adds_note_about_unscanned_script() {
         let res = make_res(
-            "aws_instance", "web",
-            &[("instance_type", "t3.micro"), ("user_data", "file(\"${path.module}/init.sh\")")],
+            "aws_instance",
+            "web",
+            &[
+                ("instance_type", "t3.micro"),
+                ("user_data", "file(\"${path.module}/init.sh\")"),
+            ],
         );
         let r = map_instance(&res);
-        assert!(r.notes.iter().any(|n| n.contains("external file") && n.contains("not scanned")),
-            "must warn that external file is not scanned\n{:?}", r.notes);
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.contains("external file") && n.contains("not scanned")),
+            "must warn that external file is not scanned\n{:?}",
+            r.notes
+        );
     }
 
     #[test]
     fn instance_always_has_metadata_true() {
         let res = make_res("aws_instance", "web", &[("instance_type", "t3.micro")]);
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("metadata  = true"), "metadata must always be true (Ubuntu 24.04 is cloud-init)\n{hcl}");
+        assert!(
+            hcl.contains("metadata  = true"),
+            "metadata must always be true (Ubuntu 24.04 is cloud-init)\n{hcl}"
+        );
     }
 
     #[test]
     fn instance_with_key_name_generates_ssh_key_todo() {
-        let res = make_res("aws_instance", "web", &[
-            ("instance_type", "t3.micro"),
-            ("key_name", "aws_key_pair.prod.key_name"),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "web",
+            &[
+                ("instance_type", "t3.micro"),
+                ("key_name", "aws_key_pair.prod.key_name"),
+            ],
+        );
         let r = map_instance(&res);
         let hcl = r.upcloud_hcl.unwrap();
         assert!(
@@ -635,7 +769,11 @@ mod tests {
     fn instance_without_key_name_generates_generic_ssh_todo() {
         let res = make_res("aws_instance", "web", &[("instance_type", "t3.micro")]);
         let r = map_instance(&res);
-        assert!(r.upcloud_hcl.unwrap().contains("<TODO: paste SSH public key>"));
+        assert!(
+            r.upcloud_hcl
+                .unwrap()
+                .contains("<TODO: paste SSH public key>")
+        );
     }
 
     // ── normalize_heredoc ─────────────────────────────────────────────────────
@@ -649,7 +787,10 @@ mod tests {
         let input = "<<-EOF\n          #!/bin/bash\n          cat > /x <<'HTML'\n          hello\n          HTML\n          echo done\nEOF";
         let out = normalize_heredoc(input);
         // Closing marker must be at col 0.
-        assert!(out.ends_with("\nEOF"), "closing marker must be at col 0\n{out}");
+        assert!(
+            out.ends_with("\nEOF"),
+            "closing marker must be at col 0\n{out}"
+        );
         // Content must be stripped to col 0.
         assert!(out.contains("\n#!/bin/bash"), "{out}");
         // Inner bash heredoc closer must also be at col 0 so bash recognises it.
@@ -675,13 +816,22 @@ mod tests {
         );
         let out = normalize_heredoc(input);
         // Bash commands must be at col 0 after stripping.
-        assert!(out.contains("\n#!/bin/bash\n"), "shebang must be at col 0\n{out}");
+        assert!(
+            out.contains("\n#!/bin/bash\n"),
+            "shebang must be at col 0\n{out}"
+        );
         // Inner bash heredoc closer must be at col 0.
-        assert!(out.contains("\nHTML\n"), "HTML terminator must be at col 0\n{out}");
+        assert!(
+            out.contains("\nHTML\n"),
+            "HTML terminator must be at col 0\n{out}"
+        );
         // ASCII art lines (which were at col 0 in input) must remain intact.
         assert!(out.contains("/ _ \\"), "ASCII art must be preserved\n{out}");
         // Closing marker must be at col 0.
-        assert!(out.ends_with("\nEOF"), "closing marker must be at col 0\n{out}");
+        assert!(
+            out.ends_with("\nEOF"),
+            "closing marker must be at col 0\n{out}"
+        );
     }
 
     #[test]
@@ -712,9 +862,15 @@ mod tests {
         let input = "<<EOF\n          #!/bin/bash\n          cat > /x <<'HTML'\n          hello\n          HTML\n          echo done\nEOF";
         let out = normalize_heredoc(input);
         // Must be upgraded to <<-EOF.
-        assert!(out.starts_with("<<-EOF"), "must be upgraded to <<-EOF\n{out}");
+        assert!(
+            out.starts_with("<<-EOF"),
+            "must be upgraded to <<-EOF\n{out}"
+        );
         // Closing marker must be at col 0.
-        assert!(out.ends_with("\nEOF"), "closing marker must be at col 0\n{out}");
+        assert!(
+            out.ends_with("\nEOF"),
+            "closing marker must be at col 0\n{out}"
+        );
         // Content must be stripped to col 0.
         assert!(out.contains("\n#!/bin/bash"), "{out}");
         assert!(out.contains("\nHTML\n"), "{out}");
@@ -749,8 +905,7 @@ mod tests {
             "}",
         );
 
-        let tmp_path = std::env::temp_dir()
-            .join(format!("upcloud_test_{}.tf", std::process::id()));
+        let tmp_path = std::env::temp_dir().join(format!("upcloud_test_{}.tf", std::process::id()));
         std::fs::write(&tmp_path, tf_source).unwrap();
         let tf_file = parse_tf_file(&tmp_path).unwrap();
         let _ = std::fs::remove_file(&tmp_path);
@@ -811,8 +966,8 @@ mod tests {
             "}",
         );
 
-        let tmp_path = std::env::temp_dir()
-            .join(format!("upcloud_real_world_{}.tf", std::process::id()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("upcloud_real_world_{}.tf", std::process::id()));
         std::fs::write(&tmp_path, tf_source).unwrap();
         let tf_file = parse_tf_file(&tmp_path).unwrap();
         let _ = std::fs::remove_file(&tmp_path);
@@ -862,12 +1017,12 @@ mod tests {
             "          <html></html>\n",
             "          HTML\n",
             "          systemctl restart nginx\n",
-            "EOF\n",   // <-- closing marker at col 0, not matching content indent
+            "EOF\n", // <-- closing marker at col 0, not matching content indent
             "}",
         );
 
-        let tmp_path = std::env::temp_dir()
-            .join(format!("upcloud_test_dash_{}.tf", std::process::id()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("upcloud_test_dash_{}.tf", std::process::id()));
         std::fs::write(&tmp_path, tf_source).unwrap();
         let tf_file = parse_tf_file(&tmp_path).unwrap();
         let _ = std::fs::remove_file(&tmp_path);
@@ -897,7 +1052,8 @@ mod tests {
         // End-to-end: when the attribute value is a <<-EOF with indented content
         // and misaligned closing marker, the generated HCL must have content
         // stripped to col 0 so cloud-init receives a working bash script.
-        let user_data_val = "<<-EOF\n          #!/bin/bash\n          apt-get install -y nginx\nEOF";
+        let user_data_val =
+            "<<-EOF\n          #!/bin/bash\n          apt-get install -y nginx\nEOF";
         let res = make_res(
             "aws_instance",
             "web",
@@ -927,7 +1083,10 @@ mod tests {
         assert!(out.contains("\n#!/bin/bash"), "tab must be stripped\n{out}");
         assert!(out.contains("\napt-get"), "tab must be stripped\n{out}");
         // Closing marker at col 0.
-        assert!(out.ends_with("\nEOF"), "closing marker must be at col 0\n{out}");
+        assert!(
+            out.ends_with("\nEOF"),
+            "closing marker must be at col 0\n{out}"
+        );
     }
 
     #[test]
@@ -948,26 +1107,37 @@ mod tests {
     #[test]
     fn instance_with_indexed_subnet_generates_direct_network_ref() {
         // aws_subnet.public[0].id → direct upcloud_network.public[0].id reference
-        let res = make_res("aws_instance", "bastion", &[
-            ("instance_type", "t3.micro"),
-            ("subnet_id", "aws_subnet.public[0].id"),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "bastion",
+            &[
+                ("instance_type", "t3.micro"),
+                ("subnet_id", "aws_subnet.public[0].id"),
+            ],
+        );
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
         assert!(
             hcl.contains("network = upcloud_network.public[0].id"),
             "should directly resolve indexed subnet ref\n{hcl}"
         );
-        assert!(!hcl.contains("<TODO: upcloud_network"), "no TODO should remain\n{hcl}");
+        assert!(
+            !hcl.contains("<TODO: upcloud_network"),
+            "no TODO should remain\n{hcl}"
+        );
     }
 
     #[test]
     fn instance_with_count_modulo_subnet_preserves_expression() {
         // aws_subnet.private[count.index % 2].id → upcloud_network.private[count.index % 2].id
-        let res = make_res("aws_instance", "web", &[
-            ("instance_type", "t3.micro"),
-            ("count", "2"),
-            ("subnet_id", "aws_subnet.private[count.index % 2].id"),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "web",
+            &[
+                ("instance_type", "t3.micro"),
+                ("count", "2"),
+                ("subnet_id", "aws_subnet.private[count.index % 2].id"),
+            ],
+        );
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
         assert!(
             hcl.contains("network = upcloud_network.private[count.index % 2].id"),
@@ -978,10 +1148,14 @@ mod tests {
     #[test]
     fn instance_with_plain_subnet_uses_typed_placeholder() {
         // aws_subnet.private.id → typed TODO placeholder for generator resolution
-        let res = make_res("aws_instance", "app", &[
-            ("instance_type", "t3.micro"),
-            ("subnet_id", "aws_subnet.private.id"),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "app",
+            &[
+                ("instance_type", "t3.micro"),
+                ("subnet_id", "aws_subnet.private.id"),
+            ],
+        );
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
         assert!(
             hcl.contains(r#"network = "<TODO: upcloud_network.private reference>""#),
@@ -993,30 +1167,38 @@ mod tests {
     fn instance_t3_small_maps_to_2cpu_2gb() {
         let res = make_res("aws_instance", "web", &[("instance_type", "t3.small")]);
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("2xCPU-2GB"), "t3.small should map to 2xCPU-2GB\n{hcl}");
+        assert!(
+            hcl.contains("2xCPU-2GB"),
+            "t3.small should map to 2xCPU-2GB\n{hcl}"
+        );
     }
 
     #[test]
     fn instance_with_variable_key_name_uses_var_ssh_public_key() {
-        let res = make_res("aws_instance", "web", &[
-            ("instance_type", "t3.micro"),
-            ("key_name", "var.key_name"),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "web",
+            &[("instance_type", "t3.micro"), ("key_name", "var.key_name")],
+        );
         let hcl = map_instance(&res).upcloud_hcl.unwrap();
         assert!(
             hcl.contains("keys = [var.ssh_public_key]"),
             "variable key_name should use [var.ssh_public_key]\n{hcl}"
         );
-        assert!(!hcl.contains("<TODO: SSH public key for aws_key_pair.var"), "should not embed var ref in TODO\n{hcl}");
+        assert!(
+            !hcl.contains("<TODO: SSH public key for aws_key_pair.var"),
+            "should not embed var ref in TODO\n{hcl}"
+        );
     }
 
     #[test]
     fn instance_user_data_with_ec2_metadata_gets_warning() {
         let ud = "<<-EOF\n#!/bin/bash\nec2-metadata --instance-id\nEOF";
-        let res = make_res("aws_instance", "web", &[
-            ("instance_type", "t3.micro"),
-            ("user_data", ud),
-        ]);
+        let res = make_res(
+            "aws_instance",
+            "web",
+            &[("instance_type", "t3.micro"), ("user_data", ud)],
+        );
         let r = map_instance(&res);
         let hcl = r.upcloud_hcl.unwrap();
         assert!(
@@ -1025,7 +1207,8 @@ mod tests {
         );
         assert!(
             r.notes.iter().any(|n| n.contains("WARNING")),
-            "note should mention the warning\n{:?}", r.notes
+            "note should mention the warning\n{:?}",
+            r.notes
         );
     }
 
@@ -1043,11 +1226,18 @@ mod tests {
 
     #[test]
     fn key_pair_with_public_key_puts_key_in_snippet() {
-        let res = make_res("aws_key_pair", "prod", &[("public_key", "ssh-rsa AAAAB3 user@host")]);
+        let res = make_res(
+            "aws_key_pair",
+            "prod",
+            &[("public_key", "ssh-rsa AAAAB3 user@host")],
+        );
         let r = map_key_pair(&res);
         let snippet = r.snippet.unwrap();
         assert!(snippet.contains("ssh-rsa AAAAB3"), "{snippet}");
-        assert!(!snippet.contains("<TODO"), "should not have TODO when key is provided\n{snippet}");
+        assert!(
+            !snippet.contains("<TODO"),
+            "should not have TODO when key is provided\n{snippet}"
+        );
     }
 
     #[test]
@@ -1055,7 +1245,10 @@ mod tests {
         let res = make_res("aws_key_pair", "staging", &[]);
         let r = map_key_pair(&res);
         let snippet = r.snippet.unwrap();
-        assert!(snippet.contains("<TODO: paste SSH public key>"), "{snippet}");
+        assert!(
+            snippet.contains("<TODO: paste SSH public key>"),
+            "{snippet}"
+        );
     }
 
     #[test]
@@ -1065,7 +1258,10 @@ mod tests {
         let res = make_res(
             "aws_key_pair",
             "main",
-            &[("public_key", r#"var.ssh_public_key != "" ? var.ssh_public_key : "ssh-rsa PLACEHOLDER""#)],
+            &[(
+                "public_key",
+                r#"var.ssh_public_key != "" ? var.ssh_public_key : "ssh-rsa PLACEHOLDER""#,
+            )],
         );
         let r = map_key_pair(&res);
         let snippet = r.snippet.unwrap();
@@ -1088,7 +1284,10 @@ mod tests {
     fn key_pair_has_no_standalone_hcl() {
         let res = make_res("aws_key_pair", "k", &[]);
         let r = map_key_pair(&res);
-        assert!(r.upcloud_hcl.is_none(), "key pairs have no standalone UpCloud resource");
+        assert!(
+            r.upcloud_hcl.is_none(),
+            "key pairs have no standalone UpCloud resource"
+        );
     }
 
     // ── map_autoscaling_group ─────────────────────────────────────────────────
@@ -1097,7 +1296,10 @@ mod tests {
     fn autoscaling_group_is_unsupported() {
         let res = make_res("aws_autoscaling_group", "asg", &[]);
         let r = map_autoscaling_group(&res);
-        assert_eq!(r.status, crate::migration::types::MigrationStatus::Unsupported);
+        assert_eq!(
+            r.status,
+            crate::migration::types::MigrationStatus::Unsupported
+        );
         assert!(r.upcloud_hcl.is_none());
     }
 }

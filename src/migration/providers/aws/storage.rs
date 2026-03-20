@@ -1,7 +1,6 @@
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
-
 pub fn map_volume_attachment(res: &TerraformResource) -> MigrationResult {
     // aws_volume_attachment → storage_devices block inside upcloud_server.
     // There is no standalone UpCloud resource for volume attachment.
@@ -10,17 +9,31 @@ pub fn map_volume_attachment(res: &TerraformResource) -> MigrationResult {
         let v = v.trim_matches('"');
         let rest = v.strip_prefix("aws_ebs_volume.")?;
         let base = rest.split(['.', '[']).next().unwrap_or(rest);
-        if base.is_empty() { None } else { Some(base.to_string()) }
+        if base.is_empty() {
+            None
+        } else {
+            Some(base.to_string())
+        }
     });
     let instance_name = res.attributes.get("instance_id").and_then(|v| {
         let v = v.trim_matches('"');
         let rest = v.strip_prefix("aws_instance.")?;
         let base = rest.split(['.', '[']).next().unwrap_or(rest);
-        if base.is_empty() { None } else { Some(base.to_string()) }
+        if base.is_empty() {
+            None
+        } else {
+            Some(base.to_string())
+        }
     });
 
-    let storage_ref = volume_name.as_deref().unwrap_or("<TODO: storage>").to_string();
-    let server_ref  = instance_name.as_deref().unwrap_or("<TODO: server>").to_string();
+    let storage_ref = volume_name
+        .as_deref()
+        .unwrap_or("<TODO: storage>")
+        .to_string();
+    let server_ref = instance_name
+        .as_deref()
+        .unwrap_or("<TODO: server>")
+        .to_string();
 
     let snippet = format!(
         "# Add inside resource \"upcloud_server\" \"{server_ref}\" {{\n  storage_devices {{\n    storage = upcloud_storage.{storage_ref}.id\n    type    = \"disk\"\n  }}"
@@ -44,8 +57,16 @@ pub fn map_volume_attachment(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
-    let size = res.attributes.get("size").and_then(|s| s.trim_matches('"').parse::<u32>().ok()).unwrap_or(20);
-    let tier = res.attributes.get("type").map(|t| t.trim_matches('"')).unwrap_or("gp2");
+    let size = res
+        .attributes
+        .get("size")
+        .and_then(|s| s.trim_matches('"').parse::<u32>().ok())
+        .unwrap_or(20);
+    let tier = res
+        .attributes
+        .get("type")
+        .map(|t| t.trim_matches('"'))
+        .unwrap_or("gp2");
     let upcloud_tier = match tier {
         "gp2" | "gp3" => "maxiops",
         "io1" | "io2" => "maxiops",
@@ -54,10 +75,13 @@ pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
     };
 
     // Propagate count if the source EBS volume used it (e.g. count = var.web_server_count)
-    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
+    let count_attr = res
+        .attributes
+        .get("count")
+        .map(|v| v.trim_matches('"').to_string());
     let count_line = match &count_attr {
         Some(n) => format!("  count = {}\n", n),
-        None    => String::new(),
+        None => String::new(),
     };
     // When count is set the title must be unique per instance
     let title_val = if count_attr.is_some() {
@@ -81,7 +105,10 @@ pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
         tier = upcloud_tier,
     );
 
-    let mut notes = vec![format!("EBS type '{}' → UpCloud tier '{}'", tier, upcloud_tier)];
+    let mut notes = vec![format!(
+        "EBS type '{}' → UpCloud tier '{}'",
+        tier, upcloud_tier
+    )];
     if let Some(ref n) = count_attr {
         notes.push(format!("count = {} propagated.", n));
     }
@@ -101,7 +128,9 @@ pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_s3_bucket(res: &TerraformResource) -> MigrationResult {
-    let bucket_name = res.attributes.get("bucket")
+    let bucket_name = res
+        .attributes
+        .get("bucket")
         .map(|b| b.trim_matches('"').to_string())
         .unwrap_or_else(|| res.name.replace('_', "-"));
 
@@ -131,7 +160,7 @@ resource "upcloud_managed_object_storage_bucket" "{name}_bucket" {{
         snippet: None,
         parent_resource: None,
         notes: vec!["S3 → UpCloud Managed Object Storage (S3-compatible)".into()],
-            source_hcl: None,
+        source_hcl: None,
     }
 }
 
@@ -145,8 +174,10 @@ pub fn map_s3_bucket_policy(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: None,
         snippet: None,
         parent_resource: None,
-        notes: vec!["S3 bucket policies → UpCloud uses access keys and policies via the UI/API".into()],
-            source_hcl: None,
+        notes: vec![
+            "S3 bucket policies → UpCloud uses access keys and policies via the UI/API".into(),
+        ],
+        source_hcl: None,
     }
 }
 
@@ -171,12 +202,12 @@ pub fn map_efs_file_system(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec!["EFS → UpCloud File Storage (NFS-based). Manual mount target config needed.".into()],
-            source_hcl: None,
+        notes: vec![
+            "EFS → UpCloud File Storage (NFS-based). Manual mount target config needed.".into(),
+        ],
+        source_hcl: None,
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -187,7 +218,10 @@ mod tests {
         TerraformResource {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             source_file: PathBuf::from("test.tf"),
             raw_hcl: String::new(),
         }
@@ -201,32 +235,53 @@ mod tests {
         let r = map_ebs_volume(&res);
         assert_eq!(r.upcloud_type, "upcloud_storage");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_storage\" \"data\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_storage\" \"data\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("tier  = \"maxiops\""), "{hcl}");
     }
 
     #[test]
     fn ebs_gp3_maps_to_maxiops() {
         let res = make_res("aws_ebs_volume", "v", &[("type", "gp3"), ("size", "100")]);
-        assert!(map_ebs_volume(&res).upcloud_hcl.unwrap().contains("maxiops"));
+        assert!(
+            map_ebs_volume(&res)
+                .upcloud_hcl
+                .unwrap()
+                .contains("maxiops")
+        );
     }
 
     #[test]
     fn ebs_io1_maps_to_maxiops() {
         let res = make_res("aws_ebs_volume", "v", &[("type", "io1"), ("size", "20")]);
-        assert!(map_ebs_volume(&res).upcloud_hcl.unwrap().contains("maxiops"));
+        assert!(
+            map_ebs_volume(&res)
+                .upcloud_hcl
+                .unwrap()
+                .contains("maxiops")
+        );
     }
 
     #[test]
     fn ebs_st1_maps_to_hdd() {
-        let res = make_res("aws_ebs_volume", "cold", &[("type", "st1"), ("size", "500")]);
+        let res = make_res(
+            "aws_ebs_volume",
+            "cold",
+            &[("type", "st1"), ("size", "500")],
+        );
         let hcl = map_ebs_volume(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("tier  = \"hdd\""), "{hcl}");
     }
 
     #[test]
     fn ebs_sc1_maps_to_hdd() {
-        let res = make_res("aws_ebs_volume", "archive", &[("type", "sc1"), ("size", "1000")]);
+        let res = make_res(
+            "aws_ebs_volume",
+            "archive",
+            &[("type", "sc1"), ("size", "1000")],
+        );
         assert!(map_ebs_volume(&res).upcloud_hcl.unwrap().contains("hdd"));
     }
 
@@ -247,16 +302,30 @@ mod tests {
 
     #[test]
     fn ebs_with_count_propagates_count_and_indexed_title() {
-        let res = make_res("aws_ebs_volume", "web_data", &[
-            ("type", "gp3"),
-            ("size", "50"),
-            ("count", "var.web_server_count"),
-        ]);
+        let res = make_res(
+            "aws_ebs_volume",
+            "web_data",
+            &[
+                ("type", "gp3"),
+                ("size", "50"),
+                ("count", "var.web_server_count"),
+            ],
+        );
         let r = map_ebs_volume(&res);
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("count = var.web_server_count"), "count should be propagated\n{hcl}");
-        assert!(hcl.contains("web_data-${count.index + 1}"), "title should use count.index\n{hcl}");
-        assert!(r.notes.iter().any(|n| n.contains("count")), "should note count propagation\n{:?}", r.notes);
+        assert!(
+            hcl.contains("count = var.web_server_count"),
+            "count should be propagated\n{hcl}"
+        );
+        assert!(
+            hcl.contains("web_data-${count.index + 1}"),
+            "title should use count.index\n{hcl}"
+        );
+        assert!(
+            r.notes.iter().any(|n| n.contains("count")),
+            "should note count propagation\n{:?}",
+            r.notes
+        );
     }
 
     // ── map_s3_bucket ─────────────────────────────────────────────────────────
@@ -267,8 +336,14 @@ mod tests {
         let r = map_s3_bucket(&res);
         assert!(r.upcloud_type.contains("upcloud_managed_object_storage"));
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_object_storage\" \"assets\""), "{hcl}");
-        assert!(hcl.contains("resource \"upcloud_managed_object_storage_bucket\" \"assets_bucket\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_managed_object_storage\" \"assets\""),
+            "{hcl}"
+        );
+        assert!(
+            hcl.contains("resource \"upcloud_managed_object_storage_bucket\" \"assets_bucket\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("name         = \"my-assets-bucket\""), "{hcl}");
     }
 
@@ -304,10 +379,14 @@ mod tests {
 
     #[test]
     fn volume_attachment_generates_storage_devices_snippet() {
-        let res = make_res("aws_volume_attachment", "attach", &[
-            ("volume_id", "aws_ebs_volume.data.id"),
-            ("instance_id", "aws_instance.web.id"),
-        ]);
+        let res = make_res(
+            "aws_volume_attachment",
+            "attach",
+            &[
+                ("volume_id", "aws_ebs_volume.data.id"),
+                ("instance_id", "aws_instance.web.id"),
+            ],
+        );
         let r = map_volume_attachment(&res);
         assert_eq!(r.upcloud_type, "storage_devices block in upcloud_server");
         assert!(r.upcloud_hcl.is_none(), "no standalone HCL resource");
@@ -334,7 +413,10 @@ mod tests {
         let r = map_efs_file_system(&res);
         assert_eq!(r.upcloud_type, "upcloud_file_storage");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_file_storage\" \"shared\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_file_storage\" \"shared\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("zone              = \"__ZONE__\""), "{hcl}");
         assert!(hcl.contains("name              = \"shared\""), "{hcl}");
         assert!(hcl.contains("configured_status = \"started\""), "{hcl}");

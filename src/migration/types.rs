@@ -17,7 +17,6 @@ impl MigrationStatus {
             MigrationStatus::Unknown => "UNKNOWN",
         }
     }
-
 }
 
 #[derive(Debug, Clone)]

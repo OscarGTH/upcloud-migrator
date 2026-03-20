@@ -193,7 +193,10 @@ resource "upcloud_firewall_rules" "main" {
         fs::write(dir.join("lb.tf"), content).unwrap();
         let todos = scan_output_todos(&dir);
         assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].placeholder, "<TODO: reference upcloud_network UUID>");
+        assert_eq!(
+            todos[0].placeholder,
+            "<TODO: reference upcloud_network UUID>"
+        );
         assert_eq!(todos[0].line_no, 2);
         cleanup(&dir);
     }
@@ -201,11 +204,7 @@ resource "upcloud_firewall_rules" "main" {
     #[test]
     fn test_scan_multiple_files() {
         let dir = make_temp_dir();
-        fs::write(
-            dir.join("a.tf"),
-            "server_id = upcloud_server.<TODO>.id\n",
-        )
-        .unwrap();
+        fs::write(dir.join("a.tf"), "server_id = upcloud_server.<TODO>.id\n").unwrap();
         fs::write(
             dir.join("b.tf"),
             "network = \"<TODO: network id>\"\n# comment <TODO> not this\n",
@@ -235,7 +234,6 @@ resource "upcloud_server" "main" {
         cleanup(&dir);
     }
 
-
     #[test]
     fn test_apply_resolution_replaces_placeholder() {
         let dir = make_temp_dir();
@@ -262,10 +260,7 @@ resource "upcloud_server" "main" {
             updated.contains("server_id = upcloud_server.main.id"),
             "placeholder should be replaced: {updated}"
         );
-        assert!(
-            !updated.contains("<TODO>"),
-            "no TODO left: {updated}"
-        );
+        assert!(!updated.contains("<TODO>"), "no TODO left: {updated}");
         cleanup(&dir);
     }
 
@@ -291,10 +286,12 @@ resource "upcloud_server" "main" {
         let updated = fs::read_to_string(dir.join("multi.tf")).unwrap();
         let lines: Vec<&str> = updated.lines().collect();
         assert!(lines[0].contains("resolved"), "line 1 should be resolved");
-        assert!(lines[1].contains("<TODO: val>"), "line 2 should be unchanged");
+        assert!(
+            lines[1].contains("<TODO: val>"),
+            "line 2 should be unchanged"
+        );
         cleanup(&dir);
     }
-
 
     #[test]
     fn test_scan_login_block_ssh_key_todo() {
@@ -313,7 +310,11 @@ resource "upcloud_server" "main" {
 "#;
         fs::write(dir.join("main.tf"), content).unwrap();
         let todos = scan_output_todos(&dir);
-        assert_eq!(todos.len(), 1, "login block SSH key TODO should be detected");
+        assert_eq!(
+            todos.len(),
+            1,
+            "login block SSH key TODO should be detected"
+        );
         assert_eq!(todos[0].placeholder, "<TODO: paste SSH public key>");
         assert!(todos[0].line_content.contains("keys"));
         cleanup(&dir);
@@ -376,7 +377,11 @@ resource "upcloud_firewall_rules" "web" {
 "#;
         fs::write(dir.join("network.tf"), content).unwrap();
         let todos = scan_output_todos(&dir);
-        assert_eq!(todos.len(), 0, "fully-resolved output should have zero TODOs");
+        assert_eq!(
+            todos.len(),
+            0,
+            "fully-resolved output should have zero TODOs"
+        );
         cleanup(&dir);
     }
 
@@ -413,7 +418,10 @@ resource "upcloud_firewall_rules" "web" {
         };
         apply_resolution(&dir, &item, "bar").unwrap();
         let updated = fs::read_to_string(dir.join("t.tf")).unwrap();
-        assert!(updated.ends_with('\n'), "trailing newline should be preserved");
+        assert!(
+            updated.ends_with('\n'),
+            "trailing newline should be preserved"
+        );
         cleanup(&dir);
     }
 }

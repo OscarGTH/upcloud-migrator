@@ -3,8 +3,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, TableState},
+    widgets::{
+        Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState,
+    },
 };
 
 use crate::app::App;
@@ -14,17 +16,17 @@ use crate::ui::theme::{self, *};
 /// Category color based on UpCloud resource type.
 fn category_color(upcloud_type: &str) -> Color {
     if upcloud_type.contains("server") || upcloud_type.contains("kubernetes") {
-        Color::Rgb(0, 210, 255)    // compute → electric cyan
+        Color::Rgb(0, 210, 255) // compute → electric cyan
     } else if upcloud_type.contains("database") || upcloud_type.contains("valkey") {
-        Color::Rgb(200, 80, 255)   // database → magenta
+        Color::Rgb(200, 80, 255) // database → magenta
     } else if upcloud_type.contains("loadbalancer") {
-        Color::Rgb(255, 160, 0)    // lb → amber
+        Color::Rgb(255, 160, 0) // lb → amber
     } else if upcloud_type.contains("storage") {
-        Color::Rgb(0, 210, 130)    // storage → teal
+        Color::Rgb(0, 210, 130) // storage → teal
     } else if upcloud_type.contains("gateway") {
-        Color::Rgb(100, 200, 255)  // gateway → light cyan
+        Color::Rgb(100, 200, 255) // gateway → light cyan
     } else {
-        Color::Rgb(80, 90, 110)    // network/other → dim slate
+        Color::Rgb(80, 90, 110) // network/other → dim slate
     }
 }
 
@@ -117,10 +119,30 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let header = Row::new(vec![
-        Cell::from(Span::styled("TYPE", Style::default().fg(Color::Rgb(200, 80, 255)).add_modifier(Modifier::BOLD))),
-        Cell::from(Span::styled("NAME", Style::default().fg(Color::Rgb(200, 80, 255)).add_modifier(Modifier::BOLD))),
-        Cell::from(Span::styled("PLAN / SIZE", Style::default().fg(Color::Rgb(200, 80, 255)).add_modifier(Modifier::BOLD))),
-        Cell::from(Span::styled("€/MO", Style::default().fg(Color::Rgb(200, 80, 255)).add_modifier(Modifier::BOLD))),
+        Cell::from(Span::styled(
+            "TYPE",
+            Style::default()
+                .fg(Color::Rgb(200, 80, 255))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Cell::from(Span::styled(
+            "NAME",
+            Style::default()
+                .fg(Color::Rgb(200, 80, 255))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Cell::from(Span::styled(
+            "PLAN / SIZE",
+            Style::default()
+                .fg(Color::Rgb(200, 80, 255))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Cell::from(Span::styled(
+            "€/MO",
+            Style::default()
+                .fg(Color::Rgb(200, 80, 255))
+                .add_modifier(Modifier::BOLD),
+        )),
     ])
     .style(Style::default().bg(Color::Rgb(20, 10, 40))) // dark purple header bg
     .height(1);
@@ -131,9 +153,9 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, entry)| {
             // Alternate row background for readability
             let row_bg = if i % 2 == 0 {
-                Color::Rgb(8, 12, 25)   // very dark blue-black
+                Color::Rgb(8, 12, 25) // very dark blue-black
             } else {
-                Color::Rgb(12, 18, 35)  // slightly lighter dark blue
+                Color::Rgb(12, 18, 35) // slightly lighter dark blue
             };
 
             let type_color = category_color(&entry.upcloud_type);
@@ -175,12 +197,15 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let max_scroll = costs.len().saturating_sub(visible_rows);
     let scroll = app.pricing_scroll.min(max_scroll);
 
-    let table = Table::new(rows, [
-        Constraint::Length(24),
-        Constraint::Min(16),
-        Constraint::Min(20),
-        Constraint::Length(10),
-    ])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24),
+            Constraint::Min(16),
+            Constraint::Min(20),
+            Constraint::Length(10),
+        ],
+    )
     .header(header)
     .block(
         Block::default()
@@ -241,7 +266,12 @@ fn render_totals(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = Line::from(vec![
-        Span::styled("  ESTIMATED TOTAL: ", Style::default().fg(Color::Rgb(200, 80, 255)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "  ESTIMATED TOTAL: ",
+            Style::default()
+                .fg(Color::Rgb(200, 80, 255))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!("€{:.2}/mo", total), total_style),
         Span::styled("  │  ", theme::dim()),
         Span::styled(format!("€{:.0}/yr", yearly), Style::default().fg(MUTED)),
@@ -251,10 +281,7 @@ fn render_totals(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(WARNING),
         ),
         Span::styled("  +  ", theme::dim()),
-        Span::styled(
-            format!("{} free", free_count),
-            Style::default().fg(DIM),
-        ),
+        Span::styled(format!("{} free", free_count), Style::default().fg(DIM)),
         Span::styled("  (excludes: data transfer, IPs, EKS nodes)", theme::dim()),
     ]);
 
