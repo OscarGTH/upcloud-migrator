@@ -16,10 +16,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate conventional commits
-        uses: conventional-commits-rs/actions@v1.0
+      - name: Validate commit messages
+        uses: compilerla/conventional-pre-commit@v3.0.0
         with:
-          # Allow types: feat, fix, refactor, perf, docs, style, test, chore, revert
-          types: feat,fix,refactor,perf,docs,style,test,chore,revert
-          scopes: migration,terraform,ui,pricing,zones,ai,app
-          strict: true
+          force-with-lease: true
