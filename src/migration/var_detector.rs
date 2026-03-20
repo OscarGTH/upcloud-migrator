@@ -149,25 +149,24 @@ fn score_instance_type(
     let original_default = default_val.map(str::to_string);
 
     // Signal 1: default matches AWS EC2 instance type (e.g. t3.small)
-    if let Some(dv) = default_val {
-        if let Some(plan) = aws_instance_type_to_upcloud_plan(dv) {
-            score += 5;
-            signals.push(format!("default '{}' is an AWS EC2 instance type", dv));
-            converted_value = Some(plan.to_string());
-        }
+    if let Some(dv) = default_val
+        && let Some(plan) = aws_instance_type_to_upcloud_plan(dv)
+    {
+        score += 5;
+        signals.push(format!("default '{}' is an AWS EC2 instance type", dv));
+        converted_value = Some(plan.to_string());
     }
 
     // Signal 1b: default matches an RDS instance class (db.t3.medium) or
     // ElastiCache node type (cache.t3.micro) — these use different UpCloud plan
     // formats than EC2 server plans.
-    if converted_value.is_none() {
-        if let Some(dv) = default_val {
-            if let Some(plan) = rds_or_cache_class_to_upcloud_plan(dv) {
-                score += 5;
-                signals.push(format!("default '{}' is an AWS RDS/ElastiCache instance class", dv));
-                converted_value = Some(plan.to_string());
-            }
-        }
+    if converted_value.is_none()
+        && let Some(dv) = default_val
+        && let Some(plan) = rds_or_cache_class_to_upcloud_plan(dv)
+    {
+        score += 5;
+        signals.push(format!("default '{}' is an AWS RDS/ElastiCache instance class", dv));
+        converted_value = Some(plan.to_string());
     }
 
     // Signal 2: used as instance_type / instance_types / instance_class / node_type attribute
@@ -257,12 +256,12 @@ fn score_region(
     let original_default = default_val.map(str::to_string);
 
     // Signal 1: default matches AWS region
-    if let Some(dv) = default_val {
-        if is_aws_region(dv) {
-            score += 5;
-            signals.push(format!("default '{}' is an AWS region code", dv));
-            converted_value = aws_region_to_upcloud_zone(dv).map(str::to_string);
-        }
+    if let Some(dv) = default_val
+        && is_aws_region(dv)
+    {
+        score += 5;
+        signals.push(format!("default '{}' is an AWS region code", dv));
+        converted_value = aws_region_to_upcloud_zone(dv).map(str::to_string);
     }
 
     // Signal 2: used as region-related attribute
@@ -329,22 +328,21 @@ pub fn extract_variable_info(raw_hcl: &str) -> (Option<String>, Option<String>) 
         if depth == 0 { in_validation = false; }
 
         if trimmed.starts_with("default") && !in_validation {
-            if let Some(rest) = trimmed.strip_prefix("default").map(|s| s.trim_start()) {
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let val = rest.trim().trim_end_matches(',');
-                    if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
-                        default_val = Some(val[1..val.len() - 1].to_string());
-                    }
+            if let Some(rest) = trimmed.strip_prefix("default").map(|s| s.trim_start())
+                && let Some(rest) = rest.strip_prefix('=')
+            {
+                let val = rest.trim().trim_end_matches(',');
+                if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+                    default_val = Some(val[1..val.len() - 1].to_string());
                 }
             }
-        } else if trimmed.starts_with("description") && !in_validation {
-            if let Some(rest) = trimmed.strip_prefix("description").map(|s| s.trim_start()) {
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let val = rest.trim().trim_end_matches(',');
-                    if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
-                        description = Some(val[1..val.len() - 1].to_string());
-                    }
-                }
+        } else if trimmed.starts_with("description") && !in_validation
+            && let Some(rest) = trimmed.strip_prefix("description").map(|s| s.trim_start())
+            && let Some(rest) = rest.strip_prefix('=')
+        {
+            let val = rest.trim().trim_end_matches(',');
+            if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+                description = Some(val[1..val.len() - 1].to_string());
             }
         }
     }

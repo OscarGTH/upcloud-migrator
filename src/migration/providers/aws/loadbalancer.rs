@@ -1,6 +1,391 @@
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
+
+pub fn map_lb(res: &TerraformResource) -> MigrationResult {
+    let lb_type = res.attributes.get("load_balancer_type").map(|t| t.trim_matches('"')).unwrap_or("application");
+    let is_internal = res.attributes.get("internal").map(|v| v.trim_matches('"') == "true").unwrap_or(false);
+
+    // UpCloud LBs require at least one private network block for backend connectivity.
+    // Public LBs additionally include a public network block for internet-facing traffic.
+    let networks_block = if is_internal {
+        r#"  networks {
+    name    = "private"
+    type    = "private"
+    family  = "IPv4"
+    network = "<TODO: upcloud_network reference>"
+  }"#.to_string()
+    } else {
+        r#"  networks {
+    name    = "private"
+    type    = "private"
+    family  = "IPv4"
+    network = "<TODO: upcloud_network reference>"
+  }
+
+  networks {
+    name   = "public"
+    type   = "public"
+    family = "IPv4"
+  }"#.to_string()
+    };
+
+    let hcl = format!(
+        r#"resource "upcloud_loadbalancer" "{name}" {{
+  name              = "{name}"
+  plan              = "development"  # update to production-small or higher for production
+  zone              = "__ZONE__"
+  configured_status = "started"
+
+{networks}
+
+  # Backends and frontends are separate resources
+}}
+"#,
+        name = res.name,
+        networks = networks_block,
+    );
+
+    let mut notes = vec![
+        format!("ALB/NLB ({}) → UpCloud Load Balancer", lb_type),
+        "Backends and frontends are defined as separate Terraform resources".into(),
+    ];
+    if is_internal {
+        notes.push("Internal LB: private network reference will be auto-resolved if a subnet exists.".into());
+    }
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Compatible,
+        upcloud_type: "upcloud_loadbalancer".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: None,
+        notes,
+        source_hcl: None,
+    }
+}
+
+pub fn map_lb_target_group(res: &TerraformResource) -> MigrationResult {
+    let protocol = res.attributes.get("protocol").map(|p| p.trim_matches('"')).unwrap_or("HTTP");
+    let port = res.attributes.get("port").map(|p| p.trim_matches('"')).unwrap_or("80");
+
+    // Map health_check block attributes to UpCloud backend properties.
+    // hcl-rs stores nested block attrs with dot-prefix: "health_check.path", etc.
+    let hc_type = match protocol.to_uppercase().as_str() {
+        "HTTP" | "HTTPS" => "http",
+        _ => "tcp",
+    };
+    let hc_url = res.attributes.get("health_check.path")
+        .map(|v| v.trim_matches('"').to_string());
+    let hc_status = res.attributes.get("health_check.matcher")
+        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
+    let hc_rise = res.attributes.get("health_check.healthy_threshold")
+        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
+    let hc_fall = res.attributes.get("health_check.unhealthy_threshold")
+        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
+    let hc_interval = res.attributes.get("health_check.interval")
+        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
+
+    let mut hc_lines = format!("    health_check_type   = \"{hc_type}\"\n");
+    if let Some(url) = &hc_url {
+        hc_lines.push_str(&format!("    health_check_url    = \"{url}\"\n"));
+    }
+    if let Some(status) = hc_status {
+        hc_lines.push_str(&format!("    health_check_expected_status = {status}\n"));
+    }
+    if let Some(rise) = hc_rise {
+        hc_lines.push_str(&format!("    health_check_rise   = {rise}\n"));
+    }
+    if let Some(fall) = hc_fall {
+        hc_lines.push_str(&format!("    health_check_fall   = {fall}\n"));
+    }
+    if let Some(interval) = hc_interval {
+        hc_lines.push_str(&format!("    health_check_interval = {interval}\n"));
+    }
+
+    let hcl = format!(
+        r#"resource "upcloud_loadbalancer_backend" "{name}" {{
+  loadbalancer = upcloud_loadbalancer.<TODO>.id
+  name         = "{name}"
+
+  properties {{
+{hc_lines}  }}
+}}
+"#,
+        name = res.name,
+        hc_lines = hc_lines,
+    );
+
+    let mut notes = vec![
+        format!("Target group ({}/{}) → upcloud_loadbalancer_backend.", protocol, port),
+        "Backend members are generated from aws_lb_target_group_attachment resources. If none exist, add an upcloud_loadbalancer_static_backend_member manually.".into(),
+    ];
+    if hc_url.is_some() || hc_status.is_some() {
+        notes.push("Health check settings mapped from aws_lb_target_group health_check block.".into());
+    }
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Compatible,
+        upcloud_type: "upcloud_loadbalancer_backend".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: None,
+        notes,
+        source_hcl: None,
+    }
+}
+
+pub fn map_lb_listener(res: &TerraformResource) -> MigrationResult {
+    let protocol = res.attributes.get("protocol").map(|p| p.trim_matches('"')).unwrap_or("HTTP");
+    let port = res.attributes.get("port").map(|p| p.trim_matches('"')).unwrap_or("80");
+    // tcp mode for layer-4 (TCP/TLS/UDP), http mode for layer-7 (HTTP/HTTPS)
+    let upcloud_mode = match protocol.to_uppercase().as_str() {
+        "TCP" | "TLS" | "UDP" => "tcp",
+        _ => "http",
+    };
+    // frontend networks block: specifies which LB network this listener is on.
+    let network_name = "public";
+
+    let action_type = res.attributes.get("default_action.type")
+        .map(|v| v.trim_matches('"'))
+        .unwrap_or("forward");
+    let is_redirect = action_type == "redirect";
+
+    // For redirect listeners the frontend still needs a backend (even if the redirect
+    // rule handles all traffic). Use a TODO so the generator can auto-resolve it.
+    let mut hcl = format!(
+        r#"resource "upcloud_loadbalancer_frontend" "{name}" {{
+  loadbalancer         = upcloud_loadbalancer.<TODO>.id
+  name                 = "{name}"
+  mode                 = "{mode}"
+  port                 = {port}
+  default_backend_name = upcloud_loadbalancer_backend.<TODO>.name
+
+  networks {{
+    name = "{network_name}"  # must match network name in upcloud_loadbalancer
+  }}
+}}
+"#,
+        name = res.name,
+        mode = upcloud_mode,
+        port = port,
+        network_name = network_name,
+    );
+
+    // For redirect listeners (e.g. HTTP → HTTPS), generate a frontend rule that
+    // performs the redirect. UpCloud uses upcloud_loadbalancer_frontend_rule with
+    // an http_redirect action (HAProxy location string).
+    if is_redirect {
+        let redirect_proto = res.attributes.get("default_action.redirect.protocol")
+            .map(|v| v.trim_matches('"').to_lowercase())
+            .unwrap_or_else(|| "https".into());
+        hcl.push_str(&format!(
+            r#"
+resource "upcloud_loadbalancer_frontend_rule" "{name}_redirect" {{
+  frontend = upcloud_loadbalancer_frontend.{name}.id
+  name     = "{name}-redirect"
+  priority = 100
+
+  actions {{
+    http_redirect {{
+      scheme = "{proto}"
+    }}
+  }}
+}}
+"#,
+            name = res.name,
+            proto = redirect_proto,
+        ));
+    }
+
+    // For HTTPS listeners, generate a TLS config resource that binds the certificate.
+    if protocol.to_uppercase() == "HTTPS" {
+        hcl.push_str(&format!(
+            r#"
+resource "upcloud_loadbalancer_frontend_tls_config" "{name}_tls" {{
+  frontend                = upcloud_loadbalancer_frontend.{name}.id
+  name                    = "{name}-tls"
+  certificate_bundle = upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id
+}}
+"#,
+            name = res.name,
+        ));
+    }
+
+    let mut notes = vec![format!("Listener ({}/{}) → UpCloud LB Frontend (mode={})", protocol, port, upcloud_mode)];
+    if is_redirect {
+        notes.push(format!(
+            "HTTP redirect action → upcloud_loadbalancer_frontend_rule '{}_redirect' generated.",
+            res.name
+        ));
+    }
+    if protocol.to_uppercase() == "HTTPS" {
+        notes.push(format!(
+            "HTTPS: upcloud_loadbalancer_frontend_tls_config '{}_tls' generated — cert bundle auto-resolved.",
+            res.name
+        ));
+    }
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Compatible,
+        upcloud_type: "upcloud_loadbalancer_frontend".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: None,
+        notes,
+        source_hcl: None,
+    }
+}
+
+pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResult {
+    // aws_lb_target_group_attachment → upcloud_loadbalancer_static_backend_member
+    let backend_name = res.attributes.get("target_group_arn").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_lb_target_group.") || v.starts_with("aws_alb_target_group.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
+    let target_id = res.attributes.get("target_id").map(|v| v.trim_matches('"').to_string());
+    let port = res.attributes.get("port").map(|v| v.trim_matches('"').to_string()).unwrap_or_else(|| "80".to_string());
+
+    // Propagate count if the attachment has it (e.g. count = var.web_server_count)
+    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
+    let has_count = count_attr.is_some();
+
+    let backend_ref = backend_name.as_deref().unwrap_or("<TODO: backend>");
+
+    // Extract the base server name and optional literal numeric index.
+    // e.g. "aws_instance.web[0].id"           → name="web", literal_idx=Some("0")
+    // e.g. "aws_instance.web[count.index].id" → name="web", literal_idx=None (has_count handles it)
+    // e.g. "aws_instance.app.id"              → name="app", literal_idx=None
+    let (server_name, server_literal_index): (Option<String>, Option<String>) =
+        target_id.as_deref()
+        .map(|id| {
+            if let Some(rest) = id.strip_prefix("aws_instance.") {
+                let base = rest.split(['.', '[']).next().unwrap_or(rest);
+                if base.is_empty() { return (None, None); }
+                let literal_idx = rest.find('[').and_then(|bi| {
+                    let inner = &rest[bi + 1..];
+                    inner.find(']').and_then(|ei| {
+                        let s = &inner[..ei];
+                        if s.chars().all(|c| c.is_ascii_digit()) { Some(s.to_string()) } else { None }
+                    })
+                });
+                (Some(base.to_string()), literal_idx)
+            } else {
+                (None, None)
+            }
+        })
+        .unwrap_or((None, None));
+
+    // Build count + name lines.
+    let count_name_lines = if let Some(ref n) = count_attr {
+        format!("  count        = {}\n  name         = \"{}-${{count.index + 1}}\"\n", n, res.name)
+    } else {
+        format!("  name         = \"{}\"\n", res.name)
+    };
+
+    // Build the IP line using network_interface[1] (private) for LB backend traffic.
+    // Priority: count.index > literal index > TODO.
+    let ip_line = match (&server_name, has_count, &server_literal_index) {
+        (Some(inst), true, _) => {
+            format!("  ip           = upcloud_server.{}[count.index].network_interface[1].ip_address\n", inst)
+        }
+        (Some(inst), false, Some(idx)) => {
+            format!("  ip           = upcloud_server.{}[{}].network_interface[1].ip_address\n", inst, idx)
+        }
+        (Some(inst), false, None) => {
+            format!("  ip           = \"<TODO: upcloud_server.{} IP>\"\n", inst)
+        }
+        _ => "  ip           = \"<TODO: server IP address>\"\n".to_string(),
+    };
+
+    let hcl = format!(
+        "resource \"upcloud_loadbalancer_static_backend_member\" \"{name}\" {{\n\
+         {count_name_lines}\
+         backend      = upcloud_loadbalancer_backend.{backend}.id\n\
+         {ip_line}\
+           port         = {port}\n\
+           weight       = 100\n\
+           max_sessions = 1000\n\
+           enabled      = true\n\
+         }}\n",
+        name = res.name,
+        count_name_lines = count_name_lines,
+        backend = backend_ref,
+        ip_line = ip_line,
+        port = port,
+    );
+
+    let mut notes = vec![
+        "Target group attachment → static_backend_member.".into(),
+    ];
+    if has_count {
+        notes.push("count propagated; IP references server's private interface (network_interface[1]).".into());
+    } else if server_literal_index.is_some() {
+        notes.push("IP auto-resolved from target_id index → network_interface[1] (private).".into());
+    } else {
+        notes.push("Update ip to the server's actual IP or floating IP.".into());
+    }
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Compatible,
+        upcloud_type: "upcloud_loadbalancer_static_backend_member".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: backend_name,
+        notes,
+        source_hcl: None,
+    }
+}
+
+pub fn map_acm_certificate(res: &TerraformResource) -> MigrationResult {
+    let hcl = format!(
+        r#"# NOTE: certificate and private_key must be base64-encoded file contents.
+# Export your cert/key from ACM first, then use:
+#   certificate = base64encode(file(var.certificate_path))
+#   private_key = base64encode(file(var.private_key_path))
+resource "upcloud_loadbalancer_manual_certificate_bundle" "{name}" {{
+  name        = "{name}"
+  certificate = base64encode(file("<TODO: path to certificate PEM file>"))
+  private_key = base64encode(file("<TODO: path to private key PEM file>"))
+}}
+"#,
+        name = res.name,
+    );
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "upcloud_loadbalancer_manual_certificate_bundle".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: None,
+        notes: vec![
+            "ACM → UpCloud manual cert bundle. Export cert/key from ACM first.".into(),
+            "certificate and private_key must be base64encode(file(...)) expressions.".into(),
+        ],
+        source_hcl: None,
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,389 +678,5 @@ mod tests {
             map_acm_certificate(&res).status,
             crate::migration::types::MigrationStatus::Partial
         );
-    }
-}
-
-pub fn map_lb(res: &TerraformResource) -> MigrationResult {
-    let lb_type = res.attributes.get("load_balancer_type").map(|t| t.trim_matches('"')).unwrap_or("application");
-    let is_internal = res.attributes.get("internal").map(|v| v.trim_matches('"') == "true").unwrap_or(false);
-
-    // UpCloud LBs require at least one private network block for backend connectivity.
-    // Public LBs additionally include a public network block for internet-facing traffic.
-    let networks_block = if is_internal {
-        r#"  networks {
-    name    = "private"
-    type    = "private"
-    family  = "IPv4"
-    network = "<TODO: upcloud_network reference>"
-  }"#.to_string()
-    } else {
-        r#"  networks {
-    name    = "private"
-    type    = "private"
-    family  = "IPv4"
-    network = "<TODO: upcloud_network reference>"
-  }
-
-  networks {
-    name   = "public"
-    type   = "public"
-    family = "IPv4"
-  }"#.to_string()
-    };
-
-    let hcl = format!(
-        r#"resource "upcloud_loadbalancer" "{name}" {{
-  name              = "{name}"
-  plan              = "development"  # update to production-small or higher for production
-  zone              = "__ZONE__"
-  configured_status = "started"
-
-{networks}
-
-  # Backends and frontends are separate resources
-}}
-"#,
-        name = res.name,
-        networks = networks_block,
-    );
-
-    let mut notes = vec![
-        format!("ALB/NLB ({}) → UpCloud Load Balancer", lb_type),
-        "Backends and frontends are defined as separate Terraform resources".into(),
-    ];
-    if is_internal {
-        notes.push("Internal LB: private network reference will be auto-resolved if a subnet exists.".into());
-    }
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Compatible,
-        upcloud_type: "upcloud_loadbalancer".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: None,
-        notes,
-        source_hcl: None,
-    }
-}
-
-pub fn map_lb_target_group(res: &TerraformResource) -> MigrationResult {
-    let protocol = res.attributes.get("protocol").map(|p| p.trim_matches('"')).unwrap_or("HTTP");
-    let port = res.attributes.get("port").map(|p| p.trim_matches('"')).unwrap_or("80");
-
-    // Map health_check block attributes to UpCloud backend properties.
-    // hcl-rs stores nested block attrs with dot-prefix: "health_check.path", etc.
-    let hc_type = match protocol.to_uppercase().as_str() {
-        "HTTP" | "HTTPS" => "http",
-        _ => "tcp",
-    };
-    let hc_url = res.attributes.get("health_check.path")
-        .map(|v| v.trim_matches('"').to_string());
-    let hc_status = res.attributes.get("health_check.matcher")
-        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
-    let hc_rise = res.attributes.get("health_check.healthy_threshold")
-        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
-    let hc_fall = res.attributes.get("health_check.unhealthy_threshold")
-        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
-    let hc_interval = res.attributes.get("health_check.interval")
-        .and_then(|v| v.trim_matches('"').parse::<u32>().ok());
-
-    let mut hc_lines = format!("    health_check_type   = \"{hc_type}\"\n");
-    if let Some(url) = &hc_url {
-        hc_lines.push_str(&format!("    health_check_url    = \"{url}\"\n"));
-    }
-    if let Some(status) = hc_status {
-        hc_lines.push_str(&format!("    health_check_expected_status = {status}\n"));
-    }
-    if let Some(rise) = hc_rise {
-        hc_lines.push_str(&format!("    health_check_rise   = {rise}\n"));
-    }
-    if let Some(fall) = hc_fall {
-        hc_lines.push_str(&format!("    health_check_fall   = {fall}\n"));
-    }
-    if let Some(interval) = hc_interval {
-        hc_lines.push_str(&format!("    health_check_interval = {interval}\n"));
-    }
-
-    let hcl = format!(
-        r#"resource "upcloud_loadbalancer_backend" "{name}" {{
-  loadbalancer = upcloud_loadbalancer.<TODO>.id
-  name         = "{name}"
-
-  properties {{
-{hc_lines}  }}
-}}
-"#,
-        name = res.name,
-        hc_lines = hc_lines,
-    );
-
-    let mut notes = vec![
-        format!("Target group ({}/{}) → upcloud_loadbalancer_backend.", protocol, port),
-        "Backend members are generated from aws_lb_target_group_attachment resources. If none exist, add an upcloud_loadbalancer_static_backend_member manually.".into(),
-    ];
-    if hc_url.is_some() || hc_status.is_some() {
-        notes.push("Health check settings mapped from aws_lb_target_group health_check block.".into());
-    }
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Compatible,
-        upcloud_type: "upcloud_loadbalancer_backend".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: None,
-        notes,
-        source_hcl: None,
-    }
-}
-
-pub fn map_lb_listener(res: &TerraformResource) -> MigrationResult {
-    let protocol = res.attributes.get("protocol").map(|p| p.trim_matches('"')).unwrap_or("HTTP");
-    let port = res.attributes.get("port").map(|p| p.trim_matches('"')).unwrap_or("80");
-    // tcp mode for layer-4 (TCP/TLS/UDP), http mode for layer-7 (HTTP/HTTPS)
-    let upcloud_mode = match protocol.to_uppercase().as_str() {
-        "TCP" | "TLS" | "UDP" => "tcp",
-        _ => "http",
-    };
-    // frontend networks block: specifies which LB network this listener is on.
-    let network_name = "public";
-
-    let action_type = res.attributes.get("default_action.type")
-        .map(|v| v.trim_matches('"'))
-        .unwrap_or("forward");
-    let is_redirect = action_type == "redirect";
-
-    // For redirect listeners the frontend still needs a backend (even if the redirect
-    // rule handles all traffic). Use a TODO so the generator can auto-resolve it.
-    let mut hcl = format!(
-        r#"resource "upcloud_loadbalancer_frontend" "{name}" {{
-  loadbalancer         = upcloud_loadbalancer.<TODO>.id
-  name                 = "{name}"
-  mode                 = "{mode}"
-  port                 = {port}
-  default_backend_name = upcloud_loadbalancer_backend.<TODO>.name
-
-  networks {{
-    name = "{network_name}"  # must match network name in upcloud_loadbalancer
-  }}
-}}
-"#,
-        name = res.name,
-        mode = upcloud_mode,
-        port = port,
-        network_name = network_name,
-    );
-
-    // For redirect listeners (e.g. HTTP → HTTPS), generate a frontend rule that
-    // performs the redirect. UpCloud uses upcloud_loadbalancer_frontend_rule with
-    // an http_redirect action (HAProxy location string).
-    if is_redirect {
-        let redirect_proto = res.attributes.get("default_action.redirect.protocol")
-            .map(|v| v.trim_matches('"').to_lowercase())
-            .unwrap_or_else(|| "https".into());
-        hcl.push_str(&format!(
-            r#"
-resource "upcloud_loadbalancer_frontend_rule" "{name}_redirect" {{
-  frontend = upcloud_loadbalancer_frontend.{name}.id
-  name     = "{name}-redirect"
-  priority = 100
-
-  actions {{
-    http_redirect {{
-      scheme = "{proto}"
-    }}
-  }}
-}}
-"#,
-            name = res.name,
-            proto = redirect_proto,
-        ));
-    }
-
-    // For HTTPS listeners, generate a TLS config resource that binds the certificate.
-    if protocol.to_uppercase() == "HTTPS" {
-        hcl.push_str(&format!(
-            r#"
-resource "upcloud_loadbalancer_frontend_tls_config" "{name}_tls" {{
-  frontend                = upcloud_loadbalancer_frontend.{name}.id
-  name                    = "{name}-tls"
-  certificate_bundle = upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id
-}}
-"#,
-            name = res.name,
-        ));
-    }
-
-    let mut notes = vec![format!("Listener ({}/{}) → UpCloud LB Frontend (mode={})", protocol, port, upcloud_mode)];
-    if is_redirect {
-        notes.push(format!(
-            "HTTP redirect action → upcloud_loadbalancer_frontend_rule '{}_redirect' generated.",
-            res.name
-        ));
-    }
-    if protocol.to_uppercase() == "HTTPS" {
-        notes.push(format!(
-            "HTTPS: upcloud_loadbalancer_frontend_tls_config '{}_tls' generated — cert bundle auto-resolved.",
-            res.name
-        ));
-    }
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Compatible,
-        upcloud_type: "upcloud_loadbalancer_frontend".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: None,
-        notes,
-        source_hcl: None,
-    }
-}
-
-pub fn map_lb_target_group_attachment(res: &TerraformResource) -> MigrationResult {
-    // aws_lb_target_group_attachment → upcloud_loadbalancer_static_backend_member
-    let backend_name = res.attributes.get("target_group_arn").and_then(|v| {
-        let v = v.trim_matches('"');
-        if v.starts_with("aws_lb_target_group.") || v.starts_with("aws_alb_target_group.") {
-            v.split('.').nth(1).map(str::to_string)
-        } else {
-            None
-        }
-    });
-    let target_id = res.attributes.get("target_id").map(|v| v.trim_matches('"').to_string());
-    let port = res.attributes.get("port").map(|v| v.trim_matches('"').to_string()).unwrap_or_else(|| "80".to_string());
-
-    // Propagate count if the attachment has it (e.g. count = var.web_server_count)
-    let count_attr = res.attributes.get("count").map(|v| v.trim_matches('"').to_string());
-    let has_count = count_attr.is_some();
-
-    let backend_ref = backend_name.as_deref().unwrap_or("<TODO: backend>");
-
-    // Extract the base server name and optional literal numeric index.
-    // e.g. "aws_instance.web[0].id"           → name="web", literal_idx=Some("0")
-    // e.g. "aws_instance.web[count.index].id" → name="web", literal_idx=None (has_count handles it)
-    // e.g. "aws_instance.app.id"              → name="app", literal_idx=None
-    let (server_name, server_literal_index): (Option<String>, Option<String>) =
-        target_id.as_deref()
-        .map(|id| {
-            if id.starts_with("aws_instance.") {
-                let rest = &id["aws_instance.".len()..];
-                let base = rest.split(|c: char| c == '.' || c == '[').next().unwrap_or(rest);
-                if base.is_empty() { return (None, None); }
-                let literal_idx = rest.find('[').and_then(|bi| {
-                    let inner = &rest[bi + 1..];
-                    inner.find(']').and_then(|ei| {
-                        let s = &inner[..ei];
-                        if s.chars().all(|c| c.is_ascii_digit()) { Some(s.to_string()) } else { None }
-                    })
-                });
-                (Some(base.to_string()), literal_idx)
-            } else {
-                (None, None)
-            }
-        })
-        .unwrap_or((None, None));
-
-    // Build count + name lines.
-    let count_name_lines = if let Some(ref n) = count_attr {
-        format!("  count        = {}\n  name         = \"{}-${{count.index + 1}}\"\n", n, res.name)
-    } else {
-        format!("  name         = \"{}\"\n", res.name)
-    };
-
-    // Build the IP line using network_interface[1] (private) for LB backend traffic.
-    // Priority: count.index > literal index > TODO.
-    let ip_line = match (&server_name, has_count, &server_literal_index) {
-        (Some(inst), true, _) => {
-            format!("  ip           = upcloud_server.{}[count.index].network_interface[1].ip_address\n", inst)
-        }
-        (Some(inst), false, Some(idx)) => {
-            format!("  ip           = upcloud_server.{}[{}].network_interface[1].ip_address\n", inst, idx)
-        }
-        (Some(inst), false, None) => {
-            format!("  ip           = \"<TODO: upcloud_server.{} IP>\"\n", inst)
-        }
-        _ => "  ip           = \"<TODO: server IP address>\"\n".to_string(),
-    };
-
-    let hcl = format!(
-        "resource \"upcloud_loadbalancer_static_backend_member\" \"{name}\" {{\n\
-         {count_name_lines}\
-         backend      = upcloud_loadbalancer_backend.{backend}.id\n\
-         {ip_line}\
-           port         = {port}\n\
-           weight       = 100\n\
-           max_sessions = 1000\n\
-           enabled      = true\n\
-         }}\n",
-        name = res.name,
-        count_name_lines = count_name_lines,
-        backend = backend_ref,
-        ip_line = ip_line,
-        port = port,
-    );
-
-    let mut notes = vec![
-        "Target group attachment → static_backend_member.".into(),
-    ];
-    if has_count {
-        notes.push("count propagated; IP references server's private interface (network_interface[1]).".into());
-    } else if server_literal_index.is_some() {
-        notes.push("IP auto-resolved from target_id index → network_interface[1] (private).".into());
-    } else {
-        notes.push("Update ip to the server's actual IP or floating IP.".into());
-    }
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Compatible,
-        upcloud_type: "upcloud_loadbalancer_static_backend_member".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: backend_name,
-        notes,
-        source_hcl: None,
-    }
-}
-
-pub fn map_acm_certificate(res: &TerraformResource) -> MigrationResult {
-    let hcl = format!(
-        r#"# NOTE: certificate and private_key must be base64-encoded file contents.
-# Export your cert/key from ACM first, then use:
-#   certificate = base64encode(file(var.certificate_path))
-#   private_key = base64encode(file(var.private_key_path))
-resource "upcloud_loadbalancer_manual_certificate_bundle" "{name}" {{
-  name        = "{name}"
-  certificate = base64encode(file("<TODO: path to certificate PEM file>"))
-  private_key = base64encode(file("<TODO: path to private key PEM file>"))
-}}
-"#,
-        name = res.name,
-    );
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Partial,
-        upcloud_type: "upcloud_loadbalancer_manual_certificate_bundle".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: None,
-        notes: vec![
-            "ACM → UpCloud manual cert bundle. Export cert/key from ACM first.".into(),
-            "certificate and private_key must be base64encode(file(...)) expressions.".into(),
-        ],
-        source_hcl: None,
     }
 }

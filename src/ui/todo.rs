@@ -228,7 +228,7 @@ fn render_detail(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // ── Input field ───────────────────────────────────────────────────────────
     let (input_text, input_border_style, input_title) = if app.todo_input_active {
-        let cursor = if (app.tick / 4) % 2 == 0 { "█" } else { " " };
+        let cursor = if (app.tick / 4).is_multiple_of(2) { "█" } else { " " };
         (
             format!("{}{}", app.todo_input, cursor),
             theme::accent(),

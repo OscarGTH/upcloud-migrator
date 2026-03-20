@@ -114,10 +114,10 @@ pub fn apply_resolution(
 
 fn extract_placeholder(line: &str) -> String {
     // Match <TODO: ...> or <TODO>
-    if let Some(start) = line.find("<TODO") {
-        if let Some(end) = line[start..].find('>') {
-            return line[start..start + end + 1].to_string();
-        }
+    if let Some(start) = line.find("<TODO")
+        && let Some(end) = line[start..].find('>')
+    {
+        return line[start..start + end + 1].to_string();
     }
     "<TODO>".to_string()
 }

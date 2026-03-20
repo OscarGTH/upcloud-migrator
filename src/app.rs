@@ -188,12 +188,11 @@ impl App {
 
             // Poll for crossterm events
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key.code).await;
-                    }
-                }
+            if event::poll(timeout)?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                self.handle_key(key.code).await;
             }
 
             // Process async messages
@@ -209,7 +208,7 @@ impl App {
                 // Auto-advance scanner → resources when done
                 if self.view == View::Scanner && self.scan_complete {
                     // Wait a moment then advance
-                    if self.tick % 20 == 0 {
+                    if self.tick.is_multiple_of(20) {
                         self.view = View::Resources;
                     }
                 }
@@ -289,19 +288,18 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if let Some(idx) = self.fb_state.selected() {
-                    if let Some((name, is_dir)) = self.fb_entries.get(idx).cloned() {
-                        if is_dir {
-                            let new_path = if name == "[..]" {
-                                self.fb_cwd.parent()
-                                    .map(|p| p.to_path_buf())
-                                    .unwrap_or_else(|| self.fb_cwd.clone())
-                            } else {
-                                self.fb_cwd.join(&name)
-                            };
-                            self.fb_load_dir(Some(new_path));
-                        }
-                    }
+                if let Some(idx) = self.fb_state.selected()
+                    && let Some((name, is_dir)) = self.fb_entries.get(idx).cloned()
+                    && is_dir
+                {
+                    let new_path = if name == "[..]" {
+                        self.fb_cwd.parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| self.fb_cwd.clone())
+                    } else {
+                        self.fb_cwd.join(&name)
+                    };
+                    self.fb_load_dir(Some(new_path));
                 }
             }
             KeyCode::Backspace => {
@@ -345,7 +343,7 @@ impl App {
                 }
             }
 
-            dirs.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            dirs.sort_by_key(|a| a.to_lowercase());
             tf_files.sort();
 
             for d in dirs    { self.fb_entries.push((d, true)); }
@@ -563,8 +561,8 @@ impl App {
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if let (Some(api_key), Some(item)) =
                     (self.api_key.clone(), self.todos.get_mut(self.todo_idx))
+                    && (item.status == TodoStatus::Pending || item.status == TodoStatus::Resolved)
                 {
-                    if item.status == TodoStatus::Pending || item.status == TodoStatus::Resolved {
                         item.status = TodoStatus::Loading;
                         let item_clone = item.clone();
                         let idx = self.todo_idx;
@@ -575,7 +573,6 @@ impl App {
                                 Err(e) => { let _ = tx.send(AppMessage::AiError(idx, e.to_string())).await; }
                             }
                         });
-                    }
                 }
             }
 
@@ -618,8 +615,9 @@ impl App {
             }
         });
 
-        if let (Some(res), Some(output_dir)) = (resolution, self.output_path.clone()) {
-            if let Some(item) = self.todos.get_mut(self.todo_idx) {
+        if let (Some(res), Some(output_dir)) = (resolution, self.output_path.clone())
+            && let Some(item) = self.todos.get_mut(self.todo_idx)
+        {
                 let _ = apply_resolution(&output_dir, item, &res);
                 item.resolution = Some(res.clone());
                 item.status = TodoStatus::Resolved;
@@ -629,7 +627,6 @@ impl App {
                 if next > self.todo_idx || self.todos.len() == 1 {
                     self.todo_idx = next;
                 }
-            }
         }
     }
 
@@ -828,7 +825,7 @@ impl App {
         if let Ok(entries) = std::fs::read_dir(output_dir) {
             let mut paths: Vec<_> = entries
                 .flatten()
-                .filter(|e| e.path().extension().map_or(false, |x| x == "tf"))
+                .filter(|e| e.path().extension().is_some_and(|x| x == "tf"))
                 .collect();
             paths.sort_by_key(|e| e.file_name());
             for entry in paths {

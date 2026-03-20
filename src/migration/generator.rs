@@ -71,12 +71,11 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
     // Build key_pair_name → public_key map for auto-resolving login blocks
     let mut ssh_key_map: HashMap<String, LoginKeysValue> = HashMap::new();
     for r in results {
-        if provider.resource_role(&r.resource_type) == ResourceRole::KeyPair {
-            if let Some(snippet) = &r.snippet {
-                if let Some(keys) = extract_login_keys(snippet) {
-                    ssh_key_map.insert(r.resource_name.clone(), keys);
-                }
-            }
+        if provider.resource_role(&r.resource_type) == ResourceRole::KeyPair
+            && let Some(snippet) = &r.snippet
+            && let Some(keys) = extract_login_keys(snippet)
+        {
+            ssh_key_map.insert(r.resource_name.clone(), keys);
         }
     }
 
@@ -147,27 +146,27 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
 
     let mut tg_servers_map: HashMap<String, Vec<String>> = HashMap::new();
     for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbTargetGroupAttachment) {
-        if let Some(hcl) = r.source_hcl.as_deref() {
-            if let Some((tg, srv)) = provider.extract_tg_server_from_attachment(hcl) {
-                tg_servers_map.entry(tg).or_default().push(srv);
-            }
+        if let Some(hcl) = r.source_hcl.as_deref()
+            && let Some((tg, srv)) = provider.extract_tg_server_from_attachment(hcl)
+        {
+            tg_servers_map.entry(tg).or_default().push(srv);
         }
     }
 
     let mut lb_tgs_map: HashMap<String, Vec<String>> = HashMap::new();
     for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener) {
-        if let Some(hcl) = r.source_hcl.as_deref() {
-            if let Some(tg) = provider.extract_tg_from_listener(hcl) {
-                let lb_name = r.parent_resource.clone().unwrap_or_default();
-                let lb_name = if lb_name.is_empty() {
-                    provider.extract_lb_name_from_listener(hcl)
-                        .unwrap_or_default()
-                } else {
-                    lb_name
-                };
-                if !lb_name.is_empty() {
-                    lb_tgs_map.entry(lb_name).or_default().push(tg);
-                }
+        if let Some(hcl) = r.source_hcl.as_deref()
+            && let Some(tg) = provider.extract_tg_from_listener(hcl)
+        {
+            let lb_name = r.parent_resource.clone().unwrap_or_default();
+            let lb_name = if lb_name.is_empty() {
+                provider.extract_lb_name_from_listener(hcl)
+                    .unwrap_or_default()
+            } else {
+                lb_name
+            };
+            if !lb_name.is_empty() {
+                lb_tgs_map.entry(lb_name).or_default().push(tg);
             }
         }
     }
@@ -178,11 +177,11 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
         'outer: for tg in tgs {
             if let Some(servers) = tg_servers_map.get(tg) {
                 for srv in servers {
-                    if let Some(subnet) = server_subnet_map.get(srv) {
-                        if network_names.contains(subnet) {
-                            lb_backend_net_map.insert(lb_name.clone(), subnet.clone());
-                            break 'outer;
-                        }
+                    if let Some(subnet) = server_subnet_map.get(srv)
+                        && network_names.contains(subnet)
+                    {
+                        lb_backend_net_map.insert(lb_name.clone(), subnet.clone());
+                        break 'outer;
                     }
                 }
             }
@@ -462,10 +461,10 @@ fn resolve_ssh_key_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn SourceP
         }
     }
     // Fallback for generic SSH key placeholder
-    if s.contains("<TODO: paste SSH public key>") {
-        if let Some(LoginKeysValue::Literal(key)) = xref.ssh_key_map.values().next() {
-            s = s.replace("<TODO: paste SSH public key>", key);
-        }
+    if s.contains("<TODO: paste SSH public key>")
+        && let Some(LoginKeysValue::Literal(key)) = xref.ssh_key_map.values().next()
+    {
+        s = s.replace("<TODO: paste SSH public key>", key);
     }
     s
 }
@@ -479,36 +478,35 @@ fn resolve_db_parameter_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn So
     let mut out = String::with_capacity(hcl.len());
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if let Some(inner) = trimmed.strip_prefix("# __DB_PROPS:") {
-            if let Some(inner) = inner.strip_suffix("__") {
-                if let Some((prefix, group_name)) = inner.split_once(':') {
-                    if let Some(params) = xref.param_group_map.get(group_name) {
-                        if !params.is_empty() {
-                            let _ = prefix;
-                            for (name, value) in params {
-                                if provider.is_valid_db_property(name) {
-                                    if name == "max_connections" {
-                                        out.push_str(&format!(
-                                            "    # max_connections = \"{}\"  # requires pg_user_config_max_connections account permission\n",
-                                            value
-                                        ));
-                                    } else {
-                                        out.push_str(&format!("    {} = \"{}\"\n", name, value));
-                                    }
-                                } else {
-                                    out.push_str(&format!(
-                                        "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
-                                        name, value
-                                    ));
-                                }
+        if let Some(inner) = trimmed.strip_prefix("# __DB_PROPS:")
+            && let Some(inner) = inner.strip_suffix("__")
+            && let Some((prefix, group_name)) = inner.split_once(':')
+        {
+                if let Some(params) = xref.param_group_map.get(group_name)
+                    && !params.is_empty()
+                {
+                    let _ = prefix;
+                    for (name, value) in params {
+                        if provider.is_valid_db_property(name) {
+                            if name == "max_connections" {
+                                out.push_str(&format!(
+                                    "    # max_connections = \"{}\"  # requires pg_user_config_max_connections account permission\n",
+                                    value
+                                ));
+                            } else {
+                                out.push_str(&format!("    {} = \"{}\"\n", name, value));
                             }
-                            continue;
+                        } else {
+                            out.push_str(&format!(
+                                "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
+                                name, value
+                            ));
                         }
                     }
-                    out.push_str(&provider.parameter_group_todo_text(group_name));
                     continue;
                 }
-            }
+                out.push_str(&provider.parameter_group_todo_text(group_name));
+                continue;
         }
         out.push_str(line);
         out.push('\n');
@@ -521,6 +519,7 @@ fn resolve_db_parameter_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn So
 
 /// Group resources and passthrough blocks by source file basename.
 /// Returns (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key).
+#[allow(clippy::type_complexity)]
 fn group_resources_and_passthroughs<'a>(
     results: &'a [MigrationResult],
     passthroughs: &'a [PassthroughBlock],
@@ -634,7 +633,7 @@ provider "upcloud" {
 }
 "#;
     std::fs::write(&provider_path, provider_hcl)?;
-    log.push(format!("  [OK] providers.tf"));
+    log.push("  [OK] providers.tf".to_string());
 
     let mut total = 1;
 
@@ -651,6 +650,7 @@ provider "upcloud" {
         ));
 
         // Collect per-file pending firewall rules
+        #[allow(clippy::type_complexity)]
         let mut fw_by_server: indexmap::IndexMap<String, (String, Option<String>, Vec<String>, Vec<String>)> =
             indexmap::IndexMap::new();
 
@@ -819,7 +819,7 @@ provider "upcloud" {
                         .get(var_name)
                         .cloned()
                         .unwrap_or_default();
-                    let rewritten = if let Some(mut conv) = analyze_variable(
+                    if let Some(mut conv) = analyze_variable(
                         var_name,
                         default_val.as_deref(),
                         description.as_deref(),
@@ -835,8 +835,7 @@ provider "upcloud" {
                         format!("{}{}", annotation, converted_hcl)
                     } else {
                         pt.raw_hcl.clone()
-                    };
-                    rewritten
+                    }
                 } else {
                     pt.raw_hcl.clone()
                 };
@@ -892,16 +891,16 @@ provider "upcloud" {
                 // Keep resolved_hcl_map in sync so the pricing calculator sees the count.
                 // The map is keyed by (source_resource_type, resource_name).
                 let key = (provider.volume_resource_type().to_string(), storage_name.clone());
-                if let Some(existing) = resolved_hcl_map.get(&key).cloned() {
-                    if let Some(brace_pos) = existing.find('{') {
-                        let count_insert = format!("\n  count = {}", count_val);
-                        let mut updated = existing.clone();
-                        updated.insert_str(brace_pos + 1, &count_insert);
-                        let old_title = format!("title = \"{}\"", storage_name);
-                        let new_title = format!("title = \"{}_${{count.index + 1}}\"", storage_name);
-                        let updated = updated.replace(&old_title, &new_title);
-                        resolved_hcl_map.insert(key, updated);
-                    }
+                if let Some(existing) = resolved_hcl_map.get(&key).cloned()
+                    && let Some(brace_pos) = existing.find('{')
+                {
+                    let count_insert = format!("\n  count = {}", count_val);
+                    let mut updated = existing.clone();
+                    updated.insert_str(brace_pos + 1, &count_insert);
+                    let old_title = format!("title = \"{}\"", storage_name);
+                    let new_title = format!("title = \"{}_${{count.index + 1}}\"", storage_name);
+                    let updated = updated.replace(&old_title, &new_title);
+                    resolved_hcl_map.insert(key, updated);
                 }
             }
         }
@@ -919,10 +918,10 @@ provider "upcloud" {
                 // Only validate HCL when there are no TODO placeholders — TODOs intentionally
                 // produce invalid HCL (e.g. `= upcloud_server.web.<TODO: ...>`), so any parse
                 // error there is expected and not worth surfacing to the user.
-                if !content.contains(TODO_PLACEHOLDER_PREFIX) {
-                    if let Err(e) = hcl::from_str::<hcl::Body>(&content) {
-                        log.push(format!("  [HCL ERR] {} — {}", filename, e));
-                    }
+                if !content.contains(TODO_PLACEHOLDER_PREFIX)
+                    && let Err(e) = hcl::from_str::<hcl::Body>(&content)
+                {
+                    log.push(format!("  [HCL ERR] {} — {}", filename, e));
                 }
                 total += 1;
             }
@@ -1966,7 +1965,7 @@ resource "aws_instance" "app" {
 
         let parsed = parse_tf_file(&tf_path).expect("source terraform should parse");
         let results: Vec<MigrationResult> =
-            parsed.resources.iter().map(|r| map_resource(r)).collect();
+            parsed.resources.iter().map(map_resource).collect();
 
         let out_dir = dir.join("out");
         let mut log = vec![];
@@ -2005,7 +2004,7 @@ resource "aws_instance" "app" {
 
         let tf_path = std::path::PathBuf::from("test-fixtures/webapp-e2e.tf");
         let parsed = parse_tf_file(&tf_path).expect("test-fixtures/webapp-e2e.tf should parse");
-        let results: Vec<MigrationResult> = parsed.resources.iter().map(|r| map_resource(r)).collect();
+        let results: Vec<MigrationResult> = parsed.resources.iter().map(map_resource).collect();
 
         let out_dir = std::env::temp_dir().join("upcloud_e2e_webapp");
         let mut log = vec![];
@@ -2291,7 +2290,7 @@ resource "aws_instance" "web" {
         assert_eq!(parsed.passthroughs.len(), 2, "should find 2 variable blocks");
 
         let results: Vec<MigrationResult> =
-            parsed.resources.iter().map(|r| map_resource(r)).collect();
+            parsed.resources.iter().map(map_resource).collect();
         let pts: Vec<PassthroughBlock> = parsed.passthroughs.clone();
 
         let out_dir = dir.join("out");
@@ -2368,7 +2367,7 @@ resource "aws_instance" "web" {
         let parsed = parse_tf_file(&tf_path).expect("should parse");
         let pts: Vec<PassthroughBlock> = parsed.passthroughs.clone();
         let results: Vec<MigrationResult> =
-            parsed.resources.iter().map(|r| map_resource(r)).collect();
+            parsed.resources.iter().map(map_resource).collect();
 
         let out_dir = dir.join("out");
         let mut log = vec![];
@@ -2518,7 +2517,7 @@ output "server_id" {
 
         let parsed = parse_tf_file(&tf_path).expect("should parse");
         let results: Vec<crate::migration::types::MigrationResult> =
-            parsed.resources.iter().map(|r| map_resource(r)).collect();
+            parsed.resources.iter().map(map_resource).collect();
 
         let out_dir = dir.join("out");
         let mut log = vec![];

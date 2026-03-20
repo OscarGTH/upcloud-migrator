@@ -53,7 +53,7 @@ fn render_generating_animation(f: &mut Frame, app: &App) {
     // Animated outer border: cycles PRIMARY↔ACCENT during generation,
     // flashes SUCCESS on completion.
     let border_style = if victory {
-        if (victory_age / 3) % 2 == 0 {
+        if (victory_age / 3).is_multiple_of(2) {
             theme::success()
         } else {
             theme::primary()
@@ -324,7 +324,7 @@ fn render_generation_view(f: &mut Frame, app: &App) {
 
     // Output dir input
     let outdir_active = app.gen_step == GenStep::AskOutputDir;
-    let cursor = if outdir_active && (app.tick / 4) % 2 == 0 { "█" } else { " " };
+    let cursor = if outdir_active && (app.tick / 4).is_multiple_of(2) { "█" } else { " " };
     let outdir_text = if outdir_active {
         format!("{}{}", app.input_buf, cursor)
     } else if let Some(p) = &app.output_path {

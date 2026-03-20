@@ -17,7 +17,7 @@ fn is_sparkle(tick: u64, row: usize, col: usize) -> bool {
         .wrapping_add((row as u64).wrapping_mul(1442695040888963407))
         .wrapping_add((col as u64).wrapping_mul(2862933555777941757));
     // ~8% of hash positions sparkle, cycling every ~3 ticks per position
-    (h >> 56) < 20 && ((h >> 40) & 0x3) == (tick & 0x3) as u64
+    (h >> 56) < 20 && ((h >> 40) & 0x3) == (tick & 0x3)
 }
 
 /// Build one line of the logo with per-character sparkle coloring.
@@ -108,7 +108,7 @@ pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(subtitle, inner[4]);
 
     // ── Path input ───────────────────────────────────────────────────────────
-    let cursor = if (app.tick / 4) % 2 == 0 { "█" } else { " " };
+    let cursor = if (app.tick / 4).is_multiple_of(2) { "█" } else { " " };
     let input_text = format!("{}{}", app.input_buf, cursor);
 
     let input_block = Block::default()

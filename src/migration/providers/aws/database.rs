@@ -104,136 +104,6 @@ fn map_instance_class(class: &str) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn make_res(resource_type: &str, name: &str, attrs: &[(&str, &str)]) -> TerraformResource {
-        TerraformResource {
-            resource_type: resource_type.to_string(),
-            name: name.to_string(),
-            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            source_file: PathBuf::from("test.tf"),
-            raw_hcl: String::new(),
-        }
-    }
-
-    // ── map_rds_instance ──────────────────────────────────────────────────────
-
-    #[test]
-    fn rds_postgres_maps_to_postgresql_resource() {
-        let res = make_res("aws_db_instance", "db", &[
-            ("engine", "postgres"),
-            ("instance_class", "db.t3.medium"),
-        ]);
-        let r = map_rds_instance(&res);
-        assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
-        let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"db\""), "{hcl}");
-        assert!(hcl.contains("zone  = \"__ZONE__\""), "{hcl}");
-    }
-
-    #[test]
-    fn rds_mysql_maps_to_mysql_resource() {
-        let res = make_res("aws_db_instance", "mydb", &[("engine", "mysql")]);
-        let r = map_rds_instance(&res);
-        assert_eq!(r.upcloud_type, "upcloud_managed_database_mysql");
-        assert!(r.upcloud_hcl.unwrap().contains("upcloud_managed_database_mysql"));
-    }
-
-    #[test]
-    fn rds_mariadb_maps_to_mysql_resource() {
-        let res = make_res("aws_db_instance", "maria", &[("engine", "mariadb")]);
-        let r = map_rds_instance(&res);
-        assert_eq!(r.upcloud_type, "upcloud_managed_database_mysql");
-    }
-
-    #[test]
-    fn rds_unknown_engine_defaults_to_postgresql() {
-        let res = make_res("aws_db_instance", "db", &[("engine", "oracle-ee")]);
-        let r = map_rds_instance(&res);
-        assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
-    }
-
-    #[test]
-    fn rds_instance_class_maps_to_plan() {
-        let cases = [
-            ("db.t3.micro",  "1x1xCPU-2GB-25GB"),
-            ("db.t3.small",  "1x1xCPU-2GB-25GB"),
-            ("db.t3.medium", "1x2xCPU-4GB-50GB"),
-            ("db.r5.large",  "2x4xCPU-8GB-100GB"),
-            ("db.r5.xlarge", "2x6xCPU-16GB-100GB"),
-        ];
-        for (class, expected_plan) in &cases {
-            let res = make_res("aws_db_instance", "db", &[
-                ("engine", "postgres"),
-                ("instance_class", class),
-            ]);
-            let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
-            assert!(hcl.contains(expected_plan), "class {class} should map to plan {expected_plan}\n{hcl}");
-        }
-    }
-
-    #[test]
-    fn rds_instance_public_access_disabled() {
-        let res = make_res("aws_db_instance", "db", &[("engine", "postgres")]);
-        let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("public_access = false"), "{hcl}");
-    }
-
-    #[test]
-    fn rds_instance_has_private_network_block() {
-        let res = make_res("aws_db_instance", "db", &[("engine", "postgres")]);
-        let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("network {"), "must have a network block\n{hcl}");
-        assert!(hcl.contains("type   = \"private\""), "{hcl}");
-        assert!(hcl.contains("upcloud_network UUID"), "must have a TODO for network uuid\n{hcl}");
-    }
-
-    #[test]
-    fn elasticache_has_private_network_block() {
-        let res = make_res("aws_elasticache_cluster", "cache", &[("engine", "redis")]);
-        let hcl = map_elasticache_cluster(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("network {"), "{hcl}");
-        assert!(hcl.contains("type   = \"private\""), "{hcl}");
-    }
-
-    // ── map_rds_cluster ───────────────────────────────────────────────────────
-
-    #[test]
-    fn rds_cluster_aurora_pg_maps_to_postgresql() {
-        let res = make_res("aws_rds_cluster", "cluster", &[("engine", "aurora-postgresql")]);
-        let r = map_rds_cluster(&res);
-        assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
-        let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"cluster\""), "{hcl}");
-    }
-
-    #[test]
-    fn rds_cluster_aurora_mysql_maps_to_mysql() {
-        let res = make_res("aws_rds_cluster", "c", &[("engine", "aurora-mysql")]);
-        assert_eq!(map_rds_cluster(&res).upcloud_type, "upcloud_managed_database_mysql");
-    }
-
-    // ── map_elasticache_cluster ───────────────────────────────────────────────
-
-    #[test]
-    fn elasticache_redis_maps_to_valkey() {
-        let res = make_res("aws_elasticache_cluster", "cache", &[("engine", "redis")]);
-        let r = map_elasticache_cluster(&res);
-        assert_eq!(r.upcloud_type, "upcloud_managed_database_valkey");
-        let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_valkey\" \"cache\""), "{hcl}");
-    }
-
-    #[test]
-    fn elasticache_public_access_disabled() {
-        let res = make_res("aws_elasticache_cluster", "cache", &[("engine", "redis")]);
-        let hcl = map_elasticache_cluster(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("public_access = false"), "{hcl}");
-    }
-}
 
 /// Extract the resource name from a `parameter_group_name` attribute value.
 /// Handles references like `aws_db_parameter_group.NAME.name` → `NAME`.
@@ -611,5 +481,137 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
         parent_resource: None,
         notes,
         source_hcl: None,
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_res(resource_type: &str, name: &str, attrs: &[(&str, &str)]) -> TerraformResource {
+        TerraformResource {
+            resource_type: resource_type.to_string(),
+            name: name.to_string(),
+            attributes: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            source_file: PathBuf::from("test.tf"),
+            raw_hcl: String::new(),
+        }
+    }
+
+    // ── map_rds_instance ──────────────────────────────────────────────────────
+
+    #[test]
+    fn rds_postgres_maps_to_postgresql_resource() {
+        let res = make_res("aws_db_instance", "db", &[
+            ("engine", "postgres"),
+            ("instance_class", "db.t3.medium"),
+        ]);
+        let r = map_rds_instance(&res);
+        assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"db\""), "{hcl}");
+        assert!(hcl.contains("zone  = \"__ZONE__\""), "{hcl}");
+    }
+
+    #[test]
+    fn rds_mysql_maps_to_mysql_resource() {
+        let res = make_res("aws_db_instance", "mydb", &[("engine", "mysql")]);
+        let r = map_rds_instance(&res);
+        assert_eq!(r.upcloud_type, "upcloud_managed_database_mysql");
+        assert!(r.upcloud_hcl.unwrap().contains("upcloud_managed_database_mysql"));
+    }
+
+    #[test]
+    fn rds_mariadb_maps_to_mysql_resource() {
+        let res = make_res("aws_db_instance", "maria", &[("engine", "mariadb")]);
+        let r = map_rds_instance(&res);
+        assert_eq!(r.upcloud_type, "upcloud_managed_database_mysql");
+    }
+
+    #[test]
+    fn rds_unknown_engine_defaults_to_postgresql() {
+        let res = make_res("aws_db_instance", "db", &[("engine", "oracle-ee")]);
+        let r = map_rds_instance(&res);
+        assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
+    }
+
+    #[test]
+    fn rds_instance_class_maps_to_plan() {
+        let cases = [
+            ("db.t3.micro",  "1x1xCPU-2GB-25GB"),
+            ("db.t3.small",  "1x1xCPU-2GB-25GB"),
+            ("db.t3.medium", "1x2xCPU-4GB-50GB"),
+            ("db.r5.large",  "2x4xCPU-8GB-100GB"),
+            ("db.r5.xlarge", "2x6xCPU-16GB-100GB"),
+        ];
+        for (class, expected_plan) in &cases {
+            let res = make_res("aws_db_instance", "db", &[
+                ("engine", "postgres"),
+                ("instance_class", class),
+            ]);
+            let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
+            assert!(hcl.contains(expected_plan), "class {class} should map to plan {expected_plan}\n{hcl}");
+        }
+    }
+
+    #[test]
+    fn rds_instance_public_access_disabled() {
+        let res = make_res("aws_db_instance", "db", &[("engine", "postgres")]);
+        let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("public_access = false"), "{hcl}");
+    }
+
+    #[test]
+    fn rds_instance_has_private_network_block() {
+        let res = make_res("aws_db_instance", "db", &[("engine", "postgres")]);
+        let hcl = map_rds_instance(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("network {"), "must have a network block\n{hcl}");
+        assert!(hcl.contains("type   = \"private\""), "{hcl}");
+        assert!(hcl.contains("upcloud_network UUID"), "must have a TODO for network uuid\n{hcl}");
+    }
+
+    #[test]
+    fn elasticache_has_private_network_block() {
+        let res = make_res("aws_elasticache_cluster", "cache", &[("engine", "redis")]);
+        let hcl = map_elasticache_cluster(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("network {"), "{hcl}");
+        assert!(hcl.contains("type   = \"private\""), "{hcl}");
+    }
+
+    // ── map_rds_cluster ───────────────────────────────────────────────────────
+
+    #[test]
+    fn rds_cluster_aurora_pg_maps_to_postgresql() {
+        let res = make_res("aws_rds_cluster", "cluster", &[("engine", "aurora-postgresql")]);
+        let r = map_rds_cluster(&res);
+        assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"cluster\""), "{hcl}");
+    }
+
+    #[test]
+    fn rds_cluster_aurora_mysql_maps_to_mysql() {
+        let res = make_res("aws_rds_cluster", "c", &[("engine", "aurora-mysql")]);
+        assert_eq!(map_rds_cluster(&res).upcloud_type, "upcloud_managed_database_mysql");
+    }
+
+    // ── map_elasticache_cluster ───────────────────────────────────────────────
+
+    #[test]
+    fn elasticache_redis_maps_to_valkey() {
+        let res = make_res("aws_elasticache_cluster", "cache", &[("engine", "redis")]);
+        let r = map_elasticache_cluster(&res);
+        assert_eq!(r.upcloud_type, "upcloud_managed_database_valkey");
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(hcl.contains("resource \"upcloud_managed_database_valkey\" \"cache\""), "{hcl}");
+    }
+
+    #[test]
+    fn elasticache_public_access_disabled() {
+        let res = make_res("aws_elasticache_cluster", "cache", &[("engine", "redis")]);
+        let hcl = map_elasticache_cluster(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("public_access = false"), "{hcl}");
     }
 }

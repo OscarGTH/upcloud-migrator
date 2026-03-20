@@ -92,10 +92,10 @@ fn extract_block_by_header(content: &str, header: &str) -> Option<String> {
     let mut block_lines: Vec<&str> = Vec::new();
 
     for line in content.lines() {
-        if !collecting {
-            if line.trim_start().starts_with(header) {
-                collecting = true;
-            }
+        if !collecting
+            && line.trim_start().starts_with(header)
+        {
+            collecting = true;
         }
         if collecting {
             block_lines.push(line);

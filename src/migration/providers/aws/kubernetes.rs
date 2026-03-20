@@ -3,6 +3,91 @@ use crate::migration::types::{MigrationResult, MigrationStatus};
 #[cfg(test)]
 use crate::terraform::types::TerraformResource;
 
+
+#[cfg(test)]
+pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
+    let k8s_version = res.attributes.get("version").map(|v| v.trim_matches('"')).unwrap_or("1.28");
+
+    let hcl = format!(
+        r#"resource "upcloud_kubernetes_cluster" "{name}" {{
+  name                = "{name}"
+  zone                = "__ZONE__"
+  network             = "<TODO: upcloud_network UUID>"
+  version             = "{k8s_version}"
+
+  control_plane_ip_filter = ["0.0.0.0/0"]  # restrict to known CIDRs in production
+}}
+"#,
+        name = res.name,
+        k8s_version = k8s_version,
+    );
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Compatible,
+        upcloud_type: "upcloud_kubernetes_cluster".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: None,
+        notes: vec![
+            format!("EKS → UpCloud Managed Kubernetes (k8s {})", k8s_version),
+            "Update kubeconfig after cluster creation".into(),
+            "IAM roles for service accounts → UpCloud API credentials".into(),
+        ],
+            source_hcl: None,
+    }
+}
+
+#[cfg(test)]
+pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
+    let instance_types = res.attributes.get("instance_types")
+        .map(|t| {
+            // hcl-rs formats list expressions with newlines (e.g. "[\n  var.x\n]").
+            // Collapse to a single line so the value can be safely embedded in
+            // HCL comment lines (which must not contain newlines).
+            t.split_whitespace().collect::<Vec<_>>().join(" ")
+        })
+        .unwrap_or_else(|| "t3.medium".into());
+    let min_size = res.attributes.get("scaling_config.min_size").map(|s| s.trim_matches('"')).unwrap_or("1");
+    let desired = res.attributes.get("scaling_config.desired_size").map(|s| s.trim_matches('"')).unwrap_or("2");
+    let max_size = res.attributes.get("scaling_config.max_size").map(|s| s.trim_matches('"')).unwrap_or("3");
+
+    let hcl = format!(
+        r#"resource "upcloud_kubernetes_node_group" "{name}" {{
+  cluster    = upcloud_kubernetes_cluster.<TODO>.id
+  name       = "{name}"
+  plan       = "2xCPU-4GB"  # TODO: map from instance_types: {instance_types}
+  node_count = {desired}    # desired_size={desired} (min={min}, max={max})
+}}
+"#,
+        name = res.name,
+        instance_types = instance_types,
+        desired = desired,
+        min = min_size,
+        max = max_size,
+    );
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Compatible,
+        upcloud_type: "upcloud_kubernetes_node_group".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: None,
+        notes: vec![
+            format!("Node group ({}) → UpCloud k8s Node Group", instance_types),
+            "UpCloud node groups don't auto-scale; set count explicitly".into(),
+        ],
+            source_hcl: None,
+    }
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,87 +203,5 @@ mod tests {
                 "note contains newline — would break `# NOTE:` comment:\n{note:?}"
             );
         }
-    }
-}
-
-#[cfg(test)]
-pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
-    let k8s_version = res.attributes.get("version").map(|v| v.trim_matches('"')).unwrap_or("1.28");
-
-    let hcl = format!(
-        r#"resource "upcloud_kubernetes_cluster" "{name}" {{
-  name                = "{name}"
-  zone                = "__ZONE__"
-  network             = "<TODO: upcloud_network UUID>"
-  version             = "{k8s_version}"
-
-  control_plane_ip_filter = ["0.0.0.0/0"]  # restrict to known CIDRs in production
-}}
-"#,
-        name = res.name,
-        k8s_version = k8s_version,
-    );
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Compatible,
-        upcloud_type: "upcloud_kubernetes_cluster".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: None,
-        notes: vec![
-            format!("EKS → UpCloud Managed Kubernetes (k8s {})", k8s_version),
-            "Update kubeconfig after cluster creation".into(),
-            "IAM roles for service accounts → UpCloud API credentials".into(),
-        ],
-            source_hcl: None,
-    }
-}
-
-#[cfg(test)]
-pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
-    let instance_types = res.attributes.get("instance_types")
-        .map(|t| {
-            // hcl-rs formats list expressions with newlines (e.g. "[\n  var.x\n]").
-            // Collapse to a single line so the value can be safely embedded in
-            // HCL comment lines (which must not contain newlines).
-            t.split_whitespace().collect::<Vec<_>>().join(" ")
-        })
-        .unwrap_or_else(|| "t3.medium".into());
-    let min_size = res.attributes.get("scaling_config.min_size").map(|s| s.trim_matches('"')).unwrap_or("1");
-    let desired = res.attributes.get("scaling_config.desired_size").map(|s| s.trim_matches('"')).unwrap_or("2");
-    let max_size = res.attributes.get("scaling_config.max_size").map(|s| s.trim_matches('"')).unwrap_or("3");
-
-    let hcl = format!(
-        r#"resource "upcloud_kubernetes_node_group" "{name}" {{
-  cluster    = upcloud_kubernetes_cluster.<TODO>.id
-  name       = "{name}"
-  plan       = "2xCPU-4GB"  # TODO: map from instance_types: {instance_types}
-  node_count = {desired}    # desired_size={desired} (min={min}, max={max})
-}}
-"#,
-        name = res.name,
-        instance_types = instance_types,
-        desired = desired,
-        min = min_size,
-        max = max_size,
-    );
-
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Compatible,
-        upcloud_type: "upcloud_kubernetes_node_group".into(),
-        upcloud_hcl: Some(hcl),
-        snippet: None,
-        parent_resource: None,
-        notes: vec![
-            format!("Node group ({}) → UpCloud k8s Node Group", instance_types),
-            "UpCloud node groups don't auto-scale; set count explicitly".into(),
-        ],
-            source_hcl: None,
     }
 }

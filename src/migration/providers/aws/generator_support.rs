@@ -37,14 +37,14 @@ pub fn extract_sg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
 pub fn extract_subnet_id_from_instance_hcl(hcl: &str) -> Option<String> {
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("subnet_id") && trimmed.contains('=') {
-            if let Some(pos) = trimmed.find("aws_subnet.") {
-                let after = &trimmed[pos + "aws_subnet.".len()..];
-                // Strip trailing `.id`, `.arn`, etc. — take only the resource name segment
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+        if trimmed.starts_with("subnet_id") && trimmed.contains('=')
+            && let Some(pos) = trimmed.find("aws_subnet.")
+        {
+            let after = &trimmed[pos + "aws_subnet.".len()..];
+            // Strip trailing `.id`, `.arn`, etc. — take only the resource name segment
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.to_string());
             }
         }
     }
@@ -57,7 +57,7 @@ pub fn extract_subnet_id_from_instance_hcl(hcl: &str) -> Option<String> {
 pub fn extract_subnet_names_from_subnet_group(hcl: &str) -> Vec<String> {
     let mut names = Vec::new();
     const PREFIX: &str = "aws_subnet.";
-    for word in hcl.split(|c: char| c == ',' || c == '[' || c == ']' || c == '\n' || c == ' ') {
+    for word in hcl.split([',', '[', ']', '\n', ' ']) {
         let word = word.trim();
         if let Some(after) = word.strip_prefix(PREFIX) {
             // after = "NAME.id" or "NAME.name" — take the first segment
@@ -77,13 +77,13 @@ pub fn extract_tg_from_listener_source_hcl(hcl: &str) -> Option<String> {
     const PREFIX: &str = "aws_lb_target_group.";
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("target_group_arn") && trimmed.contains(PREFIX) {
-            if let Some(pos) = trimmed.find(PREFIX) {
-                let after = &trimmed[pos + PREFIX.len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+        if trimmed.starts_with("target_group_arn") && trimmed.contains(PREFIX)
+            && let Some(pos) = trimmed.find(PREFIX)
+        {
+            let after = &trimmed[pos + PREFIX.len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.to_string());
             }
         }
     }
@@ -99,23 +99,23 @@ pub fn extract_tg_server_from_attachment_source_hcl(hcl: &str) -> Option<(String
     let mut server_name: Option<String> = None;
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if tg_name.is_none() && trimmed.starts_with("target_group_arn") {
-            if let Some(pos) = trimmed.find("aws_lb_target_group.") {
-                let after = &trimmed[pos + "aws_lb_target_group.".len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    tg_name = Some(name.to_string());
-                }
+        if tg_name.is_none() && trimmed.starts_with("target_group_arn")
+            && let Some(pos) = trimmed.find("aws_lb_target_group.")
+        {
+            let after = &trimmed[pos + "aws_lb_target_group.".len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                tg_name = Some(name.to_string());
             }
         }
-        if server_name.is_none() && trimmed.starts_with("target_id") {
-            if let Some(pos) = trimmed.find("aws_instance.") {
-                let after = &trimmed[pos + "aws_instance.".len()..];
-                // Strip any index suffix like `[0]` — take alphanumeric+underscore only
-                let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                if !name.is_empty() {
-                    server_name = Some(name);
-                }
+        if server_name.is_none() && trimmed.starts_with("target_id")
+            && let Some(pos) = trimmed.find("aws_instance.")
+        {
+            let after = &trimmed[pos + "aws_instance.".len()..];
+            // Strip any index suffix like `[0]` — take alphanumeric+underscore only
+            let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !name.is_empty() {
+                server_name = Some(name);
             }
         }
     }
@@ -145,8 +145,7 @@ pub fn extract_lb_name_from_listener_hcl(hcl: &str) -> Option<String> {
 pub fn sanitize_aws_refs(mut s: String) -> String {
     // data.aws_* data source references
     let mut search_from = 0;
-    loop {
-        let Some(rel) = s[search_from..].find("data.aws_") else { break };
+    while let Some(rel) = s[search_from..].find("data.aws_") {
         let start = search_from + rel;
         if inside_todo_marker(&s, start) {
             search_from = start + "data.aws_".len();
@@ -271,8 +270,7 @@ pub fn rewrite_output_refs(s: &str) -> String {
     let mut result = s.to_string();
     let mut search_from = 0usize;
 
-    loop {
-        let Some(rel) = result[search_from..].find("aws_") else { break };
+    while let Some(rel) = result[search_from..].find("aws_") {
         let start = search_from + rel;
 
         if inside_todo_marker(&result, start) {
@@ -283,7 +281,7 @@ pub fn rewrite_output_refs(s: &str) -> String {
         // Capture the full Terraform traversal: TYPE.NAME.ATTR[…].subattr…
         // Valid chars: alphanumeric, '_', '.', '[', ']', '*' (splat operator in [*])
         let end = result[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '[' && c != ']' && c != '*')
+            .find(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | '_' | '[' | ']' | '*'))
             .map(|off| start + off)
             .unwrap_or(result.len());
 
@@ -305,7 +303,7 @@ pub fn rewrite_output_refs(s: &str) -> String {
 
         // The lookup key is just the first identifier segment (before '[' or '.')
         let attr_key = attr_path
-            .split(|c: char| c == '[' || c == '.')
+            .split(['[', '.'])
             .next()
             .unwrap_or(attr_path);
 

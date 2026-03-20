@@ -110,12 +110,11 @@ fn resolve_count(hcl: &str, var_defaults: &std::collections::HashMap<String, Str
         return n.max(1);
     }
     // Variable reference
-    if let Some(var_name) = raw.strip_prefix("var.") {
-        if let Some(default) = var_defaults.get(var_name) {
-            if let Ok(n) = default.parse::<u32>() {
-                return n.max(1);
-            }
-        }
+    if let Some(var_name) = raw.strip_prefix("var.")
+        && let Some(default) = var_defaults.get(var_name)
+        && let Ok(n) = default.parse::<u32>()
+    {
+        return n.max(1);
     }
     1
 }
@@ -125,10 +124,10 @@ fn storage_monthly(size_gb: u64, tier: &str, pricing: &serde_json::Value) -> f64
         return 0.0;
     };
     for entry in tiers {
-        if entry["tier"].as_str() == Some(tier) {
-            if let Some(m) = entry["per_gb"]["eur_monthly"].as_f64() {
-                return size_gb as f64 * m;
-            }
+        if entry["tier"].as_str() == Some(tier)
+            && let Some(m) = entry["per_gb"]["eur_monthly"].as_f64()
+        {
+            return size_gb as f64 * m;
         }
     }
     0.0
@@ -147,10 +146,10 @@ pub fn compute_costs(
     // Used to resolve plan attributes that reference a variable (e.g. `plan = var.web_instance_type`).
     let mut var_defaults: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for pt in passthroughs {
-        if matches!(pt.kind, PassthroughKind::Variable) {
-            if let (Some(name), Some(default)) = (&pt.name, extract_attr(&pt.raw_hcl, "default")) {
-                var_defaults.insert(name.clone(), default);
-            }
+        if matches!(pt.kind, PassthroughKind::Variable)
+            && let (Some(name), Some(default)) = (&pt.name, extract_attr(&pt.raw_hcl, "default"))
+        {
+            var_defaults.insert(name.clone(), default);
         }
     }
 
@@ -203,8 +202,7 @@ pub fn compute_costs(
         } else {
             let raw_plan = extract_attr(&hcl, "plan").unwrap_or_default();
             // Resolve variable references (e.g. `var.web_instance_type`) to their defaults.
-            let plan = if raw_plan.starts_with("var.") {
-                let var_name = &raw_plan["var.".len()..];
+            let plan = if let Some(var_name) = raw_plan.strip_prefix("var.") {
                 let default = var_defaults.get(var_name).cloned().unwrap_or(raw_plan);
                 // If the default is still an AWS instance type, convert it to UpCloud plan.
                 crate::migration::providers::aws::compute::aws_instance_type_to_upcloud_plan(&default)

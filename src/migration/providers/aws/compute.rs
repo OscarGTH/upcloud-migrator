@@ -374,10 +374,10 @@ pub fn map_key_pair(res: &TerraformResource) -> MigrationResult {
 /// already at col 0, it is returned unchanged.
 fn normalize_heredoc(value: &str) -> String {
     let trimmed = value.trim_start();
-    let (strip_mode, rest) = if trimmed.starts_with("<<-") {
-        (true, &trimmed[3..])
-    } else if trimmed.starts_with("<<") {
-        (false, &trimmed[2..])
+    let (strip_mode, rest) = if let Some(rest) = trimmed.strip_prefix("<<-") {
+        (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("<<") {
+        (false, rest)
     } else {
         return value.to_string(); // not a heredoc
     };
@@ -449,6 +449,24 @@ fn normalize_heredoc(value: &str) -> String {
     result.push_str(&marker);
     result
 }
+
+
+pub fn map_autoscaling_group(res: &TerraformResource) -> MigrationResult {
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Unsupported,
+        upcloud_type: "(no autoscaling)".into(),
+        upcloud_hcl: None,
+        snippet: None,
+        parent_resource: None,
+        notes: vec!["UpCloud does not have a managed autoscaling group equivalent. Use multiple upcloud_server resources.".into()],
+            source_hcl: None,
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -1081,20 +1099,5 @@ mod tests {
         let r = map_autoscaling_group(&res);
         assert_eq!(r.status, crate::migration::types::MigrationStatus::Unsupported);
         assert!(r.upcloud_hcl.is_none());
-    }
-}
-
-pub fn map_autoscaling_group(res: &TerraformResource) -> MigrationResult {
-    MigrationResult {
-        resource_type: res.resource_type.clone(),
-        resource_name: res.name.clone(),
-        source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Unsupported,
-        upcloud_type: "(no autoscaling)".into(),
-        upcloud_hcl: None,
-        snippet: None,
-        parent_resource: None,
-        notes: vec!["UpCloud does not have a managed autoscaling group equivalent. Use multiple upcloud_server resources.".into()],
-            source_hcl: None,
     }
 }

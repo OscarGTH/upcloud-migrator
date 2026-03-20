@@ -121,7 +121,7 @@ fn render_source_panel(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let lines: Vec<Line> = match &result.source_hcl {
         None => vec![Line::from(Span::styled("(source not available)", theme::dim()))],
-        Some(hcl) => hcl.lines().map(|line| colorize_source_line(line)).collect(),
+        Some(hcl) => hcl.lines().map(colorize_source_line).collect(),
     };
 
     let widget = Paragraph::new(lines)
@@ -213,9 +213,7 @@ fn colorize_source_line(line: &str) -> Line<'static> {
 
     if trimmed.starts_with("resource ") {
         Line::from(Span::styled(line, Style::default().fg(theme::HCL_KEY).add_modifier(Modifier::BOLD)))
-    } else if trimmed.starts_with('#') {
-        Line::from(Span::styled(line, theme::dim()))
-    } else if trimmed == "}" || trimmed == "{" {
+    } else if trimmed.starts_with('#') || trimmed == "}" || trimmed == "{" {
         Line::from(Span::styled(line, theme::dim()))
     } else if trimmed.contains('=') {
         // Split at first `=` for key/value coloring
@@ -242,9 +240,7 @@ fn colorize_generated_line(line: &str) -> Line<'static> {
         Line::from(Span::styled(line, Style::default().fg(theme::WARNING).add_modifier(Modifier::BOLD)))
     } else if trimmed.starts_with("resource ") {
         Line::from(Span::styled(line, Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)))
-    } else if trimmed.starts_with('#') {
-        Line::from(Span::styled(line, theme::dim()))
-    } else if trimmed == "}" || trimmed == "{" {
+    } else if trimmed.starts_with('#') || trimmed == "}" || trimmed == "{" {
         Line::from(Span::styled(line, theme::dim()))
     } else if trimmed.contains('=') {
         if let Some(eq) = line.find('=') {
