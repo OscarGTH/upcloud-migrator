@@ -1,9 +1,9 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum MigrationStatus {
-    Native,      // 85-100: direct 1:1 mapping, full auto-convert
-    Compatible,  // 65-84: mapping exists, minor manual tweaks
-    Partial,     // 30-64: partial mapping, significant manual work
-    Unsupported, // 0-29:  no equivalent, full manual migration
+    Native,      // direct 1:1 mapping, full auto-convert
+    Compatible,  // mapping exists, minor manual tweaks
+    Partial,     // partial mapping, significant manual work
+    Unsupported, // no equivalent, full manual migration
     Unknown,     // not recognized (other provider or custom)
 }
 
@@ -26,7 +26,6 @@ pub struct MigrationResult {
     pub resource_name: String,
     pub source_file: String,
     pub status: MigrationStatus,
-    pub score: u8,
     pub upcloud_type: String,
     /// Fully renderable HCL written to the output .tf file.
     pub upcloud_hcl: Option<String>,

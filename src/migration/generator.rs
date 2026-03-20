@@ -34,7 +34,7 @@ struct CrossRefTables {
     backend_names: Vec<String>,
     cert_bundle_names: Vec<String>,
     server_info_map: HashMap<String, Option<String>>,
-    sg_to_server_map: HashMap<String, Vec<String>>,
+    firewall_to_server_map: HashMap<String, Vec<String>>,
     network_count_map: HashMap<String, bool>,
     param_group_map: HashMap<String, Vec<(String, String)>>,
     subnet_group_subnets_map: HashMap<String, Vec<String>>,
@@ -45,7 +45,7 @@ struct CrossRefTables {
 
 /// Build all cross-reference lookup tables from the migration results.
 /// These tables enable efficient resolution of source resource references to UpCloud equivalents
-/// and tracking of resource relationships (e.g., which servers reference which security groups).
+/// and tracking of resource relationships (e.g., which servers reference which firewall rules).
 fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProvider) -> CrossRefTables {
     // Collect resource names by type for direct lookups
     let lb_names: Vec<String> = results.iter()
@@ -100,12 +100,12 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
         })
         .collect();
 
-    // Build sg_to_server_map: SG resource_name → Vec<server resource_name>
-    let mut sg_to_server_map: HashMap<String, Vec<String>> = HashMap::new();
+    // Build firewall_to_server_map: firewall resource_name → Vec<server resource_name>
+    let mut firewall_to_server_map: HashMap<String, Vec<String>> = HashMap::new();
     for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance) {
         if let Some(hcl) = r.source_hcl.as_deref() {
-            for sg_name in provider.extract_security_refs_from_instance(hcl) {
-                sg_to_server_map.entry(sg_name).or_default().push(r.resource_name.clone());
+            for fw_name in provider.extract_security_refs_from_instance(hcl) {
+                firewall_to_server_map.entry(fw_name).or_default().push(r.resource_name.clone());
             }
         }
     }
@@ -253,7 +253,7 @@ fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProv
         backend_names,
         cert_bundle_names,
         server_info_map,
-        sg_to_server_map,
+        firewall_to_server_map,
         network_count_map,
         param_group_map,
         subnet_group_subnets_map,
@@ -658,10 +658,10 @@ provider "upcloud" {
             if let Some(hcl) = &result.upcloud_hcl {
                 let resolved = resolve_placeholders(hcl, &result.resource_name, zone, objstorage_region, &xref, &*provider);
 
-                // Name-based firewall server_id resolution with SG merging
+                // Name-based firewall server_id resolution with rule merging
                 if result.upcloud_type == "upcloud_firewall_rules" {
-                    // Collect all servers that reference this SG
-                    let servers: Vec<String> = xref.sg_to_server_map
+                    // Collect all servers that reference this firewall
+                    let servers: Vec<String> = xref.firewall_to_server_map
                         .get(&result.resource_name)
                         .cloned()
                         .unwrap_or_else(|| vec![result.resource_name.clone()]);
@@ -693,7 +693,7 @@ provider "upcloud" {
                                 .entry(server_id_expr)
                                 .or_insert_with(|| (result.resource_name.clone(), count_line, Vec::new(), Vec::new()));
                             entry.2.extend(rule_blocks);
-                            // Tag each note with its source SG so the merged resource is traceable.
+                            // Tag each note with its source firewall rule so the merged resource is traceable.
                             entry.3.extend(result.notes.iter().map(|n| format!("[{}] {}", result.resource_name, n)));
                         }
                     }
@@ -1291,20 +1291,20 @@ fn server_name_from_server_id_expr(expr: &str) -> String {
 /// - If no match: returns the HCL unchanged (TODO stays for manual editing)
 fn resolve_firewall_server(
     hcl: &str,
-    sg_name: &str,
+    server_name: &str,
     server_info_map: &HashMap<String, Option<String>>,
 ) -> String {
-    match server_info_map.get(sg_name) {
+    match server_info_map.get(server_name) {
         None => hcl.to_string(),
         Some(None) => hcl.replace(
             "upcloud_server.<TODO>.id",
-            &format!("upcloud_server.{}.id", sg_name),
+            &format!("upcloud_server.{}.id", server_name),
         ),
         Some(Some(n)) => {
             // Replace the server_id reference with an indexed one
             let mut s = hcl.replace(
                 "upcloud_server.<TODO>.id",
-                &format!("upcloud_server.{}[count.index].id", sg_name),
+                &format!("upcloud_server.{}[count.index].id", server_name),
             );
             // Insert `count = N` on the line before `server_id`
             s = s.replacen(
@@ -1335,7 +1335,6 @@ mod tests {
             resource_name: resource_name.to_string(),
             source_file: "test.tf".to_string(),
             status: MigrationStatus::Native,
-            score: 0,
             upcloud_type: upcloud_type.to_string(),
             upcloud_hcl: upcloud_hcl.map(str::to_string),
             snippet: snippet.map(str::to_string),
@@ -1886,23 +1885,23 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
     }
 
     #[test]
-    fn sg_to_server_map_resolves_mismatched_names() {
+    fn firewall_to_server_map_resolves_mismatched_names() {
         use crate::migration::providers::{SourceProvider, aws::AwsSourceProvider};
         let provider = AwsSourceProvider;
-        // docker_demo SG is attached to docker_server instance via vpc_security_group_ids.
+        // docker_demo firewall is attached to docker_server instance via vpc_security_group_ids.
         let instance_hcl = concat!(
             "resource \"aws_instance\" \"docker_server\" {\n",
             "  vpc_security_group_ids = [aws_security_group.docker_demo.id]\n",
             "}\n"
         );
         let refs = provider.extract_security_refs_from_instance(instance_hcl);
-        assert!(refs.contains(&"docker_demo".to_string()), "should extract SG name: {refs:?}");
+        assert!(refs.contains(&"docker_demo".to_string()), "should extract firewall name: {refs:?}");
 
-        // When the sg_to_server_map is used, the firewall rule should resolve to docker_server.
+        // When the firewall_to_server_map is used, the firewall rule should resolve to docker_server.
         let fw_hcl = "resource \"upcloud_firewall_rules\" \"docker_demo\" {\n  server_id = upcloud_server.<TODO>.id\n}\n";
         let mut server_map = HashMap::new();
         server_map.insert("docker_server".to_string(), None);
-        // effective_server comes from sg_to_server_map lookup
+        // effective_server comes from firewall_to_server_map lookup
         let effective_server = "docker_server";
         let out = resolve_firewall_server(fw_hcl, effective_server, &server_map);
         assert!(out.contains("upcloud_server.docker_server.id"), "should resolve to docker_server: {out}");

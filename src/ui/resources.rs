@@ -48,11 +48,6 @@ pub fn render(f: &mut Frame, app: &App) {
         Span::styled(format!(" {partial} partial  "), theme::warning()),
         Span::styled("✕", theme::danger()),
         Span::styled(format!(" {unsup} unsup  "), theme::danger()),
-        Span::styled("│  SCORE ", theme::dim()),
-        Span::styled(
-            format!("{:.0}%", app.overall_score),
-            theme::score_style(app.overall_score as u8),
-        ),
     ]));
     f.render_widget(stats, layout[0]);
 

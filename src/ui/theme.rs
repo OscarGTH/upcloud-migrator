@@ -33,16 +33,6 @@ pub fn selected() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn score_style(score: u8) -> Style {
-    let color = match score {
-        85..=100 => SUCCESS,
-        65..=84  => PRIMARY,
-        30..=64  => WARNING,
-        _        => DANGER,
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
-}
-
 pub fn status_style(label: &str) -> Style {
     match label {
         "NATIVE"      => Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),

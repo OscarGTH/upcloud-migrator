@@ -2,6 +2,14 @@
 name = "upcloud-migrate"
 version = "0.1.0"
 edition = "2024"
+publish = false
+
+[package.metadata.release]
+pre-release-commit-message = "chore: release {{version}}"
+tag-message = "Release {{version}}"
+push = true
+push-options = ["--force-with-lease"]
+consolidate-commits = true
 
 [dependencies]
 ratatui = "0.29"

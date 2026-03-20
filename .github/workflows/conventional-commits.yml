@@ -1,0 +1,25 @@
+name: Conventional Commits
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate conventional commits
+        uses: conventional-commits-rs/actions@v1.0
+        with:
+          # Allow types: feat, fix, refactor, perf, docs, style, test, chore, revert
+          types: feat,fix,refactor,perf,docs,style,test,chore,revert
+          scopes: migration,terraform,ui,pricing,zones,ai,app
+          strict: true

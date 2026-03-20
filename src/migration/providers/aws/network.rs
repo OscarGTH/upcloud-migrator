@@ -18,7 +18,6 @@ pub fn map_vpc(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status: MigrationStatus::Compatible,
-        score: 72,
         upcloud_type: "upcloud_router".into(),
         upcloud_hcl: Some(hcl),
         snippet: None,
@@ -91,7 +90,6 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status: MigrationStatus::Compatible,
-        score: 80,
         upcloud_type: "upcloud_network".into(),
         upcloud_hcl: Some(hcl),
         snippet: None,
@@ -138,10 +136,10 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
         );
     }
 
-    let (score, status) = if rules.is_empty() {
-        (65u8, MigrationStatus::Partial)
+    let status = if rules.is_empty() {
+        MigrationStatus::Partial
     } else {
-        (82u8, MigrationStatus::Compatible)
+        MigrationStatus::Compatible
     };
 
     let hcl = format!(
@@ -165,7 +163,7 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status,
-        score,
+
         upcloud_type: "upcloud_firewall_rules".into(),
         upcloud_hcl: Some(hcl),
         snippet: None,
@@ -532,7 +530,6 @@ pub fn map_eip_association(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status: MigrationStatus::Partial,
-        score: 55,
         upcloud_type: "mac_address on upcloud_floating_ip_address".into(),
         upcloud_hcl: None,
         snippet: Some(snippet),
@@ -551,7 +548,6 @@ pub fn map_nat_gateway(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status: MigrationStatus::Partial,
-        score: 50,
         upcloud_type: "upcloud_router (built-in NAT)".into(),
         upcloud_hcl: None,
         snippet: None,
@@ -570,7 +566,6 @@ pub fn map_internet_gateway(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status: MigrationStatus::Partial,
-        score: 50,
         upcloud_type: "upcloud_router (default route)".into(),
         upcloud_hcl: None,
         snippet: None,
@@ -609,7 +604,6 @@ pub fn map_route_table(res: &TerraformResource) -> MigrationResult {
             resource_name: res.name.clone(),
             source_file: res.source_file.display().to_string(),
             status: MigrationStatus::Partial,
-            score: 45,
             upcloud_type: "upcloud_router static_route".into(),
             upcloud_hcl: None,
             snippet: Some(snippet),
@@ -627,7 +621,7 @@ pub fn map_route_table(res: &TerraformResource) -> MigrationResult {
             resource_name: res.name.clone(),
             source_file: res.source_file.display().to_string(),
             status: MigrationStatus::Partial,
-            score: 60,
+
             upcloud_type: "upcloud_router (automatic routing)".into(),
             upcloud_hcl: None,
             snippet: None,
@@ -690,7 +684,6 @@ pub fn map_eip(res: &TerraformResource) -> MigrationResult {
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
         status: MigrationStatus::Compatible,
-        score: 55,
         upcloud_type: "upcloud_floating_ip_address".into(),
         upcloud_hcl: Some(hcl),
         snippet: None,

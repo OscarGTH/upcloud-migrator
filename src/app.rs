@@ -11,7 +11,6 @@ use crate::ai::ChatMessage;
 use crate::migration::generator::ResolvedHclMap;
 use crate::pricing::{compute_costs, CostEntry};
 use crate::migration::mapper::map_resource;
-use crate::migration::scorer::compute_overall_score;
 use crate::migration::types::MigrationResult;
 use crate::terraform::parser::parse_tf_file;
 use crate::terraform::scanner::find_tf_files;
@@ -42,7 +41,7 @@ pub enum GenStep {
 
 pub enum AppMessage {
     FileFound(String),
-    ScanComplete(Vec<MigrationResult>, Vec<PassthroughBlock>, f64),
+    ScanComplete(Vec<MigrationResult>, Vec<PassthroughBlock>),
     GenerateLog(String),
     GenerateDone(usize, ResolvedHclMap),
     AiSuggestion(usize, String),
@@ -73,7 +72,6 @@ pub struct App {
     // Migration results
     pub migration_results: Vec<MigrationResult>,
     pub passthroughs: Vec<PassthroughBlock>,
-    pub overall_score: f64,
 
     // Table navigation
     pub table_state: TableState,
@@ -146,7 +144,6 @@ impl App {
             resources: Vec::new(),
             migration_results: Vec::new(),
             passthroughs: Vec::new(),
-            overall_score: 0.0,
             table_state,
             resources_focus_preview: false,
             preview_scroll: 0,
@@ -642,11 +639,10 @@ impl App {
                 self.scan_files.push(path.clone());
                 self.scan_current = Some(path);
             }
-            AppMessage::ScanComplete(results, passthroughs, score) => {
+            AppMessage::ScanComplete(results, passthroughs) => {
                 self.resources = results.iter().map(|r| r.resource_type.clone()).collect();
                 self.migration_results = results;
                 self.passthroughs = passthroughs;
-                self.overall_score = score;
                 self.scan_complete = true;
                 self.table_state.select(Some(0));
             }
@@ -726,8 +722,7 @@ impl App {
                 }
             }
 
-            let score = compute_overall_score(&all_results);
-            let _ = tx.send(AppMessage::ScanComplete(all_results, all_passthroughs, score)).await;
+            let _ = tx.send(AppMessage::ScanComplete(all_results, all_passthroughs)).await;
         });
     }
 
