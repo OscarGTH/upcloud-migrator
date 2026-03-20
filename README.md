@@ -1,8 +1,10 @@
 # upcloud-migrate
 
-A terminal tool that converts AWS Terraform infrastructure into UpCloud Terraform — automatically, in your terminal.
+A terminal tool that converts cloud infrastructure Terraform code into UpCloud Terraform — automatically, in your terminal.
 
-Point it at an existing AWS Terraform project and it maps every resource, resolves cross-references, generates valid UpCloud HCL, and highlights everything that needs manual review.
+Point it at an existing Terraform project and it maps every resource, resolves cross-references, generates valid UpCloud HCL, and highlights everything that needs manual review.
+
+**Currently supports:** AWS (first provider). Additional cloud providers coming soon.
 
 ![TUI screenshot placeholder]
 
@@ -21,6 +23,8 @@ Point it at an existing AWS Terraform project and it maps every resource, resolv
 ---
 
 ## Supported resources
+
+### AWS → UpCloud
 
 | AWS resource | UpCloud equivalent |
 |---|---|
@@ -50,6 +54,15 @@ Point it at an existing AWS Terraform project and it maps every resource, resolv
 | `aws_db_subnet_group` | *(informational note — network configured in managed DB)* |
 | `aws_elasticache_cluster` | `upcloud_managed_database_valkey` |
 | `variable` / `output` / `locals` | passed through with AWS refs rewritten |
+
+---
+
+## Provider roadmap
+
+Upcoming source providers:
+- **Azure** — Azure Resource Manager → UpCloud
+- **GCP** — Google Cloud Platform → UpCloud
+- **Hetzner** — Hetzner Cloud → UpCloud
 
 ---
 
