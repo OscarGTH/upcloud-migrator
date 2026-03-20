@@ -17,6 +17,6 @@ jobs:
           fetch-depth: 0
 
       - name: Validate commit messages
-        uses: compilerla/conventional-pre-commit@v3.0.0
-        with:
-          force-with-lease: true
+        uses: amannn/action-semantic-pull-request@v5.4.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
