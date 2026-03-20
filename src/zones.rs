@@ -26,9 +26,9 @@ pub const ZONES: &[ZoneInfo] = &[
     ZoneInfo { slug: "au-syd1", city: "Sydney",     region: "Asia-Pacific" },
 ];
 
-/// Return the index of `slug` in ZONES, defaulting to de-fra1 (index 2).
+/// Return the index of `slug` in ZONES, defaulting to fi-hel2 (index 4).
 pub fn find_zone_idx(slug: &str) -> usize {
-    ZONES.iter().position(|z| z.slug == slug).unwrap_or(2)
+    ZONES.iter().position(|z| z.slug == slug).unwrap_or(4)
 }
 
 /// Map a zone slug to the nearest UpCloud Object Storage region.
@@ -59,4 +59,4 @@ pub fn zone_idx_to_visual_row(idx: usize) -> usize {
 }
 
 /// Total visual rows in the zone list (zones + region headers).
-pub const ZONE_LIST_VISUAL_ROWS: usize = ZONES.len() + 3; // 15 zones + 3 headers
+pub const ZONE_LIST_VISUAL_ROWS: usize = ZONES.len() + 3;

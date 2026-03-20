@@ -28,7 +28,7 @@ pub struct TodoItem {
 }
 
 /// Scan all .tf files in `output_dir` for remaining `<TODO...>` markers.
-/// Only matches real HCL value lines — skips HCL comment lines (starting with `#`).
+/// Only matches real HCL value lines, skips HCL comment lines (starting with `#`).
 pub fn scan_output_todos(output_dir: &Path) -> Vec<TodoItem> {
     let mut todos = Vec::new();
 
@@ -53,12 +53,10 @@ pub fn scan_output_todos(output_dir: &Path) -> Vec<TodoItem> {
 
         let lines: Vec<&str> = content.lines().collect();
         for (i, line) in lines.iter().enumerate() {
-            // Skip HCL comment lines — TODOs in comments are informational only
             let trimmed = line.trim_start();
             if trimmed.starts_with('#') {
                 continue;
             }
-            // Skip `comment = "..."` HCL attributes — they're human-readable notes, not values to resolve
             {
                 let key = trimmed.split('=').next().unwrap_or("").trim();
                 if key == "comment" {
@@ -129,8 +127,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    // We use tempfile for isolated test dirs. Add to dev-dependencies if needed,
-    // or use std::env::temp_dir() directly.
     fn make_temp_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "upcloud_todo_test_{}",
@@ -146,8 +142,6 @@ mod tests {
     fn cleanup(dir: &std::path::Path) {
         let _ = fs::remove_dir_all(dir);
     }
-
-    // ── extract_placeholder ──────────────────────────────────────────────────
 
     #[test]
     fn test_extract_placeholder_angle_bracket() {
@@ -171,8 +165,6 @@ mod tests {
         assert_eq!(extract_placeholder(line), "<TODO>");
     }
 
-    // ── scan_output_todos ────────────────────────────────────────────────────
-
     #[test]
     fn test_scan_skips_comment_lines() {
         let dir = make_temp_dir();
@@ -184,7 +176,6 @@ resource "upcloud_firewall_rules" "main" {
 "#;
         fs::write(dir.join("network.tf"), content).unwrap();
         let todos = scan_output_todos(&dir);
-        // Only the `server_id =` line should match, NOT the `# NOTE:` comment
         assert_eq!(todos.len(), 1, "should only match value line, not comment");
         assert_eq!(todos[0].line_no, 4);
         assert!(todos[0].line_content.contains("server_id"));
@@ -231,7 +222,6 @@ resource "upcloud_firewall_rules" "main" {
     #[test]
     fn test_scan_no_false_positives_in_pure_comment_file() {
         let dir = make_temp_dir();
-        // All TODO markers are in comments
         let content = r#"# This file has <TODO> only in comments
 # NOTE: Replace <TODO: something> manually
 # TODO: this is a plain comment todo
@@ -245,7 +235,6 @@ resource "upcloud_server" "main" {
         cleanup(&dir);
     }
 
-    // ── apply_resolution ─────────────────────────────────────────────────────
 
     #[test]
     fn test_apply_resolution_replaces_placeholder() {
@@ -306,7 +295,6 @@ resource "upcloud_server" "main" {
         cleanup(&dir);
     }
 
-    // ── Real generator TODO patterns ──────────────────────────────────────────
 
     #[test]
     fn test_scan_login_block_ssh_key_todo() {

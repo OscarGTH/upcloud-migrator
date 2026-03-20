@@ -166,9 +166,11 @@ pub fn compute_costs(
             continue;
         }
 
-        // Prefer resolved HCL, fall back to upcloud_hcl from the mapper
+        // Prefer resolved HCL, fall back to upcloud_hcl from the mapper.
+        // The generator stores resolved HCL under (aws_resource_type, resource_name),
+        // matching the key used by the diff view.
         let hcl_opt = resolved_hcl_map
-            .get(&(result.upcloud_type.clone(), result.resource_name.clone()))
+            .get(&(result.resource_type.clone(), result.resource_name.clone()))
             .cloned()
             .or_else(|| result.upcloud_hcl.clone());
 

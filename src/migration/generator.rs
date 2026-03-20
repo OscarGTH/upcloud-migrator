@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::migration::providers::aws::database::{extract_parameter_blocks, is_valid_pg_property};
+use crate::migration::providers::{detect_provider, ResourceRole, SourceProvider};
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::migration::var_detector::{analyze_variable, apply_conversion_to_hcl, build_var_annotation, build_var_usage_map, extract_variable_info, VarKind};
 use crate::terraform::types::{PassthroughBlock, PassthroughKind};
@@ -10,7 +10,7 @@ use crate::zones::zone_to_objstorage_region;
 
 /// Prefix that identifies an unresolved TODO placeholder in generated HCL.
 /// Used to skip values that the mapper could not resolve at mapping time.
-const TODO_PLACEHOLDER_PREFIX: &str = "<TODO";
+pub(crate) const TODO_PLACEHOLDER_PREFIX: &str = "<TODO";
 
 /// Sentinel stored in `resolved_hcl_map` for resources that were intentionally
 /// skipped during generation (e.g. firewall rules with no resolvable server_id).
@@ -19,24 +19,35 @@ pub const SKIPPED_SENTINEL: &str = "\x00SKIPPED";
 
 
 /// Resolved HCL map: maps `(resource_type, resource_name)` to the fully-resolved HCL string
-/// (zone injected, cross-references resolved, AWS refs sanitised).
+/// (zone injected, cross-references resolved, source refs sanitised).
 pub type ResolvedHclMap = HashMap<(String, String), String>;
 
-pub fn generate_files(
-    results: &[MigrationResult],
-    passthroughs: &[PassthroughBlock],
-    output_dir: &Path,
-    source_dir: Option<&Path>,
-    zone: &str,
-    log: &mut Vec<String>,
-) -> Result<(usize, ResolvedHclMap)> {
-    std::fs::create_dir_all(output_dir)?;
+/// Container for all cross-reference lookup tables used during migration.
+/// These tables enable resolving source resource references to their UpCloud equivalents
+/// and tracking relationships between resources (e.g., load balancers → target groups → servers).
+struct CrossRefTables {
+    lb_names: Vec<String>,
+    network_names: Vec<String>,
+    server_names: Vec<String>,
+    k8s_names: Vec<String>,
+    ssh_key_map: HashMap<String, LoginKeysValue>,
+    backend_names: Vec<String>,
+    cert_bundle_names: Vec<String>,
+    server_info_map: HashMap<String, Option<String>>,
+    sg_to_server_map: HashMap<String, Vec<String>>,
+    network_count_map: HashMap<String, bool>,
+    param_group_map: HashMap<String, Vec<(String, String)>>,
+    subnet_group_subnets_map: HashMap<String, Vec<String>>,
+    lb_backend_net_map: HashMap<String, String>,
+    storage_inject_map: HashMap<String, Vec<String>>,
+    storage_promote_count: HashMap<String, String>,
+}
 
-    let mut resolved_hcl_map: ResolvedHclMap = HashMap::new();
-
-    let objstorage_region = zone_to_objstorage_region(zone);
-
-    // ── Build cross-resolution lookup tables ──────────────────────────────────
+/// Build all cross-reference lookup tables from the migration results.
+/// These tables enable efficient resolution of source resource references to UpCloud equivalents
+/// and tracking of resource relationships (e.g., which servers reference which security groups).
+fn build_cross_ref_tables(results: &[MigrationResult], provider: &dyn SourceProvider) -> CrossRefTables {
+    // Collect resource names by type for direct lookups
     let lb_names: Vec<String> = results.iter()
         .filter(|r| r.upcloud_type == "upcloud_loadbalancer")
         .map(|r| r.resource_name.clone())
@@ -57,10 +68,10 @@ pub fn generate_files(
         .map(|r| r.resource_name.clone())
         .collect();
 
-    // Build key_pair_name → public_key map for auto-resolving login blocks.
+    // Build key_pair_name → public_key map for auto-resolving login blocks
     let mut ssh_key_map: HashMap<String, LoginKeysValue> = HashMap::new();
     for r in results {
-        if r.resource_type == "aws_key_pair" {
+        if provider.resource_role(&r.resource_type) == ResourceRole::KeyPair {
             if let Some(snippet) = &r.snippet {
                 if let Some(keys) = extract_login_keys(snippet) {
                     ssh_key_map.insert(r.resource_name.clone(), keys);
@@ -89,21 +100,17 @@ pub fn generate_files(
         })
         .collect();
 
-    // Build sg_to_server_map: SG resource_name → Vec<server resource_name>.
-    // A single SG can be attached to multiple servers (e.g. a "monitoring" SG applied to
-    // both web and api instances). Each entry collects all servers that reference this SG,
-    // so the generator can add the SG's rules to every server's firewall resource.
+    // Build sg_to_server_map: SG resource_name → Vec<server resource_name>
     let mut sg_to_server_map: HashMap<String, Vec<String>> = HashMap::new();
-    for r in results.iter().filter(|r| r.resource_type == "aws_instance") {
+    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance) {
         if let Some(hcl) = r.source_hcl.as_deref() {
-            for sg_name in extract_sg_refs_from_instance_hcl(hcl) {
+            for sg_name in provider.extract_security_refs_from_instance(hcl) {
                 sg_to_server_map.entry(sg_name).or_default().push(r.resource_name.clone());
             }
         }
     }
 
-    // Build network_count_map: network resource_name → whether it has count.
-    // Used to decide whether network references need [count.index] or [0].
+    // Build network_count_map: network resource_name → whether it has count
     let network_count_map: HashMap<String, bool> = results.iter()
         .filter(|r| r.upcloud_type.contains("upcloud_network"))
         .map(|r| {
@@ -113,63 +120,47 @@ pub fn generate_files(
         .collect();
 
     // Build param_group_map: parameter group resource_name → Vec<(param_name, value)>
-    // Used to inject parameters inline into the properties {} block of DB resources.
     let param_group_map: HashMap<String, Vec<(String, String)>> = results.iter()
-        .filter(|r| r.resource_type == "aws_db_parameter_group"
-               || r.resource_type == "aws_elasticache_parameter_group")
+        .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ParameterGroup)
         .filter_map(|r| r.source_hcl.as_ref().map(|hcl| {
-            (r.resource_name.clone(), extract_parameter_blocks(hcl))
+            (r.resource_name.clone(), provider.extract_parameter_blocks(hcl))
         }))
         .collect();
 
-    // Build subnet_group_subnets_map: subnet group resource_name → Vec<subnet resource_name>.
-    // Parsed from aws_db_subnet_group / aws_elasticache_subnet_group source HCL.
-    // Lets the generator resolve "<TODO: upcloud_network UUID subnet_group=NAME>" to the
-    // correct upcloud_network instead of always falling back to the first network.
+    // Build subnet_group_subnets_map: subnet group resource_name → Vec<subnet resource_name>
     let subnet_group_subnets_map: HashMap<String, Vec<String>> = results.iter()
-        .filter(|r| r.resource_type == "aws_db_subnet_group"
-               || r.resource_type == "aws_elasticache_subnet_group")
+        .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::SubnetGroup)
         .filter_map(|r| r.source_hcl.as_deref().map(|hcl| {
-            (r.resource_name.clone(), extract_subnet_names_from_subnet_group(hcl))
+            (r.resource_name.clone(), provider.extract_subnet_names_from_subnet_group(hcl))
         }))
         .filter(|(_, subnets)| !subnets.is_empty())
         .collect();
 
-    // Build lb_backend_net_map: lb resource_name → network name that its backends are on.
-    // Chain: aws_lb_listener (lb→tg) → aws_lb_target_group_attachment (tg→server) →
-    //        aws_instance (server→subnet) → upcloud_network (subnet→name).
-    // This gives a deterministic answer instead of the name-based heuristic.
+    // Build server_subnet_map and related tables for load balancer network resolution
     let server_subnet_map: HashMap<String, String> = results.iter()
-        .filter(|r| r.resource_type == "aws_instance")
+        .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance)
         .filter_map(|r| r.source_hcl.as_deref().and_then(|hcl| {
-            extract_subnet_id_from_instance_hcl(hcl)
+            provider.extract_subnet_from_instance(hcl)
                 .map(|subnet| (r.resource_name.clone(), subnet))
         }))
         .collect();
 
     let mut tg_servers_map: HashMap<String, Vec<String>> = HashMap::new();
-    for r in results.iter().filter(|r| r.resource_type == "aws_lb_target_group_attachment") {
+    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbTargetGroupAttachment) {
         if let Some(hcl) = r.source_hcl.as_deref() {
-            if let Some((tg, srv)) = extract_tg_server_from_attachment_source_hcl(hcl) {
+            if let Some((tg, srv)) = provider.extract_tg_server_from_attachment(hcl) {
                 tg_servers_map.entry(tg).or_default().push(srv);
             }
         }
     }
 
     let mut lb_tgs_map: HashMap<String, Vec<String>> = HashMap::new();
-    // lb_name comes from the `parent_resource` field set by the loadbalancer mapper on listener results
-    for r in results.iter().filter(|r| r.resource_type == "aws_lb_listener") {
+    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener) {
         if let Some(hcl) = r.source_hcl.as_deref() {
-            if let Some(tg) = extract_tg_from_listener_source_hcl(hcl) {
-                // The lb_name: prefer parent_resource, fall back to parsing load_balancer_arn
+            if let Some(tg) = provider.extract_tg_from_listener(hcl) {
                 let lb_name = r.parent_resource.clone().unwrap_or_default();
                 let lb_name = if lb_name.is_empty() {
-                    // parse from `load_balancer_arn = aws_lb.NAME.arn`
-                    hcl.lines()
-                        .find(|l| l.trim().starts_with("load_balancer_arn"))
-                        .and_then(|l| l.find("aws_lb.").map(|p| &l[p + "aws_lb.".len()..]))
-                        .and_then(|s| s.split('.').next())
-                        .map(|s| s.trim_matches('"').to_string())
+                    provider.extract_lb_name_from_listener(hcl)
                         .unwrap_or_default()
                 } else {
                     lb_name
@@ -181,14 +172,13 @@ pub fn generate_files(
         }
     }
 
-    // Now chain lb → tgs → servers → subnets → network names
+    // Chain lb → tgs → servers → subnets → network names
     let mut lb_backend_net_map: HashMap<String, String> = HashMap::new();
     for (lb_name, tgs) in &lb_tgs_map {
         'outer: for tg in tgs {
             if let Some(servers) = tg_servers_map.get(tg) {
                 for srv in servers {
                     if let Some(subnet) = server_subnet_map.get(srv) {
-                        // subnet name must correspond to a known upcloud_network resource
                         if network_names.contains(subnet) {
                             lb_backend_net_map.insert(lb_name.clone(), subnet.clone());
                             break 'outer;
@@ -199,9 +189,7 @@ pub fn generate_files(
         }
     }
 
-    // Build storage_count_map and storage_inject_map:
-    // For aws_volume_attachment resources, inject storage_devices blocks directly
-    // into the matching server's HCL (via the __STORAGE_END_<name>__ sentinel).
+    // Build storage-related maps
     let storage_count_map: HashMap<String, bool> = results.iter()
         .filter(|r| r.upcloud_type == "upcloud_storage")
         .map(|r| {
@@ -210,18 +198,15 @@ pub fn generate_files(
         })
         .collect();
 
-    // storage_inject_map: server_resource_name → Vec<storage_devices block>
     let mut storage_inject_map: HashMap<String, Vec<String>> = HashMap::new();
-    // storage_promote_count: storage_name → count_value
-    // When a server has count but its attached storage does not, promote count onto the storage
-    // so each server instance gets its own dedicated storage device.
     let mut storage_promote_count: HashMap<String, String> = HashMap::new();
-    for r in results.iter().filter(|r| r.resource_type == "aws_volume_attachment") {
+
+    for r in results.iter().filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::VolumeAttachment) {
         let server_name = match r.parent_resource.as_deref() {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => continue,
         };
-        // Parse the storage resource name from the snippet line: "storage = upcloud_storage.NAME.id"
+
         let storage_name = r.snippet.as_deref().and_then(|s| {
             s.lines()
                 .find(|l| l.trim().starts_with("storage = upcloud_storage."))
@@ -229,15 +214,17 @@ pub fn generate_files(
                 .and_then(|s| s.split('.').next())
                 .map(str::to_string)
         });
+
         let storage_name = match storage_name {
             Some(n) => n,
             None => continue,
         };
+
         let server_count_val = server_info_map.get(&server_name).and_then(|c| c.clone());
         let server_has_count = server_count_val.is_some();
         let storage_has_count = storage_count_map.get(&storage_name).copied().unwrap_or(false);
+
         let storage_ref = if server_has_count && !storage_has_count {
-            // Storage needs count promoted from the server
             if let Some(ref count_val) = server_count_val {
                 storage_promote_count.insert(storage_name.clone(), count_val.clone());
             }
@@ -249,6 +236,7 @@ pub fn generate_files(
         } else {
             format!("upcloud_storage.{}.id", storage_name)
         };
+
         let block = format!(
             "  storage_devices {{\n    storage = {}\n    type    = \"disk\"\n  }}\n",
             storage_ref
@@ -256,217 +244,292 @@ pub fn generate_files(
         storage_inject_map.entry(server_name).or_default().push(block);
     }
 
-    // Apply zone substitution and cross-resolve TODO placeholders
-    let resolve = |hcl: &str, resource_name: &str| -> String {
-        let mut s = hcl
-            .replace("__ZONE__", zone)
-            .replace("__OBJSTORAGE_REGION__", objstorage_region);
+    CrossRefTables {
+        lb_names,
+        network_names,
+        server_names,
+        k8s_names,
+        ssh_key_map,
+        backend_names,
+        cert_bundle_names,
+        server_info_map,
+        sg_to_server_map,
+        network_count_map,
+        param_group_map,
+        subnet_group_subnets_map,
+        lb_backend_net_map,
+        storage_inject_map,
+        storage_promote_count,
+    }
+}
 
-        // LB references
-        if let Some(lb) = lb_names.first() {
-            s = s.replace("upcloud_loadbalancer.<TODO>.id", &format!("upcloud_loadbalancer.{}.id", lb));
+/// Replace indexed TODO placeholders with corresponding items from a list.
+/// E.g., first `<TODO>` → first item, second `<TODO>` → second item.
+fn replace_indexed_placeholders(hcl: &str, pattern: &str, replacements: &[String]) -> String {
+    if replacements.is_empty() {
+        return hcl.to_string();
+    }
+    let mut result = hcl.to_string();
+    for (i, replacement) in replacements.iter().enumerate() {
+        if i == 0 {
+            // Replace first occurrence of pattern
+            if let Some(pos) = result.find(pattern) {
+                result.replace_range(pos..pos + pattern.len(), replacement);
+            }
+        } else {
+            // For subsequent items, handle potential multiple occurrences
+            // by replacing the next available occurrence
+            if let Some(pos) = result.find(pattern) {
+                result.replace_range(pos..pos + pattern.len(), replacement);
+            }
         }
+    }
+    result
+}
 
-        // Backend name for frontends
-        if let Some(backend) = backend_names.first() {
-            s = s.replace(
-                "upcloud_loadbalancer_backend.<TODO>.name",
-                &format!("upcloud_loadbalancer_backend.{}.name", backend),
-            );
+/// Resolve load balancer, backend, and certificate placeholders using indexed replacement.
+fn resolve_load_balancer_refs(hcl: &str, xref: &CrossRefTables) -> String {
+    let mut s = hcl.to_string();
+    
+    // Resolve indexed load balancer references
+    let lb_refs: Vec<String> = xref.lb_names
+        .iter()
+        .map(|lb| format!("upcloud_loadbalancer.{}.id", lb))
+        .collect();
+    s = replace_indexed_placeholders(&s, "upcloud_loadbalancer.<TODO>.id", &lb_refs);
+    
+    // Resolve indexed backend references
+    let backend_refs: Vec<String> = xref.backend_names
+        .iter()
+        .map(|b| format!("upcloud_loadbalancer_backend.{}.name", b))
+        .collect();
+    s = replace_indexed_placeholders(&s, "upcloud_loadbalancer_backend.<TODO>.name", &backend_refs);
+    
+    // Resolve indexed certificate bundle references
+    let cert_refs: Vec<String> = xref.cert_bundle_names
+        .iter()
+        .map(|c| format!("upcloud_loadbalancer_manual_certificate_bundle.{}.id", c))
+        .collect();
+    s = replace_indexed_placeholders(&s, "upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id", &cert_refs);
+    
+    s
+}
+
+/// Resolve Kubernetes and general resource references.
+fn resolve_k8s_and_generic_refs(hcl: &str, xref: &CrossRefTables) -> String {
+    let mut s = hcl.to_string();
+    
+    // Resolve Kubernetes cluster references for node groups
+    if let Some(k8s) = xref.k8s_names.first() {
+        s = s.replace(
+            "upcloud_kubernetes_cluster.<TODO>.id",
+            &format!("upcloud_kubernetes_cluster.{}.id", k8s),
+        );
+    }
+    
+    s
+}
+
+/// Resolve placeholders in HCL by substituting zone info, cross-references, and source-specific values.
+///
+/// This function coordinates resolution of multiple placeholder types:
+/// - Zone and object-storage region substitution
+/// - Network, server, and resource reference resolution (delegated to helpers)
+/// - SSH key and parameter group substitution (delegated to helpers)
+/// - Source provider data source cleanup
+///
+/// # Arguments
+/// * `hcl` - HCL source code potentially containing `<TODO>` placeholders
+/// * `resource_name` - Resource name used for network preference heuristics
+/// * `zone` - Target UpCloud zone
+/// * `objstorage_region` - Object storage region name
+/// * `xref` - Cross-reference tables for resolving resource names
+/// * `provider` - Source cloud provider for sanitization and placeholder text
+///
+/// # Returns
+/// Fully-resolved HCL with all placeholders replaced
+fn resolve_placeholders(
+    hcl: &str,
+    resource_name: &str,
+    zone: &str,
+    objstorage_region: &str,
+    xref: &CrossRefTables,
+    provider: &dyn SourceProvider,
+) -> String {
+    let mut s = hcl
+        .replace("__ZONE__", zone)
+        .replace("__OBJSTORAGE_REGION__", objstorage_region);
+
+    s = resolve_load_balancer_refs(&s, xref);
+    s = resolve_k8s_and_generic_refs(&s, xref);
+    s = resolve_network_refs(&s, resource_name, xref);
+    s = resolve_ssh_key_refs(&s, xref, provider);
+    s = resolve_db_parameter_refs(&s, xref, provider);
+    s = provider.sanitize_source_refs(s);
+
+    s
+}
+
+/// Resolve network references for both generic and subnet-specific cases.
+fn resolve_network_refs(hcl: &str, resource_name: &str, xref: &CrossRefTables) -> String {
+    let mut s = hcl.to_string();
+
+    // Resolve network references (subnet-specific for servers)
+    for net_name in &xref.network_names {
+        let specific = format!("\"<TODO: upcloud_network.{} reference>\"", net_name);
+        if s.contains(&specific) {
+            let net_has_count = xref.network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
+            let net_ref = if net_has_count {
+                if extract_count_from_hcl(&s).is_some() {
+                    format!("upcloud_network.{}[count.index].id", net_name)
+                } else {
+                    format!("upcloud_network.{}[0].id", net_name)
+                }
+            } else {
+                format!("upcloud_network.{}.id", net_name)
+            };
+            s = s.replace(&specific, &net_ref);
         }
+    }
 
-        // Certificate bundle for HTTPS frontends
-        if let Some(cert) = cert_bundle_names.first() {
-            s = s.replace(
-                "upcloud_loadbalancer_manual_certificate_bundle.<TODO>.id",
-                &format!("upcloud_loadbalancer_manual_certificate_bundle.{}.id", cert),
-            );
-        }
-
-        // Network reference for LB networks blocks and server network_interface.
-        // When the network is a counted resource, the reference must include an index:
-        //   - counted server context  → [count.index]
-        //   - non-counted server      → [0]
-
-        // First, resolve subnet-specific placeholders generated by map_instance from
-        // the source instance's subnet_id attribute: "<TODO: upcloud_network.NAME reference>".
-        // Each server can reference a different subnet/network this way.
-        for net_name in &network_names {
-            let specific = format!("\"<TODO: upcloud_network.{} reference>\"", net_name);
-            if s.contains(&specific) {
-                let net_has_count = network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
+    // Resolve database subnet-group-specific network references
+    for (sg_name, subnets) in &xref.subnet_group_subnets_map {
+        let placeholder = format!("\"<TODO: upcloud_network UUID subnet_group={}>\"", sg_name);
+        if s.contains(&placeholder) {
+            let net = subnets.iter()
+                .find(|sn| xref.network_names.contains(sn))
+                .or_else(|| xref.network_names.first());
+            if let Some(net_name) = net {
+                let net_has_count = xref.network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
                 let net_ref = if net_has_count {
-                    if extract_count_from_hcl(&s).is_some() {
-                        format!("upcloud_network.{}[count.index].id", net_name)
-                    } else {
-                        format!("upcloud_network.{}[0].id", net_name)
-                    }
+                    format!("upcloud_network.{}[0].id", net_name)
                 } else {
                     format!("upcloud_network.{}.id", net_name)
                 };
-                s = s.replace(&specific, &net_ref);
+                s = s.replace(&placeholder, &net_ref);
             }
         }
+    }
 
-        // Subnet-group-specific resolution for databases.
-        // Replaces "<TODO: upcloud_network UUID subnet_group=NAME>" with the correct
-        // upcloud_network derived from the aws_db_subnet_group / aws_elasticache_subnet_group.
-        for (sg_name, subnets) in &subnet_group_subnets_map {
-            let placeholder = format!("\"<TODO: upcloud_network UUID subnet_group={}>\"", sg_name);
-            if s.contains(&placeholder) {
-                let net = subnets.iter()
-                    .find(|sn| network_names.contains(sn))
-                    .or_else(|| network_names.first());
-                if let Some(net_name) = net {
-                    // If the resolved network has count, must index it (e.g. database[0])
-                    let net_has_count = network_count_map.get(net_name.as_str()).copied().unwrap_or(false);
-                    let net_ref = if net_has_count {
-                        format!("upcloud_network.{}[0].id", net_name)
-                    } else {
-                        format!("upcloud_network.{}.id", net_name)
-                    };
-                    s = s.replace(&placeholder, &net_ref);
-                }
-            }
-        }
-
-        // Generic fallback: resolve "<TODO: upcloud_network reference>" to the best
-        // available network.
-        //
-        // For load balancers, use the deterministic chain:
-        //   aws_lb → aws_lb_listener (tg) → aws_lb_target_group_attachment (server) →
-        //   aws_instance.subnet_id → upcloud_network
-        // This is exact — no heuristic needed.
-        //
-        // For everything else, prefer (in order):
-        //   1. a network whose name contains "private"
-        //   2. any network whose name does NOT contain "public"
-        //   3. whatever is first (last resort)
-        let preferred_net = lb_backend_net_map
-            .get(resource_name)
-            .and_then(|net| network_names.iter().find(|n| *n == net))
-            .or_else(|| network_names.iter().find(|n| n.to_lowercase().contains("private")))
-            .or_else(|| network_names.iter().find(|n| !n.to_lowercase().contains("public")))
-            .or_else(|| network_names.first());
-        if let Some(net) = preferred_net {
-            let net_has_count = network_count_map.get(net.as_str()).copied().unwrap_or(false);
-            let net_ref = if net_has_count {
-                if extract_count_from_hcl(&s).is_some() {
-                    format!("upcloud_network.{}[count.index].id", net)
-                } else {
-                    format!("upcloud_network.{}[0].id", net)
-                }
+    // Generic network fallback with heuristics
+    let preferred_net = xref.lb_backend_net_map
+        .get(resource_name)
+        .and_then(|net| xref.network_names.iter().find(|n| *n == net))
+        .or_else(|| xref.network_names.iter().find(|n| n.to_lowercase().contains("private")))
+        .or_else(|| xref.network_names.iter().find(|n| !n.to_lowercase().contains("public")))
+        .or_else(|| xref.network_names.first());
+    if let Some(net) = preferred_net {
+        let net_has_count = xref.network_count_map.get(net.as_str()).copied().unwrap_or(false);
+        let net_ref = if net_has_count {
+            if extract_count_from_hcl(&s).is_some() {
+                format!("upcloud_network.{}[count.index].id", net)
             } else {
-                format!("upcloud_network.{}.id", net)
-            };
-            s = s.replace("\"<TODO: upcloud_network reference>\"", &net_ref);
-            // Legacy placeholders kept for backwards compat
-            s = s.replace("\"<TODO: reference upcloud_network UUID>\"", &net_ref);
-            s = s.replace("\"<TODO: upcloud_network UUID>\"", &net_ref);
-        }
+                format!("upcloud_network.{}[0].id", net)
+            }
+        } else {
+            format!("upcloud_network.{}.id", net)
+        };
+        s = s.replace("\"<TODO: upcloud_network reference>\"", &net_ref);
+    }
 
-        // Server IP for LB backend members.
-        // When the server is a counted resource, the reference must include [0].
-        if let Some(srv) = server_names.first() {
-            let srv_has_count = server_info_map.get(srv.as_str()).map(|c| c.is_some()).unwrap_or(false);
-            let srv_ref = if srv_has_count {
-                format!("upcloud_server.{}[0].network_interface[0].ip_address", srv)
-            } else {
-                format!("upcloud_server.{}.network_interface[0].ip_address", srv)
-            };
-            s = s.replace("\"<TODO: server IP>\"", &srv_ref);
-        }
+    // Resolve server IP references for load balancer backends
+    if let Some(srv) = xref.server_names.first() {
+        let srv_has_count = xref.server_info_map.get(srv.as_str()).map(|c| c.is_some()).unwrap_or(false);
+        let srv_ref = if srv_has_count {
+            format!("upcloud_server.{}[0].network_interface[0].ip_address", srv)
+        } else {
+            format!("upcloud_server.{}.network_interface[0].ip_address", srv)
+        };
+        s = s.replace("\"<TODO: server IP>\"", &srv_ref);
+    }
 
-        // K8s cluster ref for node groups
-        if let Some(k8s) = k8s_names.first() {
-            s = s.replace(
-                "upcloud_kubernetes_cluster.<TODO>.id",
-                &format!("upcloud_kubernetes_cluster.{}.id", k8s),
-            );
-        }
+    s
+}
 
-        // Resolve login block SSH keys: replace TODO placeholders with actual public keys.
-        let mut resolved = s.clone();
-        for (kp_name, keys_value) in &ssh_key_map {
-            let placeholder = format!("<TODO: SSH public key for aws_key_pair.{}>", kp_name);
-            match keys_value {
-                // Literal key: replace just the TODO content; surrounding quotes stay.
-                LoginKeysValue::Literal(public_key) => {
-                    resolved = resolved.replace(&placeholder, public_key);
-                }
-                // Expression key (ternary etc.): replace the quoted placeholder INCLUDING
-                // its surrounding quotes so the expression is a bare HCL value, not a string.
-                LoginKeysValue::Expression(expr) => {
-                    let quoted_placeholder = format!("\"{}\"", placeholder);
-                    resolved = resolved.replace(&quoted_placeholder, expr);
-                }
+/// Resolve SSH public key references in login blocks.
+fn resolve_ssh_key_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn SourceProvider) -> String {
+    let mut s = hcl.to_string();
+    for (kp_name, keys_value) in &xref.ssh_key_map {
+        let placeholder = provider.ssh_key_placeholder(kp_name);
+        match keys_value {
+            LoginKeysValue::Literal(public_key) => {
+                s = s.replace(&placeholder, public_key);
+            }
+            LoginKeysValue::Expression(expr) => {
+                let quoted_placeholder = format!("\"{}\"", placeholder);
+                s = s.replace(&quoted_placeholder, expr);
             }
         }
-        // Generic SSH key TODO fallback — use the first available literal key.
-        if resolved.contains("<TODO: paste SSH public key>") {
-            if let Some(LoginKeysValue::Literal(key)) = ssh_key_map.values().next() {
-                resolved = resolved.replace("<TODO: paste SSH public key>", key);
-            }
+    }
+    // Fallback for generic SSH key placeholder
+    if s.contains("<TODO: paste SSH public key>") {
+        if let Some(LoginKeysValue::Literal(key)) = xref.ssh_key_map.values().next() {
+            s = s.replace("<TODO: paste SSH public key>", key);
         }
-        s = resolved;
+    }
+    s
+}
 
-        // Resolve DB parameter group property markers: # __DB_PROPS:PREFIX:GROUP_NAME__
-        // Each marker line is replaced with the actual property lines from the param group.
-        if s.contains("# __DB_PROPS:") {
-            let mut out = String::with_capacity(s.len());
-            for line in s.lines() {
-                let trimmed = line.trim();
-                if let Some(inner) = trimmed.strip_prefix("# __DB_PROPS:") {
-                    if let Some(inner) = inner.strip_suffix("__") {
-                        if let Some((prefix, group_name)) = inner.split_once(':') {
-                            if let Some(params) = param_group_map.get(group_name) {
-                                if !params.is_empty() {
-                                    let _ = prefix; // prefix not prepended; UpCloud property names are unprefixed
-                                    for (name, value) in params {
-                                        if is_valid_pg_property(name) {
-                                            if name == "max_connections" {
-                                                out.push_str(&format!(
-                                                    "    # max_connections = \"{}\"  # requires pg_user_config_max_connections account permission — uncomment once confirmed\n",
-                                                    value
-                                                ));
-                                            } else {
-                                                out.push_str(&format!("    {} = \"{}\"\n", name, value));
-                                            }
-                                        } else {
-                                            out.push_str(&format!(
-                                                "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
-                                                name, value
-                                            ));
-                                        }
+/// Resolve database parameter group properties.
+fn resolve_db_parameter_refs(hcl: &str, xref: &CrossRefTables, provider: &dyn SourceProvider) -> String {
+    if !hcl.contains("# __DB_PROPS:") {
+        return hcl.to_string();
+    }
+
+    let mut out = String::with_capacity(hcl.len());
+    for line in hcl.lines() {
+        let trimmed = line.trim();
+        if let Some(inner) = trimmed.strip_prefix("# __DB_PROPS:") {
+            if let Some(inner) = inner.strip_suffix("__") {
+                if let Some((prefix, group_name)) = inner.split_once(':') {
+                    if let Some(params) = xref.param_group_map.get(group_name) {
+                        if !params.is_empty() {
+                            let _ = prefix;
+                            for (name, value) in params {
+                                if provider.is_valid_db_property(name) {
+                                    if name == "max_connections" {
+                                        out.push_str(&format!(
+                                            "    # max_connections = \"{}\"  # requires pg_user_config_max_connections account permission\n",
+                                            value
+                                        ));
+                                    } else {
+                                        out.push_str(&format!("    {} = \"{}\"\n", name, value));
                                     }
-                                    continue; // marker replaced — skip appending the marker line
+                                } else {
+                                    out.push_str(&format!(
+                                        "    # <TODO: {} = \"{}\" — not a valid upcloud_managed_database_postgresql property>\n",
+                                        name, value
+                                    ));
                                 }
                             }
-                            // Group not found or empty — leave a TODO comment
-                            out.push_str(&format!(
-                                "    # <TODO: migrate parameters from aws_db_parameter_group.{}>\n",
-                                group_name
-                            ));
                             continue;
                         }
                     }
+                    out.push_str(&provider.parameter_group_todo_text(group_name));
+                    continue;
                 }
-                out.push_str(line);
-                out.push('\n');
             }
-            // Preserve original trailing-newline behaviour
-            if !s.ends_with('\n') && out.ends_with('\n') {
-                out.pop();
-            }
-            s = out;
         }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !hcl.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
 
-        // Replace any remaining AWS-specific data source references
-        s = sanitize_aws_refs(s);
-
-        s
-    };
-
+/// Group resources and passthrough blocks by source file basename.
+/// Returns (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key).
+fn group_resources_and_passthroughs<'a>(
+    results: &'a [MigrationResult],
+    passthroughs: &'a [PassthroughBlock],
+) -> (
+    HashMap<String, Vec<&'a MigrationResult>>,
+    HashMap<String, Vec<&'a PassthroughBlock>>,
+    String,
+    bool,
+) {
     // Group fully-convertible results by source file basename
     let mut file_map: HashMap<String, Vec<&MigrationResult>> = HashMap::new();
     for result in results {
@@ -515,6 +578,32 @@ pub fn generate_files(
         file_map.entry(ssh_var_target_file.clone()).or_default();
     }
 
+    (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key)
+}
+
+pub fn generate_files(
+    results: &[MigrationResult],
+    passthroughs: &[PassthroughBlock],
+    output_dir: &Path,
+    source_dir: Option<&Path>,
+    zone: &str,
+    log: &mut Vec<String>,
+) -> Result<(usize, ResolvedHclMap)> {
+    std::fs::create_dir_all(output_dir)?;
+
+    let mut resolved_hcl_map: ResolvedHclMap = HashMap::new();
+
+    let objstorage_region = zone_to_objstorage_region(zone);
+
+    // Detect the source cloud provider from the resource types
+    let provider = detect_provider(results);
+
+    // Build all cross-reference lookup tables
+    let xref = build_cross_ref_tables(results, &*provider);
+
+    // Group resources and passthroughs by source file basename
+    let (file_map, passthrough_map, ssh_var_target_file, needs_ssh_public_key) = group_resources_and_passthroughs(results, passthroughs);
+
     // Build a usage map so the variable detector can score each variable by where it is referenced.
     // Gather all source HCL from mapped resources (best-effort — not every resource has source_hcl).
     let source_hcl_refs: Vec<&str> = results
@@ -557,27 +646,22 @@ provider "upcloud" {
         let out_path = output_dir.join(filename);
         let mut content = String::new();
         content.push_str(&format!(
-            "# Migrated from AWS Terraform\n# Source: {}\n# Target zone: {}\n\n",
-            filename, zone
+            "# Migrated from {} Terraform\n# Source: {}\n# Target zone: {}\n\n",
+            provider.display_name(), filename, zone
         ));
 
-        // Collect per-file pending firewall rules: server_id_expr → (resource_name, count_line, rule_blocks, notes)
-        // Multiple SGs targeting the same server are merged into a single upcloud_firewall_rules resource.
+        // Collect per-file pending firewall rules
         let mut fw_by_server: indexmap::IndexMap<String, (String, Option<String>, Vec<String>, Vec<String>)> =
             indexmap::IndexMap::new();
 
         for result in file_results {
             if let Some(hcl) = &result.upcloud_hcl {
-                let resolved = resolve(hcl, &result.resource_name);
+                let resolved = resolve_placeholders(hcl, &result.resource_name, zone, objstorage_region, &xref, &*provider);
 
-                // Name-based firewall server_id resolution.
-                // An SG can be attached to multiple servers (e.g. a "monitoring" SG on both
-                // web and api), so we iterate over every server that references this SG and
-                // add the rules to each server's merged firewall resource.
+                // Name-based firewall server_id resolution with SG merging
                 if result.upcloud_type == "upcloud_firewall_rules" {
-                    // Collect all servers that reference this SG (via vpc_security_group_ids).
-                    // Fall back to name-match: try the SG's own resource name as a server name.
-                    let servers: Vec<String> = sg_to_server_map
+                    // Collect all servers that reference this SG
+                    let servers: Vec<String> = xref.sg_to_server_map
                         .get(&result.resource_name)
                         .cloned()
                         .unwrap_or_else(|| vec![result.resource_name.clone()]);
@@ -589,10 +673,9 @@ provider "upcloud" {
                         let resolved_for_server = resolve_firewall_server(
                             &resolved,
                             effective_server,
-                            &server_info_map,
+                            &xref.server_info_map,
                         );
 
-                        // If still unresolved for this server, skip it.
                         if resolved_for_server.contains("upcloud_server.<TODO>.id") {
                             continue;
                         }
@@ -702,28 +785,33 @@ provider "upcloud" {
         // Append passthrough blocks (variable / output / locals) for this file.
         if let Some(pts) = passthrough_map.get(filename) {
             for pt in pts {
-                let aws_name = pt
+                let has_provider_prefix = pt
                     .name
                     .as_deref()
-                    .map(|n| n.starts_with("aws_") || n == "aws")
+                    .map(|n: &str| {
+                        let prefix = provider.resource_type_prefix();
+                        let bare = prefix.trim_end_matches('_');
+                        n.starts_with(prefix) || n == bare
+                    })
                     .unwrap_or(false);
-                if aws_name {
+                if has_provider_prefix {
                     // Do NOT inject <TODO:> into the variable name — that breaks HCL.
                     // Instead, add a plain comment so the user knows to review it.
                     content.push_str(&format!(
-                        "# NOTE: Variable name '{}' references AWS — consider renaming \
+                        "# NOTE: Variable name '{}' references {} — consider renaming \
                          (e.g. \"{}\").\n",
                         pt.name.as_deref().unwrap_or(""),
+                        provider.display_name(),
                         pt.name
                             .as_deref()
                             .unwrap_or("")
-                            .trim_start_matches("aws_"),
+                            .trim_start_matches(provider.resource_type_prefix()),
                     ));
                 }
-                // Rewrite AWS resource references inside output/locals blocks.
+                // Rewrite source provider resource references inside output/locals blocks.
                 // Variables: run multi-signal detection and auto-convert instance types / regions.
                 let hcl = if pt.kind == PassthroughKind::Output || pt.kind == PassthroughKind::Locals {
-                    rewrite_output_refs(&pt.raw_hcl)
+                    provider.rewrite_output_refs(&pt.raw_hcl)
                 } else if pt.kind == PassthroughKind::Variable {
                     let var_name = pt.name.as_deref().unwrap_or("");
                     let (default_val, description) = extract_variable_info(&pt.raw_hcl);
@@ -762,7 +850,7 @@ provider "upcloud" {
         if needs_ssh_public_key && filename == &ssh_var_target_file {
             content.push_str(concat!(
                 "variable \"ssh_public_key\" {\n",
-                "  description = \"SSH public key for server access (replaces AWS key_name)\"\n",
+                "  description = \"SSH public key for server access (replaces source key_name)\"\n",
                 "  type        = string\n",
                 "}\n\n",
             ));
@@ -773,7 +861,7 @@ provider "upcloud" {
         // The compute mapper leaves a sentinel comment inside each server block:
         //   # __STORAGE_END_<server_name>__
         // We replace it with the actual storage_devices block(s).
-        for (server_name, blocks) in &storage_inject_map {
+        for (server_name, blocks) in &xref.storage_inject_map {
             let sentinel = format!("  # __STORAGE_END_{}__\n", server_name);
             if content.contains(&sentinel) {
                 let injection: String = blocks.join("");
@@ -781,9 +869,9 @@ provider "upcloud" {
                 log.push(format!("  [INJECT] storage_devices → upcloud_server.{}", server_name));
             }
         }
+
         // Promote count onto storage resources that are attached to counted servers.
-        // This ensures each server instance gets its own dedicated storage device.
-        for (storage_name, count_val) in &storage_promote_count {
+        for (storage_name, count_val) in &xref.storage_promote_count {
             let header = format!("resource \"upcloud_storage\" \"{}\" {{", storage_name);
             if let Some(pos) = content.find(&header) {
                 let after_brace = pos + header.len();
@@ -801,6 +889,20 @@ provider "upcloud" {
                     "  [PROMOTE] count = {} → upcloud_storage.{} (one per server instance)",
                     count_val, storage_name
                 ));
+                // Keep resolved_hcl_map in sync so the pricing calculator sees the count.
+                // The map is keyed by (source_resource_type, resource_name).
+                let key = (provider.volume_resource_type().to_string(), storage_name.clone());
+                if let Some(existing) = resolved_hcl_map.get(&key).cloned() {
+                    if let Some(brace_pos) = existing.find('{') {
+                        let count_insert = format!("\n  count = {}", count_val);
+                        let mut updated = existing.clone();
+                        updated.insert_str(brace_pos + 1, &count_insert);
+                        let old_title = format!("title = \"{}\"", storage_name);
+                        let new_title = format!("title = \"{}_${{count.index + 1}}\"", storage_name);
+                        let updated = updated.replace(&old_title, &new_title);
+                        resolved_hcl_map.insert(key, updated);
+                    }
+                }
             }
         }
 
@@ -838,7 +940,7 @@ provider "upcloud" {
                 && (r.snippet.is_some() || !r.notes.is_empty())
                 // Volume attachments with a resolved parent_resource were auto-injected into
                 // the server's storage_devices block — no manual action needed.
-                && !(r.resource_type == "aws_volume_attachment" && r.parent_resource.is_some())
+                && !(provider.resource_role(&r.resource_type) == ResourceRole::VolumeAttachment && r.parent_resource.is_some())
         })
         .collect();
 
@@ -1011,69 +1113,24 @@ fn extract_login_keys(snippet: &str) -> Option<LoginKeysValue> {
     })
 }
 
-/// Replace AWS-specific data source references that leaked into output HCL.
-/// Handles patterns like `data.aws_caller_identity.current.account_id`.
-/// Also replaces cross-resource AWS refs like `aws_security_group.main.id`.
-/// Skips any `aws_` occurrences that are already inside a `<TODO: ...>` marker.
-fn sanitize_aws_refs(mut s: String) -> String {
-    // data.aws_* data source references
-    let mut search_from = 0;
-    loop {
-        let Some(rel) = s[search_from..].find("data.aws_") else { break };
-        let start = search_from + rel;
-        if inside_todo_marker(&s, start) {
-            search_from = start + "data.aws_".len();
-            continue;
-        }
-        let end = s[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
-            .map(|off| start + off)
-            .unwrap_or(s.len());
-        let aws_ref = s[start..end].to_string();
-        s = s.replacen(&aws_ref, "<TODO: remove AWS data source ref>", 1);
-        search_from = 0; // restart since string changed
+/// Returns true if byte position `pos` in `s` is inside an open `<TODO: ...>` marker,
+/// i.e. there is a `<TODO` before `pos` with no closing `>` between them.
+pub(crate) fn inside_todo_marker(s: &str, pos: usize) -> bool {
+    if let Some(last_open) = s[..pos].rfind(TODO_PLACEHOLDER_PREFIX) {
+        !s[last_open..pos].contains('>')
+    } else {
+        false
     }
-    // aws_type.name.attr resource references inside interpolations ${...}
-    // These have the form "aws_*.*.*" with at least one dot
-    let mut search_from = 0;
-    while let Some(rel) = s[search_from..].find("aws_") {
-        let start = search_from + rel;
-        if inside_todo_marker(&s, start) {
-            search_from = start + "aws_".len();
-            continue;
-        }
-        let end = s[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
-            .map(|off| start + off)
-            .unwrap_or(s.len());
-        let candidate = &s[start..end];
-        if candidate.matches('.').count() >= 1 {
-            let owned = candidate.to_string();
-            s = s.replacen(&owned, "<TODO: remove AWS resource ref>", 1);
-            // reset search since string changed
-            search_from = 0;
-        } else {
-            // no dots = likely a comment or type name; skip past it
-            search_from = end;
-        }
-    }
-    // Clean up any "${<TODO: ...>...}" that were created by replacing an AWS ref
-    // that was inside a Terraform template expression (e.g. in a user_data heredoc).
-    // "${<invalid>}" is not valid HCL; strip the "${...}" wrapper so the TODO
-    // becomes plain text in the heredoc (which IS valid HCL).
-    s = remove_todo_interpolations(s);
-
-    s
 }
 
-/// Replace every `${<TODO: ...>...}` template interpolation with the plain text
-/// `<TODO: remove AWS resource ref>`.
+/// Replace every `${<TODO: ...>...}` template interpolation with the plain TODO
+/// text extracted from inside.
 ///
-/// These arise when `sanitize_aws_refs` replaces an AWS traversal that was
+/// These arise when source provider sanitization replaces a traversal that was
 /// embedded inside a `${...}` in a heredoc user_data block.  Leaving the
 /// `${...}` wrapper makes the HCL invalid; stripping it produces a literal
 /// string in the heredoc that `terraform validate` (and hcl-rs) can parse.
-fn remove_todo_interpolations(mut s: String) -> String {
+pub(crate) fn remove_todo_interpolations(mut s: String) -> String {
     loop {
         // Find "${" (with optional spaces) immediately followed by "<TODO:"
         let start = {
@@ -1114,164 +1171,18 @@ fn remove_todo_interpolations(mut s: String) -> String {
                 _ => {}
             }
         }
-        s.replace_range(start..end, "<TODO: remove AWS resource ref>");
+        // Extract the TODO text from inside the ${...} wrapper
+        let inner = s[start + 2..end - 1].trim().to_string();
+        let replacement = if let Some(todo_start) = inner.find("<TODO:") {
+            // Find the end of the TODO marker
+            let todo_end = inner[todo_start..].find('>').map(|p| todo_start + p + 1).unwrap_or(inner.len());
+            inner[todo_start..todo_end].to_string()
+        } else {
+            "<TODO: remove source provider resource ref>".to_string()
+        };
+        s.replace_range(start..end, &replacement);
     }
     s
-}
-
-/// Returns true if byte position `pos` in `s` is inside an open `<TODO: ...>` marker,
-/// i.e. there is a `<TODO` before `pos` with no closing `>` between them.
-fn inside_todo_marker(s: &str, pos: usize) -> bool {
-    if let Some(last_open) = s[..pos].rfind(TODO_PLACEHOLDER_PREFIX) {
-        !s[last_open..pos].contains('>')
-    } else {
-        false
-    }
-}
-
-/// Map an AWS resource type name to its UpCloud equivalent.
-/// Some AWS resource types get a suffix appended to their name in the UpCloud mapping.
-/// E.g. aws_vpc "main" → upcloud_router "main_router".
-fn upcloud_resource_name_for(aws_type: &str, resource_name: &str) -> String {
-    match aws_type {
-        "aws_vpc" => format!("{}_router", resource_name),
-        _ => resource_name.to_string(),
-    }
-}
-
-fn upcloud_type_for_aws(aws_type: &str) -> Option<&'static str> {
-    match aws_type {
-        "aws_instance" | "aws_launch_template" | "aws_launch_configuration"
-            => Some("upcloud_server"),
-        "aws_lb" | "aws_alb" | "aws_elb"
-            => Some("upcloud_loadbalancer"),
-        "aws_vpc"
-            => Some("upcloud_router"),
-        "aws_subnet"
-            => Some("upcloud_network"),
-        "aws_security_group"
-            => Some("upcloud_firewall_rules"),
-        "aws_db_instance" | "aws_rds_cluster" | "aws_rds_cluster_instance"
-            => Some("upcloud_managed_database_postgresql"),
-        "aws_elasticache_cluster" | "aws_elasticache_replication_group"
-            => Some("upcloud_managed_database_valkey"),
-        "aws_eks_cluster"
-            => Some("upcloud_kubernetes_cluster"),
-        "aws_eip"
-            => Some("upcloud_floating_ip_address"),
-        _ => None,
-    }
-}
-
-/// Map an AWS attribute name to its UpCloud equivalent for a given UpCloud type.
-/// Returns `None` for attributes with no direct equivalent (caller injects a TODO).
-fn upcloud_attr_for(upcloud_type: &str, aws_attr: &str) -> Option<&'static str> {
-    match (upcloud_type, aws_attr) {
-        // upcloud_server
-        ("upcloud_server", "id")         => Some("id"),
-        ("upcloud_server", "public_ip")  => Some("network_interface[0].ip_address"),
-        ("upcloud_server", "private_ip") => Some("network_interface[1].ip_address"),
-        // upcloud_loadbalancer
-        ("upcloud_loadbalancer", "id")       => Some("id"),
-        ("upcloud_loadbalancer", "dns_name") => None, // handled as special case in rewrite_output_refs
-        // upcloud_router
-        ("upcloud_router", "id") => Some("id"),
-        // upcloud_network
-        ("upcloud_network", "id")         => Some("id"),
-        ("upcloud_network", "cidr_block") => Some("ip_network[0].address"),
-        // upcloud_firewall_rules
-        ("upcloud_firewall_rules", "id") => Some("id"),
-        // upcloud_managed_database_* (postgresql / valkey / mysql / opensearch share these)
-        (t, "id")       if t.starts_with("upcloud_managed_database") => Some("id"),
-        (t, "endpoint") if t.starts_with("upcloud_managed_database") => Some("service_host"),
-        (t, "address")  if t.starts_with("upcloud_managed_database") => Some("service_host"),
-        (t, "port")     if t.starts_with("upcloud_managed_database") => Some("service_port"),
-        (t, "username") if t.starts_with("upcloud_managed_database") => Some("service_username"),
-        (t, "password") if t.starts_with("upcloud_managed_database") => Some("service_password"),
-        (t, "primary_endpoint_address")
-                        if t.starts_with("upcloud_managed_database") => Some("service_host"),
-        // upcloud_kubernetes_cluster
-        ("upcloud_kubernetes_cluster", "id") => Some("id"),
-        // upcloud_floating_ip_address
-        ("upcloud_floating_ip_address", "id")            => Some("id"),
-        ("upcloud_floating_ip_address", "public_ip")     => Some("ip_address"),
-        ("upcloud_floating_ip_address", "allocation_id") => Some("id"),
-        _ => None,
-    }
-}
-
-/// When the attribute has no direct mapping a `<TODO: was .attr>` suffix is
-/// injected so it surfaces in the TODO review screen.  Unknown AWS resource
-/// types get a full `<TODO: was aws_type.name.attr>` replacement.
-fn rewrite_output_refs(s: &str) -> String {
-    let mut result = s.to_string();
-    let mut search_from = 0usize;
-
-    loop {
-        let Some(rel) = result[search_from..].find("aws_") else { break };
-        let start = search_from + rel;
-
-        if inside_todo_marker(&result, start) {
-            search_from = start + 4;
-            continue;
-        }
-
-        // Capture the full Terraform traversal: TYPE.NAME.ATTR[…].subattr…
-        // Valid chars: alphanumeric, '_', '.', '[', ']', '*' (splat operator in [*])
-        let end = result[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '[' && c != ']' && c != '*')
-            .map(|off| start + off)
-            .unwrap_or(result.len());
-
-        let candidate = &result[start..end];
-
-        // Need at least two dots: aws_TYPE.NAME.ATTR
-        if candidate.matches('.').count() < 2 {
-            search_from = end;
-            continue;
-        }
-
-        // Split into aws_type / resource_name / attr_path
-        let first_dot  = candidate.find('.').unwrap();
-        let second_dot = first_dot + 1
-            + candidate[first_dot + 1..].find('.').unwrap();
-        let aws_type      = &candidate[..first_dot];
-        let resource_name = &candidate[first_dot + 1..second_dot];
-        let attr_path     = &candidate[second_dot + 1..];
-
-        // The lookup key is just the first identifier segment (before '[' or '.')
-        let attr_key = attr_path
-            .split(|c: char| c == '[' || c == '.')
-            .next()
-            .unwrap_or(attr_path);
-
-        let new_ref = if let Some(upcloud_type) = upcloud_type_for_aws(aws_type) {
-            let upcloud_name = upcloud_resource_name_for(aws_type, resource_name);
-            if upcloud_type == "upcloud_loadbalancer" && attr_key == "dns_name" {
-                // dns_name moved to the per-network block; get the public network's dns_name.
-                format!(
-                    "[for n in {upcloud_type}.{upcloud_name}.networks : n.dns_name if n.type == \"public\"][0]",
-                    upcloud_type = upcloud_type,
-                    upcloud_name = upcloud_name,
-                )
-            } else if let Some(upcloud_attr) = upcloud_attr_for(upcloud_type, attr_key) {
-                format!("{}.{}.{}", upcloud_type, upcloud_name, upcloud_attr)
-            } else {
-                format!(
-                    "{}.{}.<TODO: was .{}, check UpCloud provider docs>",
-                    upcloud_type, upcloud_name, attr_path,
-                )
-            }
-        } else {
-            format!("<TODO: was {}, no known UpCloud equivalent>", candidate)
-        };
-
-        let owned = candidate.to_string();
-        result = result.replacen(&owned, &new_ref, 1);
-        search_from = 0; // restart — string length may have changed
-    }
-
-    result
 }
 
 /// Extract the count value from generated upcloud_server HCL.
@@ -1284,122 +1195,6 @@ fn extract_count_from_hcl(hcl: &str) -> Option<String> {
         })
         .and_then(|l| l.split('=').nth(1))
         .map(|v| v.trim().to_string())
-}
-
-/// Scan an `aws_instance` source HCL block and return all security group resource names
-/// referenced in `vpc_security_group_ids` or `security_groups` attributes.
-/// E.g. `vpc_security_group_ids = [aws_security_group.docker_demo.id]` → `["docker_demo"]`
-/// Extract subnet resource names from an `aws_db_subnet_group` or
-/// `aws_elasticache_subnet_group` source HCL block.
-/// Looks for `aws_subnet.NAME.id` (or `.name`) patterns in the `subnet_ids` list.
-fn extract_subnet_names_from_subnet_group(hcl: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    const PREFIX: &str = "aws_subnet.";
-    for word in hcl.split(|c: char| c == ',' || c == '[' || c == ']' || c == '\n' || c == ' ') {
-        let word = word.trim();
-        if let Some(after) = word.strip_prefix(PREFIX) {
-            // after = "NAME.id" or "NAME.name" — take the first segment
-            let name_end = after.find('.').unwrap_or(after.len());
-            let name = &after[..name_end];
-            if !name.is_empty() && !names.contains(&name.to_string()) {
-                names.push(name.to_string());
-            }
-        }
-    }
-    names
-}
-
-/// Extract the subnet name from an `aws_instance` source HCL block.
-/// Returns e.g. `"public_a"` from `subnet_id = aws_subnet.public_a.id`.
-fn extract_subnet_id_from_instance_hcl(hcl: &str) -> Option<String> {
-    for line in hcl.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("subnet_id") && trimmed.contains('=') {
-            if let Some(pos) = trimmed.find("aws_subnet.") {
-                let after = &trimmed[pos + "aws_subnet.".len()..];
-                // Strip trailing `.id`, `.arn`, etc. — take only the resource name segment
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract the target group name from an `aws_lb_listener` source HCL block.
-/// Looks for `target_group_arn = aws_lb_target_group.NAME.arn` inside a forward action.
-fn extract_tg_from_listener_source_hcl(hcl: &str) -> Option<String> {
-    const PREFIX: &str = "aws_lb_target_group.";
-    for line in hcl.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("target_group_arn") && trimmed.contains(PREFIX) {
-            if let Some(pos) = trimmed.find(PREFIX) {
-                let after = &trimmed[pos + PREFIX.len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract (tg_name, server_name) from an `aws_lb_target_group_attachment` source HCL.
-/// Returns e.g. `("web", "web")` from:
-///   `target_group_arn = aws_lb_target_group.web.arn`
-///   `target_id        = aws_instance.web[0].id`
-fn extract_tg_server_from_attachment_source_hcl(hcl: &str) -> Option<(String, String)> {
-    let mut tg_name: Option<String> = None;
-    let mut server_name: Option<String> = None;
-    for line in hcl.lines() {
-        let trimmed = line.trim();
-        if tg_name.is_none() && trimmed.starts_with("target_group_arn") {
-            if let Some(pos) = trimmed.find("aws_lb_target_group.") {
-                let after = &trimmed[pos + "aws_lb_target_group.".len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    tg_name = Some(name.to_string());
-                }
-            }
-        }
-        if server_name.is_none() && trimmed.starts_with("target_id") {
-            if let Some(pos) = trimmed.find("aws_instance.") {
-                let after = &trimmed[pos + "aws_instance.".len()..];
-                // Strip any index suffix like `[0]` — take alphanumeric+underscore only
-                let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                if !name.is_empty() {
-                    server_name = Some(name);
-                }
-            }
-        }
-    }
-    match (tg_name, server_name) {
-        (Some(tg), Some(srv)) => Some((tg, srv)),
-        _ => None,
-    }
-}
-
-fn extract_sg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
-    let mut refs = Vec::new();
-    const PREFIX: &str = "aws_security_group.";
-    for line in hcl.lines() {
-        let mut search = line;
-        while let Some(pos) = search.find(PREFIX) {
-            let after = &search[pos + PREFIX.len()..];
-            let end = after
-                .find(|c: char| !c.is_alphanumeric() && c != '_')
-                .unwrap_or(after.len());
-            let name = &after[..end];
-            if !name.is_empty() {
-                refs.push(name.to_string());
-            }
-            search = &search[pos + 1..];
-        }
-    }
-    refs
 }
 
 /// Extract the `server_id = <expr>` RHS from a resolved `upcloud_firewall_rules` HCL block.
@@ -1525,6 +1320,7 @@ fn resolve_firewall_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::providers::aws::generator_support::rewrite_output_refs;
     use crate::migration::types::{MigrationResult, MigrationStatus};
 
     fn make_result(
@@ -2091,13 +1887,15 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
 
     #[test]
     fn sg_to_server_map_resolves_mismatched_names() {
+        use crate::migration::providers::{SourceProvider, aws::AwsSourceProvider};
+        let provider = AwsSourceProvider;
         // docker_demo SG is attached to docker_server instance via vpc_security_group_ids.
         let instance_hcl = concat!(
             "resource \"aws_instance\" \"docker_server\" {\n",
             "  vpc_security_group_ids = [aws_security_group.docker_demo.id]\n",
             "}\n"
         );
-        let refs = extract_sg_refs_from_instance_hcl(instance_hcl);
+        let refs = provider.extract_security_refs_from_instance(instance_hcl);
         assert!(refs.contains(&"docker_demo".to_string()), "should extract SG name: {refs:?}");
 
         // When the sg_to_server_map is used, the firewall rule should resolve to docker_server.
@@ -2133,43 +1931,9 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
         assert!(!out.contains("<TODO>"), "{out}");
     }
 
-    // ── remove_todo_interpolations ────────────────────────────────────────────
-
-    #[test]
-    fn todo_interpolation_stripped_from_heredoc() {
-        let input = "proxy_pass http://${<TODO: remove AWS resource ref>[0].private_ip}:3000;";
-        let out = remove_todo_interpolations(input.to_string());
-        assert_eq!(out, "proxy_pass http://<TODO: remove AWS resource ref>:3000;");
-    }
-
-    #[test]
-    fn todo_interpolation_with_space_after_brace() {
-        let input = "url: '${ <TODO: remove AWS resource ref>}';";
-        let out = remove_todo_interpolations(input.to_string());
-        assert_eq!(out, "url: '<TODO: remove AWS resource ref>';");
-    }
-
-    #[test]
-    fn valid_interpolations_are_not_touched() {
-        let input = "hostname = \"web-${count.index + 1}\"";
-        let out = remove_todo_interpolations(input.to_string());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn multiple_todo_interpolations_all_replaced() {
-        let input =
-            "a=${<TODO: remove AWS resource ref>.x} b=${<TODO: remove AWS resource ref>.y}";
-        let out = remove_todo_interpolations(input.to_string());
-        assert_eq!(
-            out,
-            "a=<TODO: remove AWS resource ref> b=<TODO: remove AWS resource ref>"
-        );
-    }
-
-    // ── End-to-end: user_data with AWS cross-refs ─────────────────────────────
+    // ── End-to-end: user_data with source provider cross-refs ────────────────
     //
-    // Ensures that when user_data heredocs contain ${aws_*.*.attr} references,
+    // Ensures that when user_data heredocs contain ${provider_type.*.attr} references,
     // the generated output strips the invalid `${...}` wrapper and the result
     // is parseable by hcl-rs (i.e. `terraform validate`-able syntax).
 

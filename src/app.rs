@@ -403,7 +403,6 @@ impl App {
                     None => 0,
                 };
                 self.table_state.select(Some(i));
-                // Reset preview scroll when switching rows
                 self.preview_scroll = 0;
                 self.resources_focus_preview = false;
             }
@@ -419,7 +418,6 @@ impl App {
                     None => 0,
                 };
                 self.table_state.select(Some(i));
-                // Reset preview scroll when switching rows
                 self.preview_scroll = 0;
                 self.resources_focus_preview = false;
             }
@@ -630,7 +628,6 @@ impl App {
                 item.status = TodoStatus::Resolved;
                 self.todo_input.clear();
                 self.todo_input_active = false;
-                // Advance to next pending
                 let next = (self.todo_idx + 1).min(self.todos.len().saturating_sub(1));
                 if next > self.todo_idx || self.todos.len() == 1 {
                     self.todo_idx = next;
@@ -695,7 +692,6 @@ impl App {
     async fn start_scan(&self, path: PathBuf) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            // Find all .tf files
             let tf_files = match find_tf_files(&path) {
                 Ok(files) => files,
                 Err(e) => {
@@ -824,11 +820,11 @@ impl App {
         }
     }
 
-    // ── Chat / AI advisor ─────────────────────────────────────────────────────
+    // AI Chat
 
     /// Build a truncated string of all generated .tf file contents for AI context.
     fn build_tf_context(&self) -> String {
-        const MAX_CHARS: usize = 14_000;
+        const MAX_CHARS: usize = 20_000;
         let Some(output_dir) = &self.output_path else {
             return String::new();
         };
@@ -843,18 +839,15 @@ impl App {
             for entry in paths {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     let header = format!("# --- {} ---\n", entry.file_name().to_string_lossy());
+                    // Check if adding this file would exceed the limit
+                    if ctx.len() + header.len() + content.len() + 1 > MAX_CHARS {
+                        break;
+                    }
                     ctx.push_str(&header);
                     ctx.push_str(&content);
                     ctx.push('\n');
-                    if ctx.len() >= MAX_CHARS {
-                        break;
-                    }
                 }
             }
-        }
-        if ctx.len() > MAX_CHARS {
-            ctx.truncate(MAX_CHARS);
-            ctx.push_str("\n... (truncated)");
         }
         ctx
     }
