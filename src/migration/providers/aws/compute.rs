@@ -534,6 +534,130 @@ pub fn map_autoscaling_group(res: &TerraformResource) -> MigrationResult {
     }
 }
 
+pub fn map_launch_template(res: &TerraformResource) -> MigrationResult {
+    let instance_type = res
+        .attributes
+        .get("instance_type")
+        .map(|v| v.trim_matches('"').to_string());
+
+    let plan = instance_type
+        .as_deref()
+        .and_then(aws_instance_type_to_upcloud_plan)
+        .unwrap_or("2xCPU-4GB");
+
+    let key_name = res
+        .attributes
+        .get("key_name")
+        .map(|v| v.trim_matches('"').to_string());
+
+    let has_user_data = res.attributes.contains_key("user_data");
+
+    let root_vol_size = extract_root_volume_size(&res.raw_hcl).unwrap_or(20);
+
+    let key_comment = if let Some(ref k) = key_name {
+        format!(
+            "#   # key_name = \"{}\" → add to login {{ keys = [var.ssh_public_key] }}\n",
+            k
+        )
+    } else {
+        "#   login { keys = [\"<YOUR SSH PUBLIC KEY>\"] }\n".into()
+    };
+    let userdata_comment = if has_user_data {
+        "#   user_data = \"<TODO: base64-decoded user_data from launch template>\"\n"
+    } else {
+        ""
+    };
+
+    let snippet = format!(
+        r#"# Launch template → incorporate into your upcloud_server resources:
+# resource "upcloud_server" "{name}" {{
+#   hostname = "{name}"
+#   zone     = "__ZONE__"
+#   plan     = "{plan}"
+#
+#   template {{
+#     storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+#     size    = {size}
+#   }}
+#
+#   network_interface {{ type = "public" }}
+{key_comment}{userdata_comment}# }}"#,
+        name = res.name,
+        plan = plan,
+        size = root_vol_size,
+        key_comment = key_comment,
+        userdata_comment = userdata_comment,
+    );
+
+    let mut notes = vec![
+        "aws_launch_template has no direct UpCloud equivalent — incorporate into upcloud_server."
+            .into(),
+        format!(
+            "instance_type '{}' → plan '{}'",
+            instance_type.as_deref().unwrap_or("unknown"),
+            plan
+        ),
+    ];
+    if has_user_data {
+        notes.push(
+            "user_data must be base64-decoded and set as user_data on upcloud_server.".into(),
+        );
+    }
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "upcloud_server (inline config)".into(),
+        upcloud_hcl: None,
+        snippet: Some(snippet),
+        parent_resource: None,
+        notes,
+        source_hcl: None,
+    }
+}
+
+/// Scan raw HCL for the first `volume_size` inside a `block_device_mappings { ebs { ... } }` block.
+fn extract_root_volume_size(raw_hcl: &str) -> Option<u32> {
+    let mut depth_block_device: u32 = 0;
+    let mut depth_ebs: u32 = 0;
+    let mut in_block_device = false;
+    let mut in_ebs = false;
+
+    for line in raw_hcl.lines() {
+        let t = line.trim();
+        if !in_block_device {
+            if t.starts_with("block_device_mappings") {
+                in_block_device = true;
+                depth_block_device = t.chars().filter(|&c| c == '{').count() as u32;
+            }
+        } else if !in_ebs {
+            depth_block_device += t.chars().filter(|&c| c == '{').count() as u32;
+            depth_block_device =
+                depth_block_device.saturating_sub(t.chars().filter(|&c| c == '}').count() as u32);
+            if t.starts_with("ebs") {
+                in_ebs = true;
+                depth_ebs = t.chars().filter(|&c| c == '{').count() as u32;
+            } else if depth_block_device == 0 {
+                break;
+            }
+        } else {
+            depth_ebs += t.chars().filter(|&c| c == '{').count() as u32;
+            depth_ebs = depth_ebs.saturating_sub(t.chars().filter(|&c| c == '}').count() as u32);
+            if t.starts_with("volume_size") {
+                if let Some(val) = t.split('=').nth(1) {
+                    return val.trim().trim_matches('"').parse().ok();
+                }
+            }
+            if depth_ebs == 0 {
+                in_ebs = false;
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1301,5 +1425,86 @@ mod tests {
             crate::migration::types::MigrationStatus::Unsupported
         );
         assert!(r.upcloud_hcl.is_none());
+    }
+
+    // ── map_launch_template ───────────────────────────────────────────────────
+
+    #[test]
+    fn launch_template_is_partial_with_snippet() {
+        let res = make_res(
+            "aws_launch_template",
+            "app",
+            &[("instance_type", "t3.medium")],
+        );
+        let r = map_launch_template(&res);
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Partial);
+        assert!(r.upcloud_hcl.is_none(), "no standalone HCL resource");
+        let snippet = r.snippet.unwrap();
+        assert!(snippet.contains("upcloud_server"), "{snippet}");
+        assert!(snippet.contains("2xCPU-4GB"), "{snippet}");
+    }
+
+    #[test]
+    fn launch_template_maps_instance_type_to_plan() {
+        let res = make_res(
+            "aws_launch_template",
+            "web",
+            &[("instance_type", "m5.xlarge")],
+        );
+        let snippet = map_launch_template(&res).snippet.unwrap();
+        assert!(snippet.contains("6xCPU-16GB"), "{snippet}");
+    }
+
+    #[test]
+    fn launch_template_with_key_name_includes_comment() {
+        let res = make_res(
+            "aws_launch_template",
+            "srv",
+            &[("instance_type", "t3.micro"), ("key_name", "my-key")],
+        );
+        let snippet = map_launch_template(&res).snippet.unwrap();
+        assert!(snippet.contains("my-key"), "{snippet}");
+    }
+
+    #[test]
+    fn launch_template_with_user_data_adds_note() {
+        let res = make_res(
+            "aws_launch_template",
+            "srv",
+            &[
+                ("instance_type", "t3.micro"),
+                ("user_data", "base64encodedstuff"),
+            ],
+        );
+        let r = map_launch_template(&res);
+        assert!(
+            r.notes.iter().any(|n| n.contains("user_data")),
+            "{:?}",
+            r.notes
+        );
+        assert!(
+            r.snippet.unwrap().contains("user_data"),
+            "snippet should mention user_data"
+        );
+    }
+
+    #[test]
+    fn extract_root_volume_size_parses_block_device_mappings() {
+        let raw = r#"resource "aws_launch_template" "app" {
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size = 50
+      volume_type = "gp3"
+    }
+  }
+}"#;
+        assert_eq!(extract_root_volume_size(raw), Some(50));
+    }
+
+    #[test]
+    fn extract_root_volume_size_returns_none_when_absent() {
+        let raw = r#"resource "aws_launch_template" "app" { instance_type = "t3.micro" }"#;
+        assert_eq!(extract_root_volume_size(raw), None);
     }
 }

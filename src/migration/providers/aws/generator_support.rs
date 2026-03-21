@@ -259,6 +259,7 @@ pub fn upcloud_attr_for(upcloud_type: &str, aws_attr: &str) -> Option<&'static s
         }
         // upcloud_kubernetes_cluster
         ("upcloud_kubernetes_cluster", "id") => Some("id"),
+        ("upcloud_kubernetes_cluster", "name") => Some("name"),
         // upcloud_floating_ip_address
         ("upcloud_floating_ip_address", "id") => Some("id"),
         ("upcloud_floating_ip_address", "public_ip") => Some("ip_address"),
@@ -320,13 +321,16 @@ pub fn rewrite_output_refs(s: &str) -> String {
             } else if let Some(upcloud_attr) = upcloud_attr_for(upcloud_type, attr_key) {
                 format!("{}.{}.{}", upcloud_type, upcloud_name, upcloud_attr)
             } else {
+                // Emit as a quoted string so the result is valid HCL.
+                // A bare `type.name.<TODO:...>` is invalid because <TODO:...>
+                // is not a legal attribute identifier.
                 format!(
-                    "{}.{}.<TODO: was .{}, check UpCloud provider docs>",
+                    "\"<TODO: was {}.{}.{}, check UpCloud provider docs>\"",
                     upcloud_type, upcloud_name, attr_path,
                 )
             }
         } else {
-            format!("<TODO: was {}, no known UpCloud equivalent>", candidate)
+            format!("\"<TODO: was {}, no known UpCloud equivalent>\"", candidate)
         };
 
         let owned = candidate.to_string();

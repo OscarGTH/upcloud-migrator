@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use std::collections::HashMap;
 
 use crate::ai::ChatMessage;
+use crate::graph::{build_graph_from_hcl, nodes_to_mermaid, parse_dot};
 use crate::migration::generator::ResolvedHclMap;
 use crate::migration::mapper::map_resource;
 use crate::migration::types::MigrationResult;
@@ -495,6 +496,9 @@ impl App {
                 self.pricing_scroll = 0;
                 self.view = View::Pricing;
             }
+            KeyCode::Char('g') | KeyCode::Char('G') if self.gen_complete => {
+                self.generate_graph_markdown();
+            }
 
             // Zone picker navigation
             KeyCode::Up | KeyCode::Char('k') if self.gen_step == GenStep::AskZone => {
@@ -828,6 +832,46 @@ impl App {
                         .await;
                 }
             }
+        });
+    }
+
+    fn generate_graph_markdown(&mut self) {
+        let Some(output_dir) = self.output_path.clone() else {
+            return;
+        };
+        self.gen_log
+            .push("[GRAPH] Generating dependency graph...".into());
+        let resolved_hcl_map = self.resolved_hcl_map.clone();
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            // Try `terraform graph`; fall back to HCL reference analysis.
+            let dot_result = std::process::Command::new("terraform")
+                .arg("graph")
+                .current_dir(&output_dir)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+
+            let (nodes, source) = match dot_result {
+                Some(dot) => (parse_dot(&dot), "terraform graph"),
+                None => (build_graph_from_hcl(&resolved_hcl_map), "HCL analysis"),
+            };
+
+            let mermaid = nodes_to_mermaid(&nodes);
+            let md = format!("```mermaid\n{mermaid}\n```\n");
+
+            let graph_path = output_dir.join("GRAPH.md");
+            let msg = match std::fs::write(&graph_path, &md) {
+                Ok(_) => format!(
+                    "[GRAPH] ✓ GRAPH.md written ({} nodes, source: {}) — open in VS Code / GitHub / Obsidian",
+                    nodes.len(),
+                    source,
+                ),
+                Err(e) => format!("[GRAPH ERR] {}", e),
+            };
+            let _ = tx.send(AppMessage::GenerateLog(msg)).await;
         });
     }
 

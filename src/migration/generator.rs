@@ -2672,8 +2672,8 @@ resource "aws_instance" "web" {
         let hcl = "output \"arn\" {\n  value = aws_instance.web.arn\n}";
         let rewritten = rewrite_output_refs(hcl);
         assert!(
-            rewritten.contains("upcloud_server.web.<TODO: was .arn"),
-            "unknown attr should get TODO with original attr name\n{rewritten}"
+            rewritten.contains("\"<TODO: was upcloud_server.web.arn"),
+            "unknown attr should get a quoted-string TODO\n{rewritten}"
         );
     }
 

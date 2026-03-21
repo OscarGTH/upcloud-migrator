@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod graph;
 mod migration;
 mod pricing;
 mod terraform;

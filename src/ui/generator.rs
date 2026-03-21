@@ -377,9 +377,16 @@ fn render_generation_view(f: &mut Frame, app: &App) {
                 || line.contains("[OK]")
                 || line.contains("[ERR]")
                 || line.contains("[terraform fmt]")
+                || line.contains("[GRAPH]")
         })
         .map(|line| {
-            let style = if line.contains("[OK]") || line.contains("[terraform fmt] OK") {
+            let style = if line.contains("[GRAPH] ✓") {
+                theme::success()
+            } else if line.contains("[GRAPH ERR]") {
+                theme::danger()
+            } else if line.contains("[GRAPH]") {
+                theme::accent()
+            } else if line.contains("[OK]") || line.contains("[terraform fmt] OK") {
                 theme::success()
             } else if line.contains("[ERR]") {
                 theme::danger()
@@ -436,6 +443,8 @@ fn render_generation_view(f: &mut Frame, app: &App) {
             Span::styled(" chat  ", theme::dim()),
             Span::styled("[P]", theme::accent_bold()),
             Span::styled(" pricing  ", theme::dim()),
+            Span::styled("[G]", theme::accent_bold()),
+            Span::styled(" generate graph  ", theme::dim()),
             Span::styled("[Tab]", theme::accent_bold()),
             Span::styled(" Resources  ", theme::dim()),
             Span::styled("[Q]", theme::accent_bold()),

@@ -279,6 +279,152 @@ fn build_firewall_rule(
     s
 }
 
+pub fn map_network_interface(res: &TerraformResource) -> MigrationResult {
+    // aws_network_interface → network_interface block inside upcloud_server.
+    // UpCloud has no standalone ENI resource.
+    let subnet_name = res.attributes.get("subnet_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_subnet.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
+
+    let network_ref = subnet_name
+        .as_deref()
+        .map(|n| format!("upcloud_network.{}.id", n))
+        .unwrap_or_else(|| "\"<TODO: upcloud_network UUID>\"".into());
+
+    // private_ips is a list attribute; grab the first entry if present
+    let ip_line = res
+        .attributes
+        .get("private_ips")
+        .or_else(|| res.attributes.get("private_ip"))
+        .and_then(|v| {
+            // Strip list syntax: ["10.0.1.5"] → 10.0.1.5
+            let bare = v.trim_matches(|c: char| c == '"' || c == '[' || c == ']');
+            let first = bare
+                .split(',')
+                .next()
+                .unwrap_or(bare)
+                .trim()
+                .trim_matches('"');
+            if first.is_empty() || first.starts_with('<') {
+                None
+            } else {
+                Some(format!("    ip_address = \"{}\"\n", first))
+            }
+        })
+        .unwrap_or_default();
+
+    let snippet = format!(
+        "# Add to resource \"upcloud_server\" \"<TODO: server_name>\" {{\n  network_interface {{\n    type    = \"private\"\n    network = {network_ref}\n{ip_line}  }}\n}}",
+        network_ref = network_ref,
+        ip_line = ip_line,
+    );
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "network_interface block in upcloud_server".into(),
+        upcloud_hcl: None,
+        snippet: Some(snippet),
+        parent_resource: subnet_name,
+        notes: vec![
+            "UpCloud has no standalone ENI resource — network interfaces are blocks within upcloud_server.".into(),
+            "Add this network_interface block to the relevant upcloud_server resource.".into(),
+        ],
+        source_hcl: None,
+    }
+}
+
+pub fn map_sg_ingress_rule(res: &TerraformResource) -> MigrationResult {
+    map_sg_standalone_rule(res, "in")
+}
+
+pub fn map_sg_egress_rule(res: &TerraformResource) -> MigrationResult {
+    map_sg_standalone_rule(res, "out")
+}
+
+fn map_sg_standalone_rule(res: &TerraformResource, direction: &str) -> MigrationResult {
+    // aws_vpc_security_group_{ingress,egress}_rule → firewall_rule block inside upcloud_firewall_rules.
+    // These are standalone rule resources (newer style); the parent SG is referenced by security_group_id.
+    let sg_name = res.attributes.get("security_group_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("aws_security_group.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
+
+    let from_port = res
+        .attributes
+        .get("from_port")
+        .and_then(|v| v.trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    let to_port = res
+        .attributes
+        .get("to_port")
+        .and_then(|v| v.trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(65535);
+    let protocol = res
+        .attributes
+        .get("ip_protocol")
+        .map(|v| v.trim_matches('"').to_string())
+        .unwrap_or_else(|| "-1".into());
+    let description = res
+        .attributes
+        .get("description")
+        .map(|v| v.trim_matches('"').to_string());
+
+    let is_all_traffic = protocol == "-1" || protocol == "all";
+
+    let rule_block = build_firewall_rule(
+        direction,
+        from_port,
+        to_port,
+        &protocol,
+        description.as_deref(),
+        is_all_traffic,
+    );
+
+    let target = sg_name
+        .as_deref()
+        .map(|n| format!("\"upcloud_firewall_rules\" \"{}\"", n))
+        .unwrap_or_else(|| "\"upcloud_firewall_rules\" \"<TODO: sg_name>\"".into());
+
+    let snippet = format!("# Add to resource {} {{\n{}\n}}", target, rule_block,);
+
+    let kind = if direction == "in" {
+        "ingress"
+    } else {
+        "egress"
+    };
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "firewall_rule block in upcloud_firewall_rules".into(),
+        upcloud_hcl: None,
+        snippet: Some(snippet),
+        parent_resource: sg_name,
+        notes: vec![
+            format!(
+                "Standalone {} rule → add firewall_rule block to the parent upcloud_firewall_rules resource.",
+                kind
+            ),
+            "server_id auto-resolved from vpc_security_group_ids on the instance.".into(),
+        ],
+        source_hcl: None,
+    }
+}
+
 pub fn map_eip_association(res: &TerraformResource) -> MigrationResult {
     // aws_eip_association links an EIP to an instance/interface.
     // UpCloud equivalent: set mac_address on upcloud_floating_ip_address.
@@ -813,5 +959,114 @@ mod tests {
         let snippet = map_eip_association(&res).snippet.unwrap();
         assert!(snippet.contains("<TODO>"), "{snippet}");
         assert!(snippet.contains("mac_address"), "{snippet}");
+    }
+
+    // ── map_network_interface ─────────────────────────────────────────────────
+
+    #[test]
+    fn network_interface_with_subnet_ref_generates_snippet() {
+        let res = make_res(
+            "aws_network_interface",
+            "eni",
+            &[("subnet_id", "aws_subnet.private.id")],
+        );
+        let r = map_network_interface(&res);
+        assert_eq!(r.upcloud_type, "network_interface block in upcloud_server");
+        assert!(r.upcloud_hcl.is_none(), "no standalone HCL resource");
+        let snippet = r.snippet.unwrap();
+        assert!(snippet.contains("network_interface"), "{snippet}");
+        assert!(snippet.contains("upcloud_network.private.id"), "{snippet}");
+        assert!(snippet.contains("type    = \"private\""), "{snippet}");
+    }
+
+    #[test]
+    fn network_interface_without_subnet_has_todo() {
+        let res = make_res("aws_network_interface", "eni", &[]);
+        let snippet = map_network_interface(&res).snippet.unwrap();
+        assert!(
+            snippet.contains("<TODO: upcloud_network UUID>"),
+            "{snippet}"
+        );
+    }
+
+    #[test]
+    fn network_interface_with_private_ip_includes_ip_address() {
+        let res = make_res(
+            "aws_network_interface",
+            "eni",
+            &[
+                ("subnet_id", "aws_subnet.db.id"),
+                ("private_ips", "[\"10.0.2.5\"]"),
+            ],
+        );
+        let snippet = map_network_interface(&res).snippet.unwrap();
+        assert!(snippet.contains("ip_address = \"10.0.2.5\""), "{snippet}");
+    }
+
+    // ── map_sg_ingress_rule / map_sg_egress_rule ──────────────────────────────
+
+    #[test]
+    fn sg_ingress_rule_generates_firewall_rule_snippet() {
+        let res = make_res(
+            "aws_vpc_security_group_ingress_rule",
+            "allow_https",
+            &[
+                ("security_group_id", "aws_security_group.web.id"),
+                ("from_port", "443"),
+                ("to_port", "443"),
+                ("ip_protocol", "tcp"),
+            ],
+        );
+        let r = map_sg_ingress_rule(&res);
+        assert_eq!(
+            r.upcloud_type,
+            "firewall_rule block in upcloud_firewall_rules"
+        );
+        assert!(r.upcloud_hcl.is_none());
+        let snippet = r.snippet.unwrap();
+        assert!(snippet.contains("direction = \"in\""), "{snippet}");
+        assert!(
+            snippet.contains("destination_port_start = \"443\""),
+            "{snippet}"
+        );
+        assert!(
+            snippet.contains("destination_port_end   = \"443\""),
+            "{snippet}"
+        );
+        assert!(snippet.contains("\"web\""), "{snippet}");
+    }
+
+    #[test]
+    fn sg_egress_rule_generates_outbound_snippet() {
+        let res = make_res(
+            "aws_vpc_security_group_egress_rule",
+            "allow_all_out",
+            &[
+                ("security_group_id", "aws_security_group.web.id"),
+                ("ip_protocol", "-1"),
+            ],
+        );
+        let snippet = map_sg_egress_rule(&res).snippet.unwrap();
+        assert!(snippet.contains("direction = \"out\""), "{snippet}");
+        // all-traffic: no port lines expected
+        assert!(!snippet.contains("destination_port"), "{snippet}");
+    }
+
+    #[test]
+    fn sg_standalone_rule_without_sg_ref_has_todo_target() {
+        let res = make_res("aws_vpc_security_group_ingress_rule", "r", &[]);
+        let snippet = map_sg_ingress_rule(&res).snippet.unwrap();
+        assert!(snippet.contains("<TODO: sg_name>"), "{snippet}");
+    }
+
+    #[test]
+    fn sg_standalone_rule_parent_resource_is_sg_name() {
+        let res = make_res(
+            "aws_vpc_security_group_ingress_rule",
+            "r",
+            &[("security_group_id", "aws_security_group.app.id")],
+        );
+        let r = map_sg_ingress_rule(&res);
+        assert_eq!(r.parent_resource, Some("app".into()));
     }
 }

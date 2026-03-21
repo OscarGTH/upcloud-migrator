@@ -1,6 +1,6 @@
 //! AWS resource mapper — routes AWS resource types to their equivalents.
 
-use super::{compute, database, loadbalancer, network, storage};
+use super::{compute, database, kubernetes, loadbalancer, network, storage};
 use crate::migration::mapper::ResourceMapper;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
@@ -14,10 +14,13 @@ impl ResourceMapper for AwsResourceMapper {
             "aws_instance" => compute::map_instance(res),
             "aws_key_pair" => compute::map_key_pair(res),
             "aws_autoscaling_group" => compute::map_autoscaling_group(res),
+            "aws_launch_template" => compute::map_launch_template(res),
 
             // Storage
             "aws_ebs_volume" => storage::map_ebs_volume(res),
             "aws_volume_attachment" => storage::map_volume_attachment(res),
+            "aws_ebs_snapshot" | "aws_ebs_snapshot_copy" => storage::map_ebs_snapshot(res),
+            "aws_db_snapshot" | "aws_db_cluster_snapshot" => storage::map_db_snapshot(res),
             "aws_s3_bucket" => storage::map_s3_bucket(res),
             "aws_s3_bucket_policy" | "aws_s3_bucket_acl" => storage::map_s3_bucket_policy(res),
             "aws_efs_file_system" => storage::map_efs_file_system(res),
@@ -26,6 +29,9 @@ impl ResourceMapper for AwsResourceMapper {
             "aws_vpc" => network::map_vpc(res),
             "aws_subnet" => network::map_subnet(res),
             "aws_security_group" => network::map_security_group(res),
+            "aws_vpc_security_group_ingress_rule" => network::map_sg_ingress_rule(res),
+            "aws_vpc_security_group_egress_rule" => network::map_sg_egress_rule(res),
+            "aws_network_interface" => network::map_network_interface(res),
             "aws_internet_gateway" => network::map_internet_gateway(res),
             "aws_nat_gateway" => network::map_nat_gateway(res),
             "aws_route_table" | "aws_route_table_association" => network::map_route_table(res),
@@ -54,13 +60,16 @@ impl ResourceMapper for AwsResourceMapper {
             "aws_elasticache_subnet_group" => database::map_elasticache_subnet_group(res),
             "aws_elasticache_parameter_group" => database::map_elasticache_parameter_group(res),
 
-            // Kubernetes (not supported in this MVP)
-            "aws_eks_cluster"
-            | "aws_eks_node_group"
-            | "aws_eks_fargate_profile"
-            | "aws_eks_addon" => unsupported(
+            // Kubernetes
+            "aws_eks_cluster" => kubernetes::map_eks_cluster(res),
+            "aws_eks_node_group" => kubernetes::map_eks_node_group(res),
+            "aws_eks_fargate_profile" => unsupported(
                 res,
-                "(EKS not supported — use upcloud_kubernetes_cluster manually)",
+                "(EKS Fargate profiles not supported — UpCloud k8s uses node groups only)",
+            ),
+            "aws_eks_addon" => unsupported(
+                res,
+                "(EKS addons not supported — configure cluster add-ons via kubectl/Helm)",
             ),
 
             // Unsupported

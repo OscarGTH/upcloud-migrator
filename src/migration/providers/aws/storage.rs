@@ -181,6 +181,71 @@ pub fn map_s3_bucket_policy(res: &TerraformResource) -> MigrationResult {
     }
 }
 
+pub fn map_ebs_snapshot(res: &TerraformResource) -> MigrationResult {
+    let volume_name = res.attributes.get("volume_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        let rest = v.strip_prefix("aws_ebs_volume.")?;
+        let base = rest.split(['.', '[']).next().unwrap_or(rest);
+        if base.is_empty() {
+            None
+        } else {
+            Some(base.to_string())
+        }
+    });
+
+    let source_storage = volume_name
+        .as_deref()
+        .map(|n| format!("upcloud_storage.{}.id", n))
+        .unwrap_or_else(|| "\"<TODO: upcloud_storage UUID>\"".into());
+
+    let hcl = format!(
+        r#"resource "upcloud_storage_backup" "{name}" {{
+  title          = "{name}-backup"
+  source_storage = {source}
+}}
+"#,
+        name = res.name,
+        source = source_storage,
+    );
+
+    let status = if volume_name.is_some() {
+        MigrationStatus::Native
+    } else {
+        MigrationStatus::Partial
+    };
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status,
+        upcloud_type: "upcloud_storage_backup".into(),
+        upcloud_hcl: Some(hcl),
+        snippet: None,
+        parent_resource: volume_name,
+        notes: vec!["EBS Snapshot → UpCloud on-demand storage backup.".into()],
+        source_hcl: None,
+    }
+}
+
+pub fn map_db_snapshot(res: &TerraformResource) -> MigrationResult {
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "(automatic managed DB backups)".into(),
+        upcloud_hcl: None,
+        snippet: None,
+        parent_resource: None,
+        notes: vec![
+            "UpCloud Managed Databases include automatic point-in-time recovery and backups.".into(),
+            "Explicit snapshot resources are not supported — configure backup retention on the managed database resource instead.".into(),
+        ],
+        source_hcl: None,
+    }
+}
+
 pub fn map_efs_file_system(res: &TerraformResource) -> MigrationResult {
     let hcl = format!(
         r#"resource "upcloud_file_storage" "{name}" {{
@@ -420,5 +485,61 @@ mod tests {
         assert!(hcl.contains("zone              = \"__ZONE__\""), "{hcl}");
         assert!(hcl.contains("name              = \"shared\""), "{hcl}");
         assert!(hcl.contains("configured_status = \"started\""), "{hcl}");
+    }
+
+    // ── map_ebs_snapshot ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ebs_snapshot_with_volume_ref_generates_storage_backup() {
+        let res = make_res(
+            "aws_ebs_snapshot",
+            "snap",
+            &[("volume_id", "aws_ebs_volume.data.id")],
+        );
+        let r = map_ebs_snapshot(&res);
+        assert_eq!(r.upcloud_type, "upcloud_storage_backup");
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("resource \"upcloud_storage_backup\" \"snap\""),
+            "{hcl}"
+        );
+        assert!(hcl.contains("upcloud_storage.data.id"), "{hcl}");
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Native);
+    }
+
+    #[test]
+    fn ebs_snapshot_without_volume_ref_has_todo() {
+        let res = make_res("aws_ebs_snapshot", "snap", &[]);
+        let r = map_ebs_snapshot(&res);
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Partial);
+        let hcl = r.upcloud_hcl.unwrap();
+        assert!(hcl.contains("<TODO: upcloud_storage UUID>"), "{hcl}");
+    }
+
+    #[test]
+    fn ebs_snapshot_copy_also_maps() {
+        let res = make_res(
+            "aws_ebs_snapshot_copy",
+            "copy",
+            &[("volume_id", "aws_ebs_volume.src.id")],
+        );
+        let r = map_ebs_snapshot(&res);
+        assert_eq!(r.upcloud_type, "upcloud_storage_backup");
+        assert!(r.upcloud_hcl.unwrap().contains("upcloud_storage.src.id"));
+    }
+
+    // ── map_db_snapshot ───────────────────────────────────────────────────────
+
+    #[test]
+    fn db_snapshot_is_partial_no_hcl() {
+        let res = make_res("aws_db_snapshot", "snap", &[]);
+        let r = map_db_snapshot(&res);
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Partial);
+        assert!(r.upcloud_hcl.is_none());
+        assert!(
+            r.notes.iter().any(|n| n.contains("point-in-time")),
+            "{:?}",
+            r.notes
+        );
     }
 }

@@ -1,28 +1,54 @@
-#[cfg(test)]
+use super::compute::aws_instance_type_to_upcloud_plan;
 use crate::migration::types::{MigrationResult, MigrationStatus};
-#[cfg(test)]
 use crate::terraform::types::TerraformResource;
 
-#[cfg(test)]
+/// Returns true if `val` (after stripping outer `"`) is a bare Terraform
+/// expression that must be emitted **unquoted** — i.e. a plain reference like
+/// `var.x` or `local.x`.  Template strings like `${var.x}-suffix` are *not*
+/// bare expressions; they still need surrounding quotes in HCL.
+fn is_tf_expr(val: &str) -> bool {
+    val.starts_with("var.") || val.starts_with("local.")
+}
+
+/// Return an HCL value token for `val`: unquoted if it is already a Terraform
+/// expression, otherwise wrapped in double-quotes.
+fn hcl_value(val: &str) -> String {
+    if is_tf_expr(val) {
+        val.to_string()
+    } else {
+        format!("\"{}\"", val)
+    }
+}
+
 pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
-    let k8s_version = res
+    let k8s_version_raw = res
         .attributes
         .get("version")
-        .map(|v| v.trim_matches('"'))
-        .unwrap_or("1.28");
+        .map(|v| v.trim_matches('"').to_string())
+        .unwrap_or_else(|| "1.31".to_string());
+    let version_hcl = hcl_value(&k8s_version_raw);
+
+    // Use the `name` attribute from the source (may be var.cluster_name etc.),
+    // falling back to the resource identifier if absent.
+    let name_raw = res
+        .attributes
+        .get("name")
+        .map(|v| v.trim_matches('"').to_string())
+        .unwrap_or_else(|| res.name.clone());
+    let name_hcl = hcl_value(&name_raw);
 
     let hcl = format!(
-        r#"resource "upcloud_kubernetes_cluster" "{name}" {{
-  name                = "{name}"
-  zone                = "__ZONE__"
-  network             = "<TODO: upcloud_network UUID>"
-  version             = "{k8s_version}"
-
+        r#"resource "upcloud_kubernetes_cluster" "{id}" {{
+  name                    = {name_hcl}
+  zone                    = "__ZONE__"
+  network                 = "<TODO: upcloud_network reference>"
+  version                 = {version_hcl}
   control_plane_ip_filter = ["0.0.0.0/0"]  # restrict to known CIDRs in production
 }}
 "#,
-        name = res.name,
-        k8s_version = k8s_version,
+        id = res.name,
+        name_hcl = name_hcl,
+        version_hcl = version_hcl,
     );
 
     MigrationResult {
@@ -35,17 +61,17 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("EKS → UpCloud Managed Kubernetes (k8s {})", k8s_version),
-            "Update kubeconfig after cluster creation".into(),
-            "IAM roles for service accounts → UpCloud API credentials".into(),
+            format!("EKS → UpCloud Managed Kubernetes (k8s {})", k8s_version_raw),
+            "network is auto-resolved from the EKS cluster's VPC subnets when a matching upcloud_network exists.".into(),
+            "The network resource needs: lifecycle { ignore_changes = [router] } — UpCloud attaches a router automatically.".into(),
+            "IAM roles for service accounts → use UpCloud API credentials instead.".into(),
         ],
         source_hcl: None,
     }
 }
 
-#[cfg(test)]
 pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
-    let instance_types = res
+    let instance_types_raw = res
         .attributes
         .get("instance_types")
         .map(|t| {
@@ -54,37 +80,75 @@ pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
             // HCL comment lines (which must not contain newlines).
             t.split_whitespace().collect::<Vec<_>>().join(" ")
         })
-        .unwrap_or_else(|| "t3.medium".into());
-    let min_size = res
-        .attributes
-        .get("scaling_config.min_size")
-        .map(|s| s.trim_matches('"'))
-        .unwrap_or("1");
+        .unwrap_or_else(|| "[\"t3.medium\"]".into());
+
+    // Extract the first concrete instance type for plan mapping (skip variable refs)
+    let first_type = instance_types_raw
+        .trim_matches(|c: char| c == '[' || c == ']')
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"');
+
+    let plan = aws_instance_type_to_upcloud_plan(first_type).unwrap_or("2xCPU-4GB");
+
     let desired = res
         .attributes
         .get("scaling_config.desired_size")
         .map(|s| s.trim_matches('"'))
         .unwrap_or("2");
+    let min_size = res
+        .attributes
+        .get("scaling_config.min_size")
+        .map(|s| s.trim_matches('"'))
+        .unwrap_or("1");
     let max_size = res
         .attributes
         .get("scaling_config.max_size")
         .map(|s| s.trim_matches('"'))
         .unwrap_or("3");
 
+    // Use the `node_group_name` attribute from the source (may be "${var.cluster_name}-node-group"
+    // etc.), falling back to the resource identifier if absent.
+    let ng_name_raw = res
+        .attributes
+        .get("node_group_name")
+        .or_else(|| res.attributes.get("name"))
+        .map(|v| v.trim_matches('"').to_string())
+        .unwrap_or_else(|| res.name.clone());
+    let ng_name_hcl = hcl_value(&ng_name_raw);
+
     let hcl = format!(
-        r#"resource "upcloud_kubernetes_node_group" "{name}" {{
+        r#"resource "upcloud_kubernetes_node_group" "{id}" {{
   cluster    = upcloud_kubernetes_cluster.<TODO>.id
-  name       = "{name}"
-  plan       = "2xCPU-4GB"  # TODO: map from instance_types: {instance_types}
-  node_count = {desired}    # desired_size={desired} (min={min}, max={max})
+  name       = {ng_name_hcl}
+  plan       = "{plan}"  # from instance_types: {instance_types}
+  node_count = {desired}  # desired_size={desired} (min={min}, max={max}; UpCloud node groups don't auto-scale)
 }}
 "#,
-        name = res.name,
-        instance_types = instance_types,
+        id = res.name,
+        ng_name_hcl = ng_name_hcl,
+        plan = plan,
+        instance_types = instance_types_raw,
         desired = desired,
         min = min_size,
         max = max_size,
     );
+
+    let mut notes = vec![
+        format!(
+            "Node group ({}) → UpCloud k8s Node Group (plan: {})",
+            instance_types_raw, plan
+        ),
+        "UpCloud node groups don't auto-scale — set node_count explicitly.".into(),
+        "cluster reference auto-resolved from the EKS cluster in the same config.".into(),
+    ];
+    if first_type.starts_with("var.") || first_type.starts_with("${") {
+        notes.push(
+            "instance_types is a variable reference — update plan manually after resolving the variable.".into(),
+        );
+    }
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -95,10 +159,7 @@ pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec![
-            format!("Node group ({}) → UpCloud k8s Node Group", instance_types),
-            "UpCloud node groups don't auto-scale; set count explicitly".into(),
-        ],
+        notes,
         source_hcl: None,
     }
 }
@@ -133,24 +194,54 @@ mod tests {
             hcl.contains("resource \"upcloud_kubernetes_cluster\" \"prod\""),
             "{hcl}"
         );
-        assert!(hcl.contains("version             = \"1.29\""), "{hcl}");
+        assert!(hcl.contains("version                 = \"1.29\""), "{hcl}");
+    }
+
+    #[test]
+    fn eks_cluster_variable_name_emitted_unquoted() {
+        let res = make_res("aws_eks_cluster", "main", &[("name", "var.cluster_name")]);
+        let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("name                    = var.cluster_name"),
+            "variable name attr must be unquoted\n{hcl}"
+        );
+        assert!(
+            !hcl.contains("\"var.cluster_name\""),
+            "variable name attr must not be double-quoted\n{hcl}"
+        );
+    }
+
+    #[test]
+    fn eks_cluster_variable_version_emitted_unquoted() {
+        let res = make_res(
+            "aws_eks_cluster",
+            "c",
+            &[("version", "var.kubernetes_version")],
+        );
+        let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("version                 = var.kubernetes_version"),
+            "variable ref must be unquoted\n{hcl}"
+        );
+        assert!(
+            !hcl.contains("\"var.kubernetes_version\""),
+            "variable ref must not be double-quoted\n{hcl}"
+        );
     }
 
     #[test]
     fn eks_cluster_defaults_version_when_absent() {
         let res = make_res("aws_eks_cluster", "c", &[]);
         let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
-        // defaults to some version string
-        assert!(hcl.contains("version             = \""), "{hcl}");
+        assert!(hcl.contains("version                 = \""), "{hcl}");
     }
 
     #[test]
-    fn eks_cluster_has_network_uuid_todo() {
-        // The network UUID TODO is cross-resolved by the generator when a subnet exists
+    fn eks_cluster_has_network_ref_todo() {
         let res = make_res("aws_eks_cluster", "c", &[]);
         let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
         assert!(
-            hcl.contains("<TODO: upcloud_network UUID>"),
+            hcl.contains("<TODO: upcloud_network reference>"),
             "cluster must have network TODO before generator cross-resolve\n{hcl}"
         );
     }
@@ -160,6 +251,17 @@ mod tests {
         let res = make_res("aws_eks_cluster", "c", &[]);
         let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("control_plane_ip_filter"), "{hcl}");
+    }
+
+    #[test]
+    fn eks_cluster_notes_lifecycle_ignore_changes() {
+        let res = make_res("aws_eks_cluster", "c", &[]);
+        let r = map_eks_cluster(&res);
+        assert!(
+            r.notes.iter().any(|n| n.contains("ignore_changes")),
+            "should note the required lifecycle block on the network\n{:?}",
+            r.notes
+        );
     }
 
     // ── map_eks_node_group ────────────────────────────────────────────────────
@@ -182,8 +284,21 @@ mod tests {
             hcl.contains("resource \"upcloud_kubernetes_node_group\" \"workers\""),
             "{hcl}"
         );
-        // desired_size drives the node_count
         assert!(hcl.contains("node_count = 3"), "{hcl}");
+    }
+
+    #[test]
+    fn eks_node_group_variable_name_emitted_unquoted() {
+        let res = make_res(
+            "aws_eks_node_group",
+            "main",
+            &[("node_group_name", "${var.cluster_name}-node-group")],
+        );
+        let hcl = map_eks_node_group(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("name       = \"${var.cluster_name}-node-group\""),
+            "template string should be quoted\n{hcl}"
+        );
     }
 
     #[test]
@@ -203,12 +318,33 @@ mod tests {
         assert!(hcl.contains("node_count = 2"), "{hcl}");
     }
 
+    #[test]
+    fn eks_node_group_maps_instance_type_to_plan() {
+        let res = make_res(
+            "aws_eks_node_group",
+            "ng",
+            &[("instance_types", "[\"t3.large\"]")],
+        );
+        let hcl = map_eks_node_group(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("2xCPU-8GB"), "{hcl}");
+    }
+
+    #[test]
+    fn eks_node_group_unknown_type_falls_back_to_default_plan() {
+        let res = make_res(
+            "aws_eks_node_group",
+            "ng",
+            &[("instance_types", "[\"x9.unknown\"]")],
+        );
+        let hcl = map_eks_node_group(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("2xCPU-4GB"), "{hcl}");
+    }
+
     /// hcl-rs formats list expressions with newlines, e.g. `[\n  var.eks_instance_type\n]`.
     /// Embedding that raw string into a HCL comment breaks the file (comments are single-line).
     /// The mapper must normalise the value to a single line before using it.
     #[test]
     fn eks_node_group_multiline_instance_types_produces_valid_hcl() {
-        // Simulate the value hcl-rs produces for `instance_types = [var.eks_instance_type]`
         let res = make_res(
             "aws_eks_node_group",
             "ng",
@@ -216,8 +352,6 @@ mod tests {
         );
         let hcl = map_eks_node_group(&res).upcloud_hcl.unwrap();
 
-        // No line may start with whitespace-only content that looks like a continuation
-        // of a broken comment — the simplest check is that no line is purely `]`.
         for line in hcl.lines() {
             assert!(
                 !line.trim().eq("]"),
@@ -225,7 +359,6 @@ mod tests {
             );
         }
 
-        // The note must also be a single line (no embedded newlines).
         let r = map_eks_node_group(&res);
         for note in &r.notes {
             assert!(
@@ -233,5 +366,20 @@ mod tests {
                 "note contains newline — would break `# NOTE:` comment:\n{note:?}"
             );
         }
+    }
+
+    #[test]
+    fn eks_node_group_variable_instance_type_adds_note() {
+        let res = make_res(
+            "aws_eks_node_group",
+            "ng",
+            &[("instance_types", "[var.instance_type]")],
+        );
+        let r = map_eks_node_group(&res);
+        assert!(
+            r.notes.iter().any(|n| n.contains("variable reference")),
+            "{:?}",
+            r.notes
+        );
     }
 }
