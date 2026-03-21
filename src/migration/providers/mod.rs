@@ -86,6 +86,10 @@ pub trait SourceProvider {
 
     /// Rewrite source provider references in output/locals blocks to UpCloud equivalents.
     fn rewrite_output_refs(&self, hcl: &str) -> String;
+
+    /// Return a [`VarDetector`] for this provider, used to auto-convert provider-specific
+    /// variable defaults (e.g. region codes, instance type strings) during generation.
+    fn var_detector(&self) -> Box<dyn crate::migration::var_detector::VarDetector>;
 }
 
 /// Detect the source cloud provider from migration results.

@@ -5,6 +5,7 @@ pub mod kubernetes;
 pub mod loadbalancer;
 pub mod network;
 pub mod storage;
+pub mod var_detector;
 
 use super::{ResourceRole, SourceProvider};
 
@@ -90,5 +91,9 @@ impl SourceProvider for AwsSourceProvider {
 
     fn rewrite_output_refs(&self, hcl: &str) -> String {
         generator_support::rewrite_output_refs(hcl)
+    }
+
+    fn var_detector(&self) -> Box<dyn crate::migration::var_detector::VarDetector> {
+        Box::new(var_detector::AwsVarDetector)
     }
 }

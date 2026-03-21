@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::migration::providers::{ResourceRole, SourceProvider, detect_provider};
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::migration::var_detector::{
-    VarKind, analyze_variable, apply_conversion_to_hcl, build_var_annotation, build_var_usage_map,
-    extract_variable_info,
+    VarKind, analyze_variable_with, apply_conversion_to_hcl, build_var_annotation,
+    build_var_usage_map, extract_variable_info,
 };
 use crate::terraform::types::{PassthroughBlock, PassthroughKind};
 use crate::zones::zone_to_objstorage_region;
@@ -968,7 +968,8 @@ provider "upcloud" {
                         let var_name = pt.name.as_deref().unwrap_or("");
                         let (default_val, description) = extract_variable_info(&pt.raw_hcl);
                         let usage_attrs = var_usage_map.get(var_name).cloned().unwrap_or_default();
-                        if let Some(mut conv) = analyze_variable(
+                        if let Some(mut conv) = analyze_variable_with(
+                            provider.var_detector().as_ref(),
                             var_name,
                             default_val.as_deref(),
                             description.as_deref(),

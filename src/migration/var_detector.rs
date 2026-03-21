@@ -1,7 +1,9 @@
-//! Multi-signal variable purpose detection for AWS → UpCloud migration.
+//! Provider-agnostic variable purpose detection framework for Terraform migrations.
 //!
-//! Each variable is scored across up to five signals:
-//!   1. Default value matches a known AWS pattern (+5)
+//! # Multi-signal scoring
+//!
+//! Each variable is scored across up to four signals:
+//!   1. Default value matches a known provider pattern (+5)
 //!   2. Usage context — attribute name where the var is referenced (+3–5)
 //!   3. Description text keywords (+2)
 //!   4. Variable name keywords (+1)
@@ -10,74 +12,15 @@
 //! HIGH and MEDIUM auto-convert the default value and annotate.
 //! LOW flags the variable with a review comment but still converts if the default
 //! value is an unambiguous match.
+//!
+//! # Extensibility
+//!
+//! Provider-specific detection logic is encapsulated behind the [`VarDetector`] trait.
+//! Each source cloud provider (AWS, Azure, GCP, …) implements this trait in its own
+//! module under `migration/providers/<provider>/var_detector.rs`.
+//! The generator obtains the correct detector from the active [`SourceProvider`].
 
 use std::collections::HashMap;
-
-use crate::migration::providers::aws::compute::aws_instance_type_to_upcloud_plan;
-
-// ---------------------------------------------------------------------------
-// Region data
-// ---------------------------------------------------------------------------
-
-const AWS_REGIONS: &[&str] = &[
-    "us-east-1",
-    "us-east-2",
-    "us-west-1",
-    "us-west-2",
-    "ca-central-1",
-    "ca-west-1",
-    "eu-west-1",
-    "eu-west-2",
-    "eu-west-3",
-    "eu-central-1",
-    "eu-central-2",
-    "eu-north-1",
-    "eu-south-1",
-    "eu-south-2",
-    "ap-east-1",
-    "ap-southeast-1",
-    "ap-southeast-2",
-    "ap-southeast-3",
-    "ap-southeast-4",
-    "ap-northeast-1",
-    "ap-northeast-2",
-    "ap-northeast-3",
-    "ap-south-1",
-    "ap-south-2",
-    "sa-east-1",
-    "me-south-1",
-    "me-central-1",
-    "af-south-1",
-    "il-central-1",
-];
-
-/// Map an AWS region to the closest UpCloud zone.
-pub fn aws_region_to_upcloud_zone(region: &str) -> Option<&'static str> {
-    match region {
-        "us-east-1" | "us-east-2" => Some("us-nyc1"),
-        "us-west-1" | "us-west-2" => Some("us-chi1"),
-        "ca-central-1" | "ca-west-1" => Some("us-nyc1"),
-        "eu-west-1" | "eu-west-2" | "eu-west-3" => Some("de-fra1"),
-        "eu-central-1" | "eu-central-2" => Some("de-fra1"),
-        "eu-north-1" => Some("fi-hel1"),
-        "eu-south-1" | "eu-south-2" => Some("pl-waw1"),
-        "ap-east-1" => Some("sg-sin1"),
-        "ap-southeast-1" | "ap-southeast-2" | "ap-southeast-3" | "ap-southeast-4" => {
-            Some("sg-sin1")
-        }
-        "ap-northeast-1" | "ap-northeast-2" | "ap-northeast-3" => Some("sg-sin1"),
-        "ap-south-1" | "ap-south-2" => Some("sg-sin1"),
-        "sa-east-1" => Some("us-nyc1"),
-        "me-south-1" | "me-central-1" => Some("sg-sin1"),
-        "af-south-1" => Some("de-fra1"),
-        "il-central-1" => Some("de-fra1"),
-        _ => None,
-    }
-}
-
-fn is_aws_region(s: &str) -> bool {
-    AWS_REGIONS.contains(&s)
-}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -92,8 +35,8 @@ pub enum VarKind {
 impl VarKind {
     pub fn label(&self) -> &'static str {
         match self {
-            VarKind::InstanceType => "EC2 instance type → UpCloud plan",
-            VarKind::Region => "AWS region → UpCloud zone",
+            VarKind::InstanceType => "instance type → UpCloud plan",
+            VarKind::Region => "region → UpCloud zone",
         }
     }
 }
@@ -122,275 +65,46 @@ impl VarConversion {
 }
 
 // ---------------------------------------------------------------------------
-// Analysis entry point
+// Provider plug-in trait
 // ---------------------------------------------------------------------------
 
-/// Analyse a single variable and return a `VarConversion` if any signals fire.
+/// Per-provider variable detection plug-in.
 ///
-/// * `name`         – variable name (e.g. `"aws_region"`)
-/// * `default_val`  – unquoted default value, if present (e.g. `"us-east-1"`)
-/// * `description`  – variable description string, if present
-/// * `usage_attrs`  – attribute names where `var.<name>` appears in resource HCL
-pub fn analyze_variable(
-    name: &str,
-    default_val: Option<&str>,
-    description: Option<&str>,
-    usage_attrs: &[String],
-) -> Option<VarConversion> {
-    let instance = score_instance_type(name, default_val, description, usage_attrs);
-    let region = score_region(name, default_val, description, usage_attrs);
-
-    let best = match (instance, region) {
-        (Some(i), Some(r)) => {
-            if i.confidence >= r.confidence {
-                i
-            } else {
-                r
-            }
-        }
-        (Some(i), None) => i,
-        (None, Some(r)) => r,
-        (None, None) => return None,
-    };
-
-    // Only report if there's at least some evidence.
-    if best.confidence >= 3 {
-        Some(best)
-    } else {
-        None
-    }
+/// Implement this trait in each provider module (e.g. `providers::aws::var_detector`)
+/// to teach the framework how to recognise and convert provider-specific variable
+/// patterns such as region codes and instance/machine types.
+pub trait VarDetector: Send + Sync {
+    /// Return all candidate [`VarConversion`]s for the given variable.
+    ///
+    /// The framework picks the highest-confidence result that crosses the
+    /// minimum threshold (≥ 3). Return an empty `Vec` if no signals fire.
+    fn detect(
+        &self,
+        name: &str,
+        default_val: Option<&str>,
+        description: Option<&str>,
+        usage_attrs: &[String],
+    ) -> Vec<VarConversion>;
 }
 
 // ---------------------------------------------------------------------------
-// Scoring functions
+// Analysis entry points
 // ---------------------------------------------------------------------------
 
-fn score_instance_type(
+/// Analyse a variable using a specific provider detector and return the best
+/// [`VarConversion`] if confidence reaches the minimum threshold (≥ 3).
+pub fn analyze_variable_with(
+    detector: &dyn VarDetector,
     name: &str,
     default_val: Option<&str>,
     description: Option<&str>,
     usage_attrs: &[String],
 ) -> Option<VarConversion> {
-    let mut score = 0u8;
-    let mut signals = Vec::new();
-    let mut converted_value = None;
-    let original_default = default_val.map(str::to_string);
-
-    // Signal 1: default matches AWS EC2 instance type (e.g. t3.small)
-    if let Some(dv) = default_val
-        && let Some(plan) = aws_instance_type_to_upcloud_plan(dv)
-    {
-        score += 5;
-        signals.push(format!("default '{}' is an AWS EC2 instance type", dv));
-        converted_value = Some(plan.to_string());
-    }
-
-    // Signal 1b: default matches an RDS instance class (db.t3.medium) or
-    // ElastiCache node type (cache.t3.micro) — these use different UpCloud plan
-    // formats than EC2 server plans.
-    if converted_value.is_none()
-        && let Some(dv) = default_val
-        && let Some(plan) = rds_or_cache_class_to_upcloud_plan(dv)
-    {
-        score += 5;
-        signals.push(format!(
-            "default '{}' is an AWS RDS/ElastiCache instance class",
-            dv
-        ));
-        converted_value = Some(plan.to_string());
-    }
-
-    // Signal 2: used as instance_type / instance_types / instance_class / node_type attribute
-    if usage_attrs.iter().any(|a| a == "instance_type") {
-        score += 5;
-        signals.push("referenced as 'instance_type' attribute in a resource".to_string());
-    } else if usage_attrs.iter().any(|a| a == "instance_types") {
-        score += 3;
-        signals.push("referenced as 'instance_types' attribute in a resource".to_string());
-    } else if usage_attrs.iter().any(|a| a == "instance_class") {
-        score += 5;
-        signals.push("referenced as 'instance_class' attribute in a resource (RDS)".to_string());
-    } else if usage_attrs.iter().any(|a| a == "node_type") {
-        score += 5;
-        signals.push("referenced as 'node_type' attribute in a resource (ElastiCache)".to_string());
-    }
-
-    // Signal 3: description keywords
-    if let Some(desc) = description {
-        let dl = desc.to_lowercase();
-        let kw = [
-            "instance type",
-            "machine type",
-            "server size",
-            "ec2 instance",
-            "instance class",
-            "compute type",
-            "node type",
-        ];
-        if kw.iter().any(|k| dl.contains(k)) {
-            score += 2;
-            signals.push("description mentions instance/machine type".to_string());
-        }
-    }
-
-    // Signal 4: variable name keywords
-    let nl = name.to_lowercase();
-    if nl.contains("instance_type")
-        || nl.contains("machine_type")
-        || nl.contains("server_size")
-        || nl.contains("instance_class")
-        || nl.contains("node_type")
-    {
-        score += 1;
-        signals.push("variable name suggests instance type".to_string());
-    }
-
-    if score == 0 {
-        return None;
-    }
-    Some(VarConversion {
-        kind: VarKind::InstanceType,
-        confidence: score.min(10),
-        converted_value,
-        original_default,
-        signals,
-    })
-}
-
-/// Map an AWS RDS instance class or ElastiCache node type to the corresponding UpCloud
-/// managed database plan. Returns `None` for unrecognised patterns.
-///
-/// RDS classes use the `db.` prefix and map to plans with a storage component
-/// (e.g. `1x2xCPU-4GB-50GB`). ElastiCache node types use the `cache.` prefix
-/// and map to plans without storage (e.g. `1x2xCPU-4GB`).
-fn rds_or_cache_class_to_upcloud_plan(class: &str) -> Option<&'static str> {
-    let (is_rds, stripped) = if let Some(s) = class.strip_prefix("db.") {
-        (true, s)
-    } else if let Some(s) = class.strip_prefix("cache.") {
-        (false, s)
-    } else {
-        return None;
-    };
-
-    // Match on the size portion (after stripping vendor-specific prefix like "t3.", "r6g.", etc.)
-    let size = stripped.rsplit('.').next().unwrap_or(stripped);
-    match size {
-        "nano" | "micro" | "small" => {
-            if is_rds {
-                Some("1x1xCPU-2GB-25GB")
-            } else {
-                Some("1x1xCPU-2GB")
-            }
-        }
-        "medium" => {
-            if is_rds {
-                Some("1x2xCPU-4GB-50GB")
-            } else {
-                Some("1x2xCPU-4GB")
-            }
-        }
-        "large" => {
-            if is_rds {
-                Some("2x4xCPU-8GB-100GB")
-            } else {
-                Some("1x2xCPU-8GB")
-            }
-        }
-        "xlarge" => {
-            if is_rds {
-                Some("2x6xCPU-16GB-100GB")
-            } else {
-                Some("1x4xCPU-28GB")
-            }
-        }
-        s if s.ends_with("xlarge") => {
-            if is_rds {
-                Some("2x8xCPU-32GB-100GB")
-            } else {
-                Some("1x8xCPU-56GB")
-            }
-        }
-        _ => None,
-    }
-}
-
-fn score_region(
-    name: &str,
-    default_val: Option<&str>,
-    description: Option<&str>,
-    usage_attrs: &[String],
-) -> Option<VarConversion> {
-    let mut score = 0u8;
-    let mut signals = Vec::new();
-    let mut converted_value = None;
-    let original_default = default_val.map(str::to_string);
-
-    // Signal 1: default matches AWS region
-    if let Some(dv) = default_val
-        && is_aws_region(dv)
-    {
-        score += 5;
-        signals.push(format!("default '{}' is an AWS region code", dv));
-        converted_value = aws_region_to_upcloud_zone(dv).map(str::to_string);
-    }
-
-    // Signal 2: used as region-related attribute
-    for attr in usage_attrs {
-        match attr.as_str() {
-            "region" => {
-                score += 5;
-                signals
-                    .push("referenced as 'region' attribute in a resource or provider".to_string());
-                break;
-            }
-            "availability_zone" | "az" => {
-                score += 3;
-                signals.push("referenced as 'availability_zone' attribute".to_string());
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    // Signal 3: description keywords
-    if let Some(desc) = description {
-        let dl = desc.to_lowercase();
-        let kw = [
-            "region",
-            "location",
-            "datacenter",
-            "data center",
-            "geography",
-            "area",
-        ];
-        if kw.iter().any(|k| dl.contains(k)) {
-            score += 2;
-            signals.push("description mentions region/location".to_string());
-        }
-    }
-
-    // Signal 4: variable name keywords
-    let nl = name.to_lowercase();
-    if nl.contains("region")
-        || nl.contains("location")
-        || nl == "zone"
-        || nl.contains("datacenter")
-        || nl.contains("data_center")
-    {
-        score += 1;
-        signals.push("variable name suggests region/zone".to_string());
-    }
-
-    if score == 0 {
-        return None;
-    }
-    Some(VarConversion {
-        kind: VarKind::Region,
-        confidence: score.min(10),
-        converted_value,
-        original_default,
-        signals,
-    })
+    detector
+        .detect(name, default_val, description, usage_attrs)
+        .into_iter()
+        .filter(|c| c.confidence >= 3)
+        .max_by_key(|c| c.confidence)
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +326,7 @@ pub fn apply_conversion_to_hcl(raw_hcl: &str, conversion: &VarConversion) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::providers::aws::var_detector::AwsVarDetector;
 
     // ── extract_variable_info ─────────────────────────────────────────────────
 
@@ -669,7 +384,8 @@ mod tests {
 
     #[test]
     fn high_confidence_instance_type_from_default_and_usage() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "instance_type",
             Some("t3.micro"),
             Some("EC2 instance type"),
@@ -683,7 +399,8 @@ mod tests {
 
     #[test]
     fn high_confidence_region_from_default_and_usage() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "aws_region",
             Some("us-east-1"),
             Some("AWS region to deploy resources"),
@@ -697,7 +414,7 @@ mod tests {
 
     #[test]
     fn medium_confidence_region_from_name_and_default_only() {
-        let conv = analyze_variable("deploy_region", Some("eu-west-1"), None, &[]).unwrap();
+        let conv = analyze_variable_with(&AwsVarDetector, "deploy_region", Some("eu-west-1"), None, &[]).unwrap();
         assert_eq!(conv.kind, VarKind::Region);
         // default match (+5) + name (+1) = 6 → MEDIUM
         assert!(
@@ -710,7 +427,7 @@ mod tests {
 
     #[test]
     fn low_confidence_instance_type_from_name_only() {
-        let conv = analyze_variable("instance_type", None, None, &[]);
+        let conv = analyze_variable_with(&AwsVarDetector, "instance_type", None, None, &[]);
         // Only name signal (+1) — below threshold of 3, should be None
         assert!(
             conv.is_none(),
@@ -720,14 +437,15 @@ mod tests {
 
     #[test]
     fn no_signals_returns_none() {
-        let result = analyze_variable("my_bucket", Some("my-bucket-name"), None, &[]);
+        let result = analyze_variable_with(&AwsVarDetector, "my_bucket", Some("my-bucket-name"), None, &[]);
         assert!(result.is_none());
     }
 
     #[test]
     fn picks_higher_confidence_kind() {
         // "region" name + region default + region usage: clearly region, not instance type
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "region",
             Some("ap-southeast-1"),
             None,
@@ -788,7 +506,8 @@ mod tests {
 
     #[test]
     fn rds_instance_class_detected_and_converted() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "db_instance_class",
             Some("db.t3.medium"),
             Some("RDS instance class for PostgreSQL"),
@@ -806,7 +525,8 @@ mod tests {
 
     #[test]
     fn cache_node_type_detected_and_converted() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "cache_node_type",
             Some("cache.t3.micro"),
             Some("ElastiCache node type"),
@@ -824,7 +544,8 @@ mod tests {
 
     #[test]
     fn rds_xlarge_maps_to_correct_plan() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "db_class",
             Some("db.m5.xlarge"),
             None,
@@ -836,7 +557,8 @@ mod tests {
 
     #[test]
     fn rds_2xlarge_maps_to_correct_plan() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "db_class",
             Some("db.r5.2xlarge"),
             None,
@@ -848,7 +570,8 @@ mod tests {
 
     #[test]
     fn cache_xlarge_maps_to_correct_plan() {
-        let conv = analyze_variable(
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
             "redis_node_type",
             Some("cache.r6g.xlarge"),
             None,
@@ -862,7 +585,7 @@ mod tests {
     fn rds_class_name_only_below_threshold() {
         // Variable named "db_class" with no default and no usage signals
         // should not reach the threshold
-        let result = analyze_variable("db_class", None, None, &[]);
+        let result = analyze_variable_with(&AwsVarDetector, "db_class", None, None, &[]);
         assert!(
             result.is_none(),
             "name-only RDS variable should not convert: {:?}",
