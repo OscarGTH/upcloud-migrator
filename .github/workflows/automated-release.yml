@@ -47,6 +47,7 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
+          git config --global url."https://github:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Check if release is needed (conventional commits)
         id: check-release
@@ -70,4 +71,4 @@ jobs:
         if: steps.check-release.outputs.needs-release == 'true'
         run: |
           # Use cargo-release to bump version and create tag
-          cargo release --no-confirm --git-token ${{ secrets.GITHUB_TOKEN }}
+          cargo release --no-confirm
