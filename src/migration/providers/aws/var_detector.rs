@@ -1,18 +1,7 @@
-//! AWS-specific variable detection for the migration framework.
-//!
-//! [`AwsVarDetector`] implements [`VarDetector`] by scoring Terraform variables
-//! against known AWS patterns:
-//! - EC2 instance types (e.g. `t3.micro`, `m5.large`)
-//! - RDS instance classes (e.g. `db.t3.medium`)
-//! - ElastiCache node types (e.g. `cache.t3.micro`)
-//! - AWS region codes (e.g. `us-east-1`, `eu-west-1`)
+//! AWS variable detection — recognises EC2/RDS/ElastiCache types and AWS regions.
 
 use crate::migration::providers::aws::compute::aws_instance_type_to_upcloud_plan;
 use crate::migration::var_detector::{VarConversion, VarDetector, VarKind};
-
-// ---------------------------------------------------------------------------
-// Region data
-// ---------------------------------------------------------------------------
 
 const AWS_REGIONS: &[&str] = &[
     "us-east-1",
@@ -74,12 +63,6 @@ fn is_aws_region(s: &str) -> bool {
     AWS_REGIONS.contains(&s)
 }
 
-// ---------------------------------------------------------------------------
-// AwsVarDetector
-// ---------------------------------------------------------------------------
-
-/// AWS variable detector — recognises EC2/RDS/ElastiCache instance types and
-/// AWS region codes, mapping them to the closest UpCloud equivalents.
 pub struct AwsVarDetector;
 
 impl VarDetector for AwsVarDetector {

@@ -3,6 +3,7 @@ pub mod database;
 pub mod generator_support;
 pub mod kubernetes;
 pub mod loadbalancer;
+pub mod mapper;
 pub mod network;
 pub mod storage;
 pub mod var_detector;
@@ -95,5 +96,9 @@ impl SourceProvider for AwsSourceProvider {
 
     fn var_detector(&self) -> Box<dyn crate::migration::var_detector::VarDetector> {
         Box::new(var_detector::AwsVarDetector)
+    }
+
+    fn mapper(&self) -> Box<dyn crate::migration::mapper::ResourceMapper> {
+        Box::new(mapper::AwsResourceMapper)
     }
 }

@@ -24,9 +24,7 @@ pub const SKIPPED_SENTINEL: &str = "\x00SKIPPED";
 /// (zone injected, cross-references resolved, source refs sanitised).
 pub type ResolvedHclMap = HashMap<(String, String), String>;
 
-/// Container for all cross-reference lookup tables used during migration.
-/// These tables enable resolving source resource references to their UpCloud equivalents
-/// and tracking relationships between resources (e.g., load balancers → target groups → servers).
+/// Cross-reference lookup tables for resource resolution.
 struct CrossRefTables {
     lb_names: Vec<String>,
     network_names: Vec<String>,
@@ -45,9 +43,7 @@ struct CrossRefTables {
     storage_promote_count: HashMap<String, String>,
 }
 
-/// Build all cross-reference lookup tables from the migration results.
-/// These tables enable efficient resolution of source resource references to UpCloud equivalents
-/// and tracking of resource relationships (e.g., which servers reference which firewall rules).
+/// Build cross-reference lookup tables from migration results.
 fn build_cross_ref_tables(
     results: &[MigrationResult],
     provider: &dyn SourceProvider,
@@ -321,8 +317,7 @@ fn build_cross_ref_tables(
     }
 }
 
-/// Replace indexed TODO placeholders with corresponding items from a list.
-/// E.g., first `<TODO>` → first item, second `<TODO>` → second item.
+/// Replace indexed `<TODO>` placeholders with items from a list.
 fn replace_indexed_placeholders(hcl: &str, pattern: &str, replacements: &[String]) -> String {
     if replacements.is_empty() {
         return hcl.to_string();
@@ -345,7 +340,7 @@ fn replace_indexed_placeholders(hcl: &str, pattern: &str, replacements: &[String
     result
 }
 
-/// Resolve load balancer, backend, and certificate placeholders using indexed replacement.
+/// Resolve load balancer and certificate placeholders.
 fn resolve_load_balancer_refs(hcl: &str, xref: &CrossRefTables) -> String {
     let mut s = hcl.to_string();
 
@@ -384,7 +379,7 @@ fn resolve_load_balancer_refs(hcl: &str, xref: &CrossRefTables) -> String {
     s
 }
 
-/// Resolve Kubernetes and general resource references.
+/// Resolve Kubernetes resource references.
 fn resolve_k8s_and_generic_refs(hcl: &str, xref: &CrossRefTables) -> String {
     let mut s = hcl.to_string();
 
@@ -399,24 +394,7 @@ fn resolve_k8s_and_generic_refs(hcl: &str, xref: &CrossRefTables) -> String {
     s
 }
 
-/// Resolve placeholders in HCL by substituting zone info, cross-references, and source-specific values.
-///
-/// This function coordinates resolution of multiple placeholder types:
-/// - Zone and object-storage region substitution
-/// - Network, server, and resource reference resolution (delegated to helpers)
-/// - SSH key and parameter group substitution (delegated to helpers)
-/// - Source provider data source cleanup
-///
-/// # Arguments
-/// * `hcl` - HCL source code potentially containing `<TODO>` placeholders
-/// * `resource_name` - Resource name used for network preference heuristics
-/// * `zone` - Target UpCloud zone
-/// * `objstorage_region` - Object storage region name
-/// * `xref` - Cross-reference tables for resolving resource names
-/// * `provider` - Source cloud provider for sanitization and placeholder text
-///
-/// # Returns
-/// Fully-resolved HCL with all placeholders replaced
+/// Resolve placeholders in HCL (zones, cross-references, SSH keys, provider-specific values).
 fn resolve_placeholders(
     hcl: &str,
     resource_name: &str,

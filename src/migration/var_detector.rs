@@ -1,30 +1,7 @@
-//! Provider-agnostic variable purpose detection framework for Terraform migrations.
-//!
-//! # Multi-signal scoring
-//!
-//! Each variable is scored across up to four signals:
-//!   1. Default value matches a known provider pattern (+5)
-//!   2. Usage context — attribute name where the var is referenced (+3–5)
-//!   3. Description text keywords (+2)
-//!   4. Variable name keywords (+1)
-//!
-//! Confidence categories:  ≥8 HIGH · 5–7 MEDIUM · 3–4 LOW  (< 3 → ignore)
-//! HIGH and MEDIUM auto-convert the default value and annotate.
-//! LOW flags the variable with a review comment but still converts if the default
-//! value is an unambiguous match.
-//!
-//! # Extensibility
-//!
-//! Provider-specific detection logic is encapsulated behind the [`VarDetector`] trait.
-//! Each source cloud provider (AWS, Azure, GCP, …) implements this trait in its own
-//! module under `migration/providers/<provider>/var_detector.rs`.
-//! The generator obtains the correct detector from the active [`SourceProvider`].
+//! Provider-agnostic variable detection framework.
+//! Delegates to provider-specific [`VarDetector`] implementations.
 
 use std::collections::HashMap;
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VarKind {
@@ -64,10 +41,6 @@ impl VarConversion {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Provider plug-in trait
-// ---------------------------------------------------------------------------
-
 /// Per-provider variable detection plug-in.
 ///
 /// Implement this trait in each provider module (e.g. `providers::aws::var_detector`)
@@ -87,10 +60,6 @@ pub trait VarDetector: Send + Sync {
     ) -> Vec<VarConversion>;
 }
 
-// ---------------------------------------------------------------------------
-// Analysis entry points
-// ---------------------------------------------------------------------------
-
 /// Analyse a variable using a specific provider detector and return the best
 /// [`VarConversion`] if confidence reaches the minimum threshold (≥ 3).
 pub fn analyze_variable_with(
@@ -106,10 +75,6 @@ pub fn analyze_variable_with(
         .filter(|c| c.confidence >= 3)
         .max_by_key(|c| c.confidence)
 }
-
-// ---------------------------------------------------------------------------
-// HCL parsing helpers
-// ---------------------------------------------------------------------------
 
 /// Extract `(default_value, description)` from a `variable "..." { ... }` HCL block.
 /// Returns unquoted string values; non-string or absent fields return `None`.
@@ -208,10 +173,6 @@ pub fn build_var_usage_map(source_hcl_blocks: &[&str]) -> HashMap<String, Vec<St
     }
     map
 }
-
-// ---------------------------------------------------------------------------
-// HCL rewriter + annotation builder
-// ---------------------------------------------------------------------------
 
 /// Return annotation comment lines to prepend to the variable block.
 pub fn build_var_annotation(name: &str, conversion: &VarConversion) -> String {
@@ -319,16 +280,10 @@ pub fn apply_conversion_to_hcl(raw_hcl: &str, conversion: &VarConversion) -> Str
     out
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::migration::providers::aws::var_detector::AwsVarDetector;
-
-    // ── extract_variable_info ─────────────────────────────────────────────────
 
     #[test]
     fn extracts_default_and_description() {
@@ -364,8 +319,6 @@ mod tests {
         );
     }
 
-    // ── build_var_usage_map ───────────────────────────────────────────────────
-
     #[test]
     fn detects_instance_type_usage() {
         let hcl = "resource \"aws_instance\" \"web\" {\n  instance_type = var.instance_type\n}";
@@ -379,8 +332,6 @@ mod tests {
         let map = build_var_usage_map(&[hcl]);
         assert!(map["aws_region"].contains(&"region".to_string()));
     }
-
-    // ── analyze_variable ─────────────────────────────────────────────────────
 
     #[test]
     fn high_confidence_instance_type_from_default_and_usage() {

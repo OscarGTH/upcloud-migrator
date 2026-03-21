@@ -90,6 +90,10 @@ pub trait SourceProvider {
     /// Return a [`VarDetector`] for this provider, used to auto-convert provider-specific
     /// variable defaults (e.g. region codes, instance type strings) during generation.
     fn var_detector(&self) -> Box<dyn crate::migration::var_detector::VarDetector>;
+
+    /// Return a [`ResourceMapper`] for this provider, used to map source resources
+    /// to their UpCloud equivalents.
+    fn mapper(&self) -> Box<dyn crate::migration::mapper::ResourceMapper>;
 }
 
 /// Detect the source cloud provider from migration results.
