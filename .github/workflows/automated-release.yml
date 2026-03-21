@@ -24,13 +24,6 @@ jobs:
           fetch-depth: 0  # Full history for conventional commits analysis
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-release
         run: cargo install cargo-release
 

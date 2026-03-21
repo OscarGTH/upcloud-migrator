@@ -55,12 +55,13 @@ impl ResourceMapper for AwsResourceMapper {
             "aws_elasticache_parameter_group" => database::map_elasticache_parameter_group(res),
 
             // Kubernetes (not supported in this MVP)
-            "aws_eks_cluster" | "aws_eks_node_group" | "aws_eks_fargate_profile" | "aws_eks_addon" => {
-                unsupported(
-                    res,
-                    "(EKS not supported — use upcloud_kubernetes_cluster manually)",
-                )
-            }
+            "aws_eks_cluster"
+            | "aws_eks_node_group"
+            | "aws_eks_fargate_profile"
+            | "aws_eks_addon" => unsupported(
+                res,
+                "(EKS not supported — use upcloud_kubernetes_cluster manually)",
+            ),
 
             // Unsupported
             "aws_iam_role"

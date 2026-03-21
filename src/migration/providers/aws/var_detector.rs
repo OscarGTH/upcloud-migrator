@@ -135,8 +135,7 @@ fn score_instance_type(
         signals.push("referenced as 'instance_class' attribute in a resource (RDS)".to_string());
     } else if usage_attrs.iter().any(|a| a == "node_type") {
         score += 5;
-        signals
-            .push("referenced as 'node_type' attribute in a resource (ElastiCache)".to_string());
+        signals.push("referenced as 'node_type' attribute in a resource (ElastiCache)".to_string());
     }
 
     // Signal 3: description keywords
@@ -263,9 +262,8 @@ fn score_region(
         match attr.as_str() {
             "region" => {
                 score += 5;
-                signals.push(
-                    "referenced as 'region' attribute in a resource or provider".to_string(),
-                );
+                signals
+                    .push("referenced as 'region' attribute in a resource or provider".to_string());
                 break;
             }
             "availability_zone" | "az" => {

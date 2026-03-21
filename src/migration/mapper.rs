@@ -22,10 +22,7 @@ pub trait ResourceMapper: Send + Sync {
 /// - `provider_display_name`: Display name of the provider (e.g. "AWS")
 /// - `mapper`: The provider's resource mapper
 /// - `res`: The Terraform resource to map
-pub fn map_resource_with(
-    mapper: &dyn ResourceMapper,
-    res: &TerraformResource,
-) -> MigrationResult {
+pub fn map_resource_with(mapper: &dyn ResourceMapper, res: &TerraformResource) -> MigrationResult {
     let mut result = mapper.map(res);
     result.source_hcl = Some(res.raw_hcl.clone());
     result

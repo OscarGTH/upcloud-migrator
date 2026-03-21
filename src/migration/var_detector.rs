@@ -365,7 +365,14 @@ mod tests {
 
     #[test]
     fn medium_confidence_region_from_name_and_default_only() {
-        let conv = analyze_variable_with(&AwsVarDetector, "deploy_region", Some("eu-west-1"), None, &[]).unwrap();
+        let conv = analyze_variable_with(
+            &AwsVarDetector,
+            "deploy_region",
+            Some("eu-west-1"),
+            None,
+            &[],
+        )
+        .unwrap();
         assert_eq!(conv.kind, VarKind::Region);
         // default match (+5) + name (+1) = 6 → MEDIUM
         assert!(
@@ -388,7 +395,13 @@ mod tests {
 
     #[test]
     fn no_signals_returns_none() {
-        let result = analyze_variable_with(&AwsVarDetector, "my_bucket", Some("my-bucket-name"), None, &[]);
+        let result = analyze_variable_with(
+            &AwsVarDetector,
+            "my_bucket",
+            Some("my-bucket-name"),
+            None,
+            &[],
+        );
         assert!(result.is_none());
     }
 
