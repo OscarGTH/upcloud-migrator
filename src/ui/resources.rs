@@ -42,6 +42,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let compat = count_status(&app.migration_results, MigrationStatus::Compatible);
     let partial = count_status(&app.migration_results, MigrationStatus::Partial);
     let unsup = count_status(&app.migration_results, MigrationStatus::Unsupported);
+    let kept = count_status(&app.migration_results, MigrationStatus::Passthrough);
 
     let stats = Paragraph::new(Line::from(vec![
         Span::styled(format!(" {total}"), theme::white_bold()),
@@ -54,6 +55,8 @@ pub fn render(f: &mut Frame, app: &App) {
         Span::styled(format!(" {partial} partial  "), theme::warning()),
         Span::styled("✕", theme::danger()),
         Span::styled(format!(" {unsup} unsup  "), theme::danger()),
+        Span::styled("≡", theme::dim()),
+        Span::styled(format!(" {kept} kept  "), theme::dim()),
     ]));
     f.render_widget(stats, layout[0]);
 

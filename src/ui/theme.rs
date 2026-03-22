@@ -69,6 +69,7 @@ pub fn status_icon(label: &str) -> &'static str {
         "COMPATIBLE" => "◈",
         "PARTIAL" => "◇",
         "UNSUPPORTED" => "✕",
+        "KEPT" => "≡",
         _ => "·",
     }
 }

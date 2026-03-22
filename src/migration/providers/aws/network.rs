@@ -82,6 +82,12 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
   }}
 
   router = {router_ref}
+
+  # UpCloud Kubernetes Service will attach a router automatically.
+  # Ignore router changes to avoid detaching it on subsequent applies.
+  lifecycle {{
+    ignore_changes = [router]
+  }}
 }}
 "#,
         name = res.name,
@@ -103,6 +109,7 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
         notes: {
             let mut n = vec![
                 "AWS Subnet → upcloud_network (private SDN; public internet via server network_interface type=public).".into(),
+                "lifecycle { ignore_changes = [router] } added — UpCloud Kubernetes Service attaches a router automatically.".into(),
             ];
             let is_public = res
                 .attributes
@@ -771,6 +778,35 @@ mod tests {
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
         let count = hcl.matches("ip_network").count();
         assert_eq!(count, 1, "must have exactly 1 ip_network block\n{hcl}");
+    }
+
+    #[test]
+    fn subnet_has_lifecycle_ignore_changes_router() {
+        let res = make_res(
+            "aws_subnet",
+            "s",
+            &[("cidr_block", "10.0.4.0/24"), ("vpc_id", "aws_vpc.main.id")],
+        );
+        let hcl = map_subnet(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("lifecycle"),
+            "upcloud_network must include a lifecycle block\n{hcl}"
+        );
+        assert!(
+            hcl.contains("ignore_changes = [router]"),
+            "lifecycle block must ignore router changes\n{hcl}"
+        );
+    }
+
+    #[test]
+    fn subnet_note_mentions_lifecycle_ignore_changes() {
+        let res = make_res("aws_subnet", "s", &[("cidr_block", "10.0.4.0/24")]);
+        let r = map_subnet(&res);
+        assert!(
+            r.notes.iter().any(|n| n.contains("ignore_changes")),
+            "note should mention lifecycle ignore_changes\n{:?}",
+            r.notes
+        );
     }
 
     // ── map_security_group ────────────────────────────────────────────────────

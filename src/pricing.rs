@@ -153,7 +153,7 @@ pub fn compute_costs(
     for result in migration_results {
         if matches!(
             result.status,
-            MigrationStatus::Unsupported | MigrationStatus::Unknown
+            MigrationStatus::Unsupported | MigrationStatus::Unknown | MigrationStatus::Passthrough
         ) {
             continue;
         }

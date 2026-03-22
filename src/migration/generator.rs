@@ -702,13 +702,28 @@ pub fn generate_files(
 
     // Write provider config
     let provider_path = output_dir.join("providers.tf");
-    let provider_hcl = r#"terraform {
+    let mut provider_hcl = String::from(
+        r#"terraform {
   required_providers {
     upcloud = {
       source  = "UpCloudLtd/upcloud"
       version = "~> 5.0"
     }
-  }
+"#,
+    );
+    // Append non-cloud required_providers entries (e.g. kubernetes, helm)
+    for pt in passthroughs {
+        if pt.kind == PassthroughKind::Provider
+            && let Some(name) = &pt.name
+            && name.starts_with("required_provider:")
+        {
+            provider_hcl.push_str("    ");
+            provider_hcl.push_str(&pt.raw_hcl);
+            provider_hcl.push('\n');
+        }
+    }
+    provider_hcl.push_str(
+        r#"  }
 }
 
 variable "upcloud_token" {
@@ -720,8 +735,20 @@ variable "upcloud_token" {
 provider "upcloud" {
   token = var.upcloud_token
 }
-"#;
-    std::fs::write(&provider_path, provider_hcl)?;
+"#,
+    );
+    // Append non-cloud provider blocks (e.g. provider "kubernetes" { ... })
+    for pt in passthroughs {
+        if pt.kind == PassthroughKind::Provider
+            && let Some(name) = &pt.name
+            && !name.starts_with("required_provider:")
+        {
+            provider_hcl.push('\n');
+            provider_hcl.push_str(&pt.raw_hcl);
+            provider_hcl.push('\n');
+        }
+    }
+    std::fs::write(&provider_path, &provider_hcl)?;
     log.push("  [OK] providers.tf".to_string());
 
     let mut total = 1;
@@ -750,6 +777,22 @@ provider "upcloud" {
 
         for result in file_results {
             if let Some(hcl) = &result.upcloud_hcl {
+                // Passthrough resources: rewrite cloud refs but skip UpCloud-specific resolution
+                if result.status == MigrationStatus::Passthrough {
+                    let rewritten = provider.rewrite_output_refs(hcl);
+                    resolved_hcl_map.insert(
+                        (result.resource_type.clone(), result.resource_name.clone()),
+                        rewritten.clone(),
+                    );
+                    content.push_str(&format!(
+                        "# {} {} (non-cloud-provider resource, kept as is)\n",
+                        result.resource_type, result.resource_name
+                    ));
+                    content.push_str(&rewritten);
+                    content.push('\n');
+                    continue;
+                }
+
                 let resolved = resolve_placeholders(
                     hcl,
                     &result.resource_name,
@@ -911,9 +954,14 @@ provider "upcloud" {
             content.push('\n');
         }
 
-        // Append passthrough blocks (variable / output / locals) for this file.
+        // Append passthrough blocks (variable / output / locals / data) for this file.
+        // Provider blocks are handled separately in providers.tf.
         if let Some(pts) = passthrough_map.get(filename) {
             for pt in pts {
+                // Provider/required_provider entries go to providers.tf, not here
+                if pt.kind == PassthroughKind::Provider {
+                    continue;
+                }
                 let has_provider_prefix = pt
                     .name
                     .as_deref()
@@ -937,36 +985,38 @@ provider "upcloud" {
                             .trim_start_matches(provider.resource_type_prefix()),
                     ));
                 }
-                // Rewrite source provider resource references inside output/locals blocks.
+                // Rewrite source provider resource references inside output/locals/data blocks.
                 // Variables: run multi-signal detection and auto-convert instance types / regions.
-                let hcl =
-                    if pt.kind == PassthroughKind::Output || pt.kind == PassthroughKind::Locals {
-                        provider.rewrite_output_refs(&pt.raw_hcl)
-                    } else if pt.kind == PassthroughKind::Variable {
-                        let var_name = pt.name.as_deref().unwrap_or("");
-                        let (default_val, description) = extract_variable_info(&pt.raw_hcl);
-                        let usage_attrs = var_usage_map.get(var_name).cloned().unwrap_or_default();
-                        if let Some(mut conv) = analyze_variable_with(
-                            provider.var_detector().as_ref(),
-                            var_name,
-                            default_val.as_deref(),
-                            description.as_deref(),
-                            &usage_attrs,
-                        ) {
-                            // For region variables, always use the zone the user selected in the app
-                            // rather than the geographically closest zone from the detector.
-                            if conv.kind == VarKind::Region && conv.converted_value.is_some() {
-                                conv.converted_value = Some(zone.to_string());
-                            }
-                            let annotation = build_var_annotation(var_name, &conv);
-                            let converted_hcl = apply_conversion_to_hcl(&pt.raw_hcl, &conv);
-                            format!("{}{}", annotation, converted_hcl)
-                        } else {
-                            pt.raw_hcl.clone()
+                let hcl = if pt.kind == PassthroughKind::Output
+                    || pt.kind == PassthroughKind::Locals
+                    || pt.kind == PassthroughKind::Data
+                {
+                    provider.rewrite_output_refs(&pt.raw_hcl)
+                } else if pt.kind == PassthroughKind::Variable {
+                    let var_name = pt.name.as_deref().unwrap_or("");
+                    let (default_val, description) = extract_variable_info(&pt.raw_hcl);
+                    let usage_attrs = var_usage_map.get(var_name).cloned().unwrap_or_default();
+                    if let Some(mut conv) = analyze_variable_with(
+                        provider.var_detector().as_ref(),
+                        var_name,
+                        default_val.as_deref(),
+                        description.as_deref(),
+                        &usage_attrs,
+                    ) {
+                        // For region variables, always use the zone the user selected in the app
+                        // rather than the geographically closest zone from the detector.
+                        if conv.kind == VarKind::Region && conv.converted_value.is_some() {
+                            conv.converted_value = Some(zone.to_string());
                         }
+                        let annotation = build_var_annotation(var_name, &conv);
+                        let converted_hcl = apply_conversion_to_hcl(&pt.raw_hcl, &conv);
+                        format!("{}{}", annotation, converted_hcl)
                     } else {
                         pt.raw_hcl.clone()
-                    };
+                    }
+                } else {
+                    pt.raw_hcl.clone()
+                };
                 content.push_str(&hcl);
                 content.push('\n');
                 content.push('\n');
@@ -3185,5 +3235,560 @@ output "server_id" {
             "log must contain PROMOTE entry\nlog: {:?}",
             log
         );
+    }
+
+    // ── Non-cloud-provider resource passthrough ────────────────────────────────
+
+    #[test]
+    fn non_cloud_resource_kept_as_is_in_output() {
+        // A kubernetes_deployment_v1 should be passed through unchanged.
+        let k8s_hcl = r#"resource "kubernetes_deployment_v1" "nginx" {
+  metadata {
+    name = "nginx"
+  }
+
+  spec {
+    replicas = 2
+    selector {
+      match_labels = {
+        App = "nginx"
+      }
+    }
+    template {
+      metadata {
+        labels = {
+          App = "nginx"
+        }
+      }
+      spec {
+        container {
+          image = "nginx:stable"
+          name  = "example"
+        }
+      }
+    }
+  }
+}
+"#;
+        let passthrough = MigrationResult {
+            resource_type: "kubernetes_deployment_v1".to_string(),
+            resource_name: "nginx".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: "kubernetes_deployment_v1".to_string(),
+            upcloud_hcl: Some(k8s_hcl.to_string()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec!["Non-cloud-provider resource, kept as is.".to_string()],
+            source_hcl: Some(k8s_hcl.to_string()),
+        };
+
+        let output = run_generate(&[passthrough], "passthrough_k8s");
+
+        assert!(
+            output.contains("kubernetes_deployment_v1"),
+            "passthrough resource must appear in output\n{output}"
+        );
+        assert!(
+            output.contains("replicas = 2"),
+            "passthrough resource HCL must be preserved\n{output}"
+        );
+        assert!(
+            output.contains("kept as is"),
+            "passthrough resource must have 'kept as is' comment\n{output}"
+        );
+    }
+
+    #[test]
+    fn passthrough_resource_alongside_mapped_resource() {
+        // When a file has both AWS resources (mapped) and non-cloud resources (passthrough),
+        // both should appear in the output.
+        let server = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  hostname = "web"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 25
+  }
+
+  network_interface {
+    type = "public"
+  }
+}
+"#,
+            ),
+            None,
+        );
+
+        let k8s_hcl = r#"resource "kubernetes_deployment_v1" "app" {
+  metadata {
+    name = "app"
+  }
+
+  spec {
+    replicas = 1
+  }
+}
+"#;
+        let passthrough = MigrationResult {
+            resource_type: "kubernetes_deployment_v1".to_string(),
+            resource_name: "app".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: "kubernetes_deployment_v1".to_string(),
+            upcloud_hcl: Some(k8s_hcl.to_string()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec!["Non-cloud-provider resource, kept as is.".to_string()],
+            source_hcl: Some(k8s_hcl.to_string()),
+        };
+
+        let output = run_generate(&[server, passthrough], "passthrough_mixed");
+
+        // Both should be present
+        assert!(
+            output.contains("upcloud_server"),
+            "mapped resource must appear in output\n{output}"
+        );
+        assert!(
+            output.contains("kubernetes_deployment_v1"),
+            "passthrough resource must appear in output\n{output}"
+        );
+    }
+
+    #[test]
+    fn passthrough_not_in_migration_notes() {
+        // Passthrough resources should NOT appear in MIGRATION_NOTES.md
+        let k8s_hcl = r#"resource "kubernetes_deployment_v1" "nginx" {
+  metadata {
+    name = "nginx"
+  }
+}
+"#;
+        let passthrough = MigrationResult {
+            resource_type: "kubernetes_deployment_v1".to_string(),
+            resource_name: "nginx".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: "kubernetes_deployment_v1".to_string(),
+            upcloud_hcl: Some(k8s_hcl.to_string()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec!["Non-cloud-provider resource, kept as is.".to_string()],
+            source_hcl: Some(k8s_hcl.to_string()),
+        };
+
+        let dir = std::env::temp_dir().join("upcloud_gen_test_passthrough_notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = vec![];
+        generate_files(&[passthrough], &[], &dir, None, "fi-hel2", &mut log).unwrap();
+        let notes_exists = dir.join("MIGRATION_NOTES.md").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // No unsupported/partial resources → no MIGRATION_NOTES.md should be generated
+        assert!(
+            !notes_exists,
+            "MIGRATION_NOTES.md should not be generated when only passthrough resources exist"
+        );
+    }
+
+    #[test]
+    fn passthrough_with_cloud_refs_are_rewritten() {
+        // If a non-cloud resource references an AWS resource, the reference
+        // should be rewritten to the UpCloud equivalent.
+        let k8s_hcl = r#"resource "kubernetes_config_map" "cluster_info" {
+  metadata {
+    name = "cluster-info"
+  }
+
+  data = {
+    endpoint = aws_eks_cluster.main.endpoint
+  }
+}
+"#;
+        let passthrough = MigrationResult {
+            resource_type: "kubernetes_config_map".to_string(),
+            resource_name: "cluster_info".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: "kubernetes_config_map".to_string(),
+            upcloud_hcl: Some(k8s_hcl.to_string()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec!["Non-cloud-provider resource, kept as is.".to_string()],
+            source_hcl: Some(k8s_hcl.to_string()),
+        };
+
+        let output = run_generate(&[passthrough], "passthrough_rewrite_refs");
+
+        assert!(
+            !output.contains("aws_eks_cluster"),
+            "AWS references in passthrough resources should be rewritten\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_kubernetes_cluster"),
+            "AWS references should be rewritten to UpCloud equivalents\n{output}"
+        );
+    }
+
+    #[test]
+    fn passthrough_excluded_from_pricing() {
+        // Passthrough resources should not be counted for UpCloud pricing
+        let k8s_hcl = r#"resource "kubernetes_deployment_v1" "nginx" {
+  spec { replicas = 2 }
+}
+"#;
+        let passthrough = MigrationResult {
+            resource_type: "kubernetes_deployment_v1".to_string(),
+            resource_name: "nginx".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: "kubernetes_deployment_v1".to_string(),
+            upcloud_hcl: Some(k8s_hcl.to_string()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec!["Non-cloud-provider resource, kept as is.".to_string()],
+            source_hcl: Some(k8s_hcl.to_string()),
+        };
+        assert_eq!(
+            passthrough.status,
+            MigrationStatus::Passthrough,
+            "passthrough status must be Passthrough"
+        );
+        assert!(
+            matches!(
+                passthrough.status,
+                MigrationStatus::Unsupported
+                    | MigrationStatus::Unknown
+                    | MigrationStatus::Passthrough
+            ),
+            "passthrough should be filtered out of pricing calculations"
+        );
+    }
+
+    #[test]
+    fn map_resource_produces_passthrough_for_non_cloud_resources() {
+        use crate::migration::mapper::map_resource;
+
+        let res = crate::terraform::types::TerraformResource {
+            resource_type: "kubernetes_deployment_v1".to_string(),
+            name: "nginx".to_string(),
+            attributes: std::collections::HashMap::new(),
+            source_file: std::path::PathBuf::from("test.tf"),
+            raw_hcl: "resource \"kubernetes_deployment_v1\" \"nginx\" {\n  metadata {\n    name = \"nginx\"\n  }\n}".to_string(),
+        };
+
+        let result = map_resource(&res);
+
+        assert_eq!(result.status, MigrationStatus::Passthrough);
+        assert!(
+            result.upcloud_hcl.is_some(),
+            "passthrough resource must have upcloud_hcl set"
+        );
+        assert_eq!(
+            result.upcloud_hcl.as_deref().unwrap(),
+            res.raw_hcl,
+            "passthrough resource must preserve raw HCL"
+        );
+        assert_eq!(result.upcloud_type, "kubernetes_deployment_v1");
+    }
+
+    #[test]
+    fn map_resource_various_non_cloud_types_produce_passthrough() {
+        use crate::migration::mapper::map_resource;
+
+        let non_cloud_types = [
+            "kubernetes_deployment_v1",
+            "helm_release",
+            "null_resource",
+            "random_password",
+            "local_file",
+            "tls_private_key",
+        ];
+
+        for rt in &non_cloud_types {
+            let res = crate::terraform::types::TerraformResource {
+                resource_type: rt.to_string(),
+                name: "test".to_string(),
+                attributes: std::collections::HashMap::new(),
+                source_file: std::path::PathBuf::from("test.tf"),
+                raw_hcl: format!("resource \"{}\" \"test\" {{\n}}", rt),
+            };
+            let result = map_resource(&res);
+            assert_eq!(
+                result.status,
+                MigrationStatus::Passthrough,
+                "resource type '{}' should produce Passthrough status",
+                rt
+            );
+            assert!(
+                result.upcloud_hcl.is_some(),
+                "resource type '{}' should have upcloud_hcl set",
+                rt
+            );
+        }
+    }
+
+    #[test]
+    fn parser_captures_non_cloud_provider_blocks() {
+        use crate::terraform::parser::parse_tf_file;
+        use std::io::Write;
+
+        let tf_content = r#"
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+provider "kubernetes" {
+  host = "https://example.com"
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+}
+
+resource "kubernetes_deployment_v1" "nginx" {
+  metadata {
+    name = "nginx"
+  }
+}
+"#;
+        let dir = std::env::temp_dir().join("upcloud_parser_test_provider_blocks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tf_path = dir.join("main.tf");
+        let mut f = std::fs::File::create(&tf_path).unwrap();
+        f.write_all(tf_content.as_bytes()).unwrap();
+        drop(f);
+
+        let parsed = parse_tf_file(&tf_path).expect("should parse");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Should have 2 resources
+        assert_eq!(parsed.resources.len(), 2, "should parse both resources");
+
+        // Should have a provider passthrough for kubernetes
+        let provider_pts: Vec<_> = parsed
+            .passthroughs
+            .iter()
+            .filter(|p| p.kind == PassthroughKind::Provider)
+            .collect();
+        assert!(
+            provider_pts
+                .iter()
+                .any(|p| p.name.as_deref() == Some("kubernetes")),
+            "should capture kubernetes provider block as passthrough\n{:?}",
+            provider_pts
+        );
+
+        // Should have a required_provider entry for kubernetes
+        assert!(
+            provider_pts.iter().any(|p| {
+                p.name
+                    .as_deref()
+                    .map(|n| n.starts_with("required_provider:kubernetes"))
+                    .unwrap_or(false)
+            }),
+            "should capture kubernetes required_providers entry\n{:?}",
+            provider_pts
+        );
+
+        // Should NOT have aws provider or required_provider
+        assert!(
+            !provider_pts
+                .iter()
+                .any(|p| p.name.as_deref() == Some("aws")),
+            "should NOT capture aws provider block\n{:?}",
+            provider_pts
+        );
+    }
+
+    #[test]
+    fn non_cloud_providers_included_in_providers_tf() {
+        use crate::terraform::types::PassthroughBlock;
+
+        let k8s_hcl = r#"resource "kubernetes_deployment_v1" "nginx" {
+  metadata {
+    name = "nginx"
+  }
+}
+"#;
+        let passthrough = MigrationResult {
+            resource_type: "kubernetes_deployment_v1".to_string(),
+            resource_name: "nginx".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: "kubernetes_deployment_v1".to_string(),
+            upcloud_hcl: Some(k8s_hcl.to_string()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec![],
+            source_hcl: None,
+        };
+
+        let provider_pt = PassthroughBlock {
+            name: Some("kubernetes".to_string()),
+            raw_hcl: "provider \"kubernetes\" {\n  host = \"https://example.com\"\n}".to_string(),
+            source_file: std::path::PathBuf::from("main.tf"),
+            kind: PassthroughKind::Provider,
+        };
+
+        let req_provider_pt = PassthroughBlock {
+            name: Some("required_provider:kubernetes".to_string()),
+            raw_hcl: "kubernetes = {\n      source  = \"hashicorp/kubernetes\"\n      version = \"~> 3.0\"\n    }".to_string(),
+            source_file: std::path::PathBuf::from("main.tf"),
+            kind: PassthroughKind::Provider,
+        };
+
+        let dir = std::env::temp_dir().join("upcloud_gen_test_providers_tf");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = vec![];
+        generate_files(
+            &[passthrough],
+            &[provider_pt, req_provider_pt],
+            &dir,
+            None,
+            "fi-hel2",
+            &mut log,
+        )
+        .unwrap();
+        let providers_content =
+            std::fs::read_to_string(dir.join("providers.tf")).expect("providers.tf must exist");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            providers_content.contains("upcloud"),
+            "providers.tf must contain UpCloud provider\n{providers_content}"
+        );
+        assert!(
+            providers_content.contains("kubernetes"),
+            "providers.tf must contain kubernetes provider\n{providers_content}"
+        );
+        assert!(
+            providers_content.contains("hashicorp/kubernetes"),
+            "providers.tf must contain kubernetes required_provider source\n{providers_content}"
+        );
+    }
+
+    #[test]
+    fn kube_example_end_to_end() {
+        use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
+
+        // Parse all files from the kube-example fixture
+        let kube_dir = std::path::PathBuf::from("kube-example");
+        let mut all_resources = vec![];
+        let mut all_passthroughs = vec![];
+
+        for entry in std::fs::read_dir(&kube_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("tf") {
+                continue;
+            }
+            let parsed = parse_tf_file(&path.to_path_buf()).expect("should parse");
+            all_resources.extend(parsed.resources);
+            all_passthroughs.extend(parsed.passthroughs);
+        }
+
+        let results: Vec<MigrationResult> = all_resources.iter().map(map_resource).collect();
+
+        // Verify kubernetes_deployment_v1 is classified as Passthrough
+        let k8s_results: Vec<&MigrationResult> = results
+            .iter()
+            .filter(|r| r.resource_type == "kubernetes_deployment_v1")
+            .collect();
+        assert_eq!(
+            k8s_results.len(),
+            1,
+            "should have 1 kubernetes_deployment_v1 resource"
+        );
+        assert_eq!(
+            k8s_results[0].status,
+            MigrationStatus::Passthrough,
+            "kubernetes_deployment_v1 should be Passthrough"
+        );
+        assert!(
+            k8s_results[0].upcloud_hcl.is_some(),
+            "kubernetes_deployment_v1 should have upcloud_hcl"
+        );
+
+        // Generate the output
+        let out_dir = std::env::temp_dir().join("upcloud_e2e_kube");
+        let mut log = vec![];
+        generate_files(
+            &results,
+            &all_passthroughs,
+            &out_dir,
+            Some(kube_dir.as_path()),
+            "fi-hel2",
+            &mut log,
+        )
+        .unwrap();
+
+        // Check that the kubernetes deployment is in the output
+        let kube_tf =
+            std::fs::read_to_string(out_dir.join("kube.tf")).expect("kube.tf must exist in output");
+        assert!(
+            kube_tf.contains("kubernetes_deployment_v1"),
+            "kube.tf must contain the kubernetes deployment\n{kube_tf}"
+        );
+        assert!(
+            kube_tf.contains("scalable-nginx-example"),
+            "kube.tf must preserve the kubernetes deployment content\n{kube_tf}"
+        );
+        assert!(
+            kube_tf.contains("kept as is"),
+            "kube.tf must have 'kept as is' comment\n{kube_tf}"
+        );
+
+        // Check that mapped resources also exist
+        let main_tf =
+            std::fs::read_to_string(out_dir.join("main.tf")).expect("main.tf must exist in output");
+        assert!(
+            main_tf.contains("upcloud_kubernetes_cluster"),
+            "main.tf must contain mapped k8s cluster\n{main_tf}"
+        );
+        assert!(
+            main_tf.contains("upcloud_router"),
+            "main.tf must contain mapped router\n{main_tf}"
+        );
+
+        // Check providers.tf includes kubernetes provider
+        let providers_tf =
+            std::fs::read_to_string(out_dir.join("providers.tf")).expect("providers.tf must exist");
+        assert!(
+            providers_tf.contains("kubernetes"),
+            "providers.tf must contain kubernetes provider\n{providers_tf}"
+        );
+
+        // kubernetes_deployment_v1 should NOT appear in MIGRATION_NOTES as unsupported
+        if let Ok(notes) = std::fs::read_to_string(out_dir.join("MIGRATION_NOTES.md")) {
+            assert!(
+                !notes.contains("kubernetes_deployment_v1"),
+                "kubernetes_deployment_v1 must NOT appear in MIGRATION_NOTES.md\n{notes}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 }

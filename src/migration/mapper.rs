@@ -39,12 +39,16 @@ pub fn map_resource(res: &TerraformResource) -> MigrationResult {
 
     let rt = res.resource_type.as_str();
 
+    // Known cloud provider prefixes that have (or will have) mapping support
+    let is_cloud_provider =
+        rt.starts_with("aws_") || rt.starts_with("azurerm_") || rt.starts_with("google_");
+
     // Try to detect provider from resource type prefix
     let mut result = if rt.starts_with("aws_") {
         let provider = detect_provider(&[]);
         map_resource_with(provider.mapper().as_ref(), res)
-    } else {
-        // Unknown provider
+    } else if is_cloud_provider {
+        // Known cloud provider but not yet supported — mark as Unknown
         MigrationResult {
             resource_type: res.resource_type.clone(),
             resource_name: res.name.clone(),
@@ -58,6 +62,20 @@ pub fn map_resource(res: &TerraformResource) -> MigrationResult {
                 "Provider not recognized for resource type '{}'",
                 rt
             )],
+            source_hcl: Some(res.raw_hcl.clone()),
+        }
+    } else {
+        // Non-cloud-provider resource (e.g. kubernetes, helm, null, random) — keep as-is
+        MigrationResult {
+            resource_type: res.resource_type.clone(),
+            resource_name: res.name.clone(),
+            source_file: res.source_file.display().to_string(),
+            status: MigrationStatus::Passthrough,
+            upcloud_type: res.resource_type.clone(),
+            upcloud_hcl: Some(res.raw_hcl.clone()),
+            snippet: None,
+            parent_resource: None,
+            notes: vec!["Non-cloud-provider resource, kept as is.".to_string()],
             source_hcl: Some(res.raw_hcl.clone()),
         }
     };

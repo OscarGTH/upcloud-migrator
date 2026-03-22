@@ -39,11 +39,13 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
 
     let hcl = format!(
         r#"resource "upcloud_kubernetes_cluster" "{id}" {{
-  name                    = {name_hcl}
-  zone                    = "__ZONE__"
-  network                 = "<TODO: upcloud_network reference>"
-  version                 = {version_hcl}
   control_plane_ip_filter = ["0.0.0.0/0"]  # restrict to known CIDRs in production
+  name                    = {name_hcl}
+  network                 = "<TODO: upcloud_network reference>"
+  zone                    = "__ZONE__"
+  version                 = {version_hcl}
+  # private_node_groups = true  # uncomment if all node-group subnets are private (NAT-only outbound)
+  # plan = "prod-md"            # optional: set the cluster control-plane tier (upctl kubernetes plans)
 }}
 "#,
         id = res.name,
@@ -63,8 +65,9 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
         notes: vec![
             format!("EKS → UpCloud Managed Kubernetes (k8s {})", k8s_version_raw),
             "network is auto-resolved from the EKS cluster's VPC subnets when a matching upcloud_network exists.".into(),
-            "The network resource needs: lifecycle { ignore_changes = [router] } — UpCloud attaches a router automatically.".into(),
+            "The upcloud_network used here must have lifecycle { ignore_changes = [router] } — generated automatically.".into(),
             "IAM roles for service accounts → use UpCloud API credentials instead.".into(),
+            "Uncomment private_node_groups = true if all node-group subnets are private (nodes have no public IPs, outbound via NAT gateway).".into(),
         ],
         source_hcl: None,
     }
@@ -195,6 +198,7 @@ mod tests {
             "{hcl}"
         );
         assert!(hcl.contains("version                 = \"1.29\""), "{hcl}");
+        assert!(hcl.contains("control_plane_ip_filter"), "{hcl}");
     }
 
     #[test]
@@ -259,8 +263,46 @@ mod tests {
         let r = map_eks_cluster(&res);
         assert!(
             r.notes.iter().any(|n| n.contains("ignore_changes")),
-            "should note the required lifecycle block on the network\n{:?}",
+            "should note the lifecycle block on the network\n{:?}",
             r.notes
+        );
+    }
+
+    #[test]
+    fn eks_cluster_has_commented_private_node_groups() {
+        // private_node_groups cannot be auto-detected from EKS vpc_config fields;
+        // it depends on whether _node-group_ subnets are private-only (NAT-only outbound).
+        // The generated HCL always includes it as a comment for the user to opt in.
+        let res = make_res("aws_eks_cluster", "c", &[]);
+        let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("# private_node_groups = true"),
+            "HCL must include a commented-out private_node_groups line\n{hcl}"
+        );
+        assert!(
+            !hcl.contains("\n  private_node_groups     = true"),
+            "private_node_groups must not be uncommented automatically\n{hcl}"
+        );
+    }
+
+    #[test]
+    fn eks_cluster_private_node_groups_note_mentions_nat() {
+        let res = make_res("aws_eks_cluster", "c", &[]);
+        let r = map_eks_cluster(&res);
+        assert!(
+            r.notes.iter().any(|n| n.contains("private_node_groups")),
+            "should include a note explaining when to enable private_node_groups\n{:?}",
+            r.notes
+        );
+    }
+
+    #[test]
+    fn eks_cluster_has_commented_plan() {
+        let res = make_res("aws_eks_cluster", "c", &[]);
+        let hcl = map_eks_cluster(&res).upcloud_hcl.unwrap();
+        assert!(
+            hcl.contains("# plan ="),
+            "HCL must include a commented-out plan line\n{hcl}"
         );
     }
 

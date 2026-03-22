@@ -58,7 +58,78 @@ pub fn parse_tf_file(path: &PathBuf) -> Result<TerraformFile> {
                     });
                 }
             }
-            _ => {} // terraform, provider, data, module — ignored for now
+            "provider" => {
+                // Keep non-cloud-provider provider blocks (e.g. kubernetes, helm, null, random)
+                let labels: Vec<&str> = block.labels().iter().map(|l| l.as_str()).collect();
+                if let Some(&provider_name) = labels.first()
+                    && !is_cloud_provider_name(provider_name)
+                {
+                    let raw_hcl =
+                        extract_passthrough_block(&content, "provider", Some(provider_name))
+                            .unwrap_or_default();
+                    if !raw_hcl.is_empty() {
+                        passthroughs.push(PassthroughBlock {
+                            name: Some(provider_name.to_string()),
+                            raw_hcl,
+                            source_file: path.clone(),
+                            kind: PassthroughKind::Provider,
+                        });
+                    }
+                }
+            }
+            "data" => {
+                // Keep non-cloud-provider data sources (e.g. external, http, local)
+                let labels: Vec<&str> = block.labels().iter().map(|l| l.as_str()).collect();
+                if labels.len() >= 2 {
+                    let data_type = labels[0];
+                    if !is_cloud_provider_type(data_type) {
+                        let data_name = labels[1];
+                        let raw_hcl = extract_block_by_header(
+                            &content,
+                            &format!("data \"{}\" \"{}\"", data_type, data_name),
+                        )
+                        .unwrap_or_default();
+                        if !raw_hcl.is_empty() {
+                            passthroughs.push(PassthroughBlock {
+                                name: Some(format!("{}.{}", data_type, data_name)),
+                                raw_hcl,
+                                source_file: path.clone(),
+                                kind: PassthroughKind::Data,
+                            });
+                        }
+                    }
+                }
+            }
+            "terraform" => {
+                // Extract required_providers entries for non-cloud providers
+                for inner_block in block.body().blocks() {
+                    if inner_block.identifier() == "required_providers" {
+                        for attr in inner_block.body().attributes() {
+                            let provider_name = attr.key();
+                            if !is_cloud_provider_name(provider_name) {
+                                // Extract the raw text for this provider requirement
+                                let raw_hcl =
+                                    extract_required_provider_entry(&content, provider_name)
+                                        .unwrap_or_else(|| {
+                                            format_required_provider_from_expr(
+                                                provider_name,
+                                                attr.expr(),
+                                            )
+                                        });
+                                if !raw_hcl.is_empty() {
+                                    passthroughs.push(PassthroughBlock {
+                                        name: Some(format!("required_provider:{}", provider_name)),
+                                        raw_hcl,
+                                        source_file: path.clone(),
+                                        kind: PassthroughKind::Provider,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {} // module blocks and others — ignored for now
         }
     }
 
@@ -126,4 +197,65 @@ fn extract_attributes(body: &hcl::Body, attrs: &mut HashMap<String, String>, pre
         };
         extract_attributes(block.body(), attrs, &block_key);
     }
+}
+
+/// Check whether a provider name belongs to a cloud provider that has (or will
+/// have) migration support.
+fn is_cloud_provider_name(name: &str) -> bool {
+    matches!(name, "aws" | "azurerm" | "google" | "alicloud")
+}
+
+/// Check whether a resource/data source type belongs to a cloud provider.
+fn is_cloud_provider_type(type_name: &str) -> bool {
+    type_name.starts_with("aws_")
+        || type_name.starts_with("azurerm_")
+        || type_name.starts_with("google_")
+        || type_name.starts_with("alicloud_")
+}
+
+/// Extract a single `provider_name = { ... }` entry from the `required_providers`
+/// block within a `terraform { ... }` block in the source text.
+fn extract_required_provider_entry(content: &str, provider_name: &str) -> Option<String> {
+    // Find terraform { ... } block first
+    let terraform_block = extract_block_by_header(content, "terraform")?;
+    // Find required_providers { ... } within it
+    let rp_block = extract_block_by_header(&terraform_block, "required_providers")?;
+    // Find the specific provider entry: `provider_name = {`
+    // The entry looks like: `    kubernetes = {\n      source = ...\n      version = ...\n    }`
+    let pattern = format!("{} = {{", provider_name);
+    let alt_pattern = format!("{}=", provider_name);
+    let start = rp_block
+        .find(&pattern)
+        .or_else(|| rp_block.find(&alt_pattern))?;
+
+    // Brace-count to find the end of the entry (wait until we've seen at least one `{`)
+    let entry_start = rp_block[..start]
+        .rfind('\n')
+        .map(|p| p + 1)
+        .unwrap_or(start);
+    let mut depth = 0i32;
+    let mut found_open = false;
+    let mut end = start;
+    for (i, ch) in rp_block[start..].char_indices() {
+        if ch == '{' {
+            depth += 1;
+            found_open = true;
+        }
+        if ch == '}' {
+            depth -= 1;
+        }
+        if found_open && depth == 0 {
+            end = start + i + 1;
+            break;
+        }
+    }
+    if !found_open {
+        return None;
+    }
+    Some(rp_block[entry_start..end].trim().to_string())
+}
+
+/// Fallback: reconstruct a required_provider entry from the parsed expression.
+fn format_required_provider_from_expr(name: &str, expr: &hcl::Expression) -> String {
+    format!("    {} = {}", name, expr)
 }

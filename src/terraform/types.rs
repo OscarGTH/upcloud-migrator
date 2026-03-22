@@ -18,6 +18,8 @@ pub enum PassthroughKind {
     Variable,
     Output,
     Locals,
+    Provider,
+    Data,
 }
 
 /// A non-resource block (`variable`, `output`, `locals`) that is passed through

@@ -60,6 +60,7 @@ pub fn render(f: &mut Frame, app: &App) {
         MigrationStatus::Partial => ("◇ PARTIAL", theme::warning()),
         MigrationStatus::Unsupported => ("✕ UNSUPPORTED", theme::danger()),
         MigrationStatus::Unknown => ("? UNKNOWN", theme::dim()),
+        MigrationStatus::Passthrough => ("≡ KEPT", theme::dim()),
     };
 
     let short_src = result

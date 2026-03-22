@@ -5,6 +5,7 @@ pub enum MigrationStatus {
     Partial,     // partial mapping, significant manual work
     Unsupported, // no equivalent, full manual migration
     Unknown,     // not recognized (other provider or custom)
+    Passthrough, // non-cloud-provider resource, kept as-is
 }
 
 impl MigrationStatus {
@@ -15,6 +16,7 @@ impl MigrationStatus {
             MigrationStatus::Partial => "PARTIAL",
             MigrationStatus::Unsupported => "UNSUPPORTED",
             MigrationStatus::Unknown => "UNKNOWN",
+            MigrationStatus::Passthrough => "KEPT",
         }
     }
 }
