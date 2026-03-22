@@ -22,25 +22,26 @@ pub fn parse_dot(dot: &str) -> Vec<GraphNode> {
 
         // Node declaration: "ID" [label = "LABEL", ...]
         if t.starts_with('"') && t.contains("[label") {
-            if let Some((id, rest)) = read_quoted(t) {
-                if let Some(label) = extract_label_attr(&rest) {
-                    id_to_label.insert(id, label);
-                }
+            if let Some((id, rest)) = read_quoted(t)
+                && let Some(label) = extract_label_attr(rest)
+            {
+                id_to_label.insert(id, label);
             }
             continue;
         }
 
         // Edge: "SRC" -> "DST"
-        if t.starts_with('"') && t.contains("\" -> \"") {
-            if let Some((src, rest)) = read_quoted(t) {
-                let rest = rest.trim();
-                if let Some(after) = rest.strip_prefix("->") {
-                    let after = after.trim();
-                    if after.starts_with('"') {
-                        if let Some((dst, _)) = read_quoted(after) {
-                            raw_edges.push((src, dst));
-                        }
-                    }
+        if t.starts_with('"')
+            && t.contains("\" -> \"")
+            && let Some((src, rest)) = read_quoted(t)
+        {
+            let rest = rest.trim();
+            if let Some(after) = rest.strip_prefix("->") {
+                let after = after.trim();
+                if after.starts_with('"')
+                    && let Some((dst, _)) = read_quoted(after)
+                {
+                    raw_edges.push((src, dst));
                 }
             }
         }

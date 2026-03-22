@@ -645,10 +645,10 @@ fn extract_root_volume_size(raw_hcl: &str) -> Option<u32> {
         } else {
             depth_ebs += t.chars().filter(|&c| c == '{').count() as u32;
             depth_ebs = depth_ebs.saturating_sub(t.chars().filter(|&c| c == '}').count() as u32);
-            if t.starts_with("volume_size") {
-                if let Some(val) = t.split('=').nth(1) {
-                    return val.trim().trim_matches('"').parse().ok();
-                }
+            if t.starts_with("volume_size")
+                && let Some(val) = t.split('=').nth(1)
+            {
+                return val.trim().trim_matches('"').parse().ok();
             }
             if depth_ebs == 0 {
                 in_ebs = false;
