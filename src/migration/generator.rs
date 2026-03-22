@@ -3695,7 +3695,7 @@ resource "kubernetes_deployment_v1" "nginx" {
         use crate::terraform::parser::parse_tf_file;
 
         // Parse all files from the kube-example fixture
-        let kube_dir = std::path::PathBuf::from("kube-example");
+        let kube_dir = std::path::PathBuf::from("test-fixtures/kube-example");
         let mut all_resources = vec![];
         let mut all_passthroughs = vec![];
 
