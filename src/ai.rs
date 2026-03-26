@@ -10,10 +10,10 @@ async fn call_llm_api(
     api_url: Option<String>,
 ) -> Result<String> {
     let api_url = api_url.unwrap_or_else(|| {
-        std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://llm-proxy.edgez.live".to_string())
+        std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
     });
     let model = if model.is_empty() {
-        std::env::var("LLM_MODEL").unwrap_or_else(|_| "claude-latest".to_string())
+        std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string())
     } else {
         model
     };

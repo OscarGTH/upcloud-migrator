@@ -284,11 +284,32 @@ That's it — the generator, cross-reference resolver, diff view, and TODO syste
 
 ## Environment variables
 
-| Variable | Purpose |
-|---|---|
-| `LLM_API_KEY` | API key for AI-powered TODO suggestions and chat |
-| `LLM_API_URL` | API endpoint URL |
-| `LLM_MODEL` | Model name |
+The AI advisor (optional) for the TODO suggestions and chat require an LLM API. By default, the tool targets **OpenAI's API**:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `LLM_API_KEY` | OpenAI API key (or compatible LLM provider) | *(required)* |
+| `LLM_API_URL` | API endpoint URL | `https://api.openai.com/v1` |
+| `LLM_MODEL` | Model name | `gpt-4o-mini` |
+
+**Setup:**
+
+1. Get an OpenAI API key from [platform.openai.com](https://platform.openai.com/api-keys)
+2. Export it:
+   ```bash
+   export LLM_API_KEY="sk-..."
+   ```
+3. Run the tool — AI features are now active
+
+**Using a different provider:**
+
+To use Anthropic, Azure OpenAI, or any OpenAI-compatible endpoint, override `LLM_API_URL` and `LLM_MODEL`:
+
+```bash
+export LLM_API_KEY="your-api-key"
+export LLM_API_URL="https://api.anthropic.com/v1"
+export LLM_MODEL="claude-3-5-sonnet-20241022"
+```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
