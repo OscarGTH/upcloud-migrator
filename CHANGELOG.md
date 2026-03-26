@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.4.0...upcloud-migrate-v0.5.0) (2026-03-26)
+
+
+### Features
+
+* add better kubernetes pricing info and correct plan name. ([5bf6946](https://github.com/OscarGTH/upcloud-migrator/commit/5bf6946e6461b896efa667e6553279a11357457e))
+
+
+### Bug Fixes
+
+* comment kubernetes plan by default ([c1c167f](https://github.com/OscarGTH/upcloud-migrator/commit/c1c167f571e810d3056a570897cdba7f1c419f87))
+
 ## [0.4.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.3.0...upcloud-migrate-v0.4.0) (2026-03-26)
 
 
