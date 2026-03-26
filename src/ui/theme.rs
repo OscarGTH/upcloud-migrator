@@ -30,16 +30,24 @@ fn detect_theme_mode() -> ThemeMode {
     // TERM_BACKGROUND_COLOR is set by some terminals (e.g. Terminal.app) as an RGB hex string.
     // A high luminance value indicates a light background.
     if let Ok(val) = std::env::var("TERM_BACKGROUND_COLOR") {
-        // Example value: "#ffffff" or "rgb:ffff/ffff/ffff"
+        // "#rrggbb" (6 chars) or "#rrrrggggbbbb" (12 chars, macOS Terminal.app)
         let s = val.trim_start_matches('#');
-        if s.len() == 6
-            && let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&s[0..2], 16),
-                u8::from_str_radix(&s[2..4], 16),
-                u8::from_str_radix(&s[4..6], 16),
-            )
-        {
-            // Perceived luminance; threshold 128
+        let rgb = if s.len() == 6 {
+            // Standard 8-bit-per-channel hex
+            let r = u8::from_str_radix(&s[0..2], 16);
+            let g = u8::from_str_radix(&s[2..4], 16);
+            let b = u8::from_str_radix(&s[4..6], 16);
+            r.ok().zip(g.ok()).zip(b.ok()).map(|((r, g), b)| (r, g, b))
+        } else if s.len() == 12 {
+            // 16-bit-per-channel hex; take the high byte of each channel
+            let r = u8::from_str_radix(&s[0..2], 16);
+            let g = u8::from_str_radix(&s[4..6], 16);
+            let b = u8::from_str_radix(&s[8..10], 16);
+            r.ok().zip(g.ok()).zip(b.ok()).map(|((r, g), b)| (r, g, b))
+        } else {
+            None
+        };
+        if let Some((r, g, b)) = rgb {
             let lum = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
             if lum > 128 {
                 return ThemeMode::Light;
