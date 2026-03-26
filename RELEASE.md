@@ -1,87 +1,49 @@
-# Automated Semantic Release Guide
+# Release Guide
 
-This project uses **cargo-release** for automated semantic versioning based on **conventional commits**.
+This project uses **Release Please** for automated semantic versioning and changelog generation based on **Conventional Commits**.
 
 ## How It Works
 
-1. **Conventional Commits**: All commits to `main` must follow the conventional commit format:
-   - `feat: add new feature` → Bumps MINOR version (0.1.0 → 0.2.0)
-   - `fix: bug fix` → Bumps PATCH version (0.1.0 → 0.1.1)
-   - `feat!: breaking change` or `fix!: breaking change` → Bumps MAJOR version (0.1.0 → 1.0.0)
-   - `chore:`, `docs:`, `style:`, `test:`, `refactor:`, `perf:` → No version bump
+1. **Every push to `main`** triggers the `release-please` workflow, which analyzes commits since the last release and creates or updates a release PR.
 
-2. **Pull Requests**: The `conventional-commits` workflow on PRs validates that your commits follow the format.
+2. **The release PR** bumps the version in `Cargo.toml`, updates `CHANGELOG.md`, and stays open collecting further changes until you're ready to ship.
 
-3. **Automatic Release**:
-   - When you push to `main`, the `automated-release` workflow runs
-   - It validates tests, linting, and conventional commits
-   - If conventional commits are detected, `cargo-release` automatically:
-     - Bumps the version in `Cargo.toml` based on change type
-     - Creates a git tag (e.g., `v0.2.0`)
-     - Pushes the tag and commit to GitHub
-   - The existing `release` workflow then triggers on the tag and builds binaries
-
-## Manual Release (if needed)
-
-If you want to manually trigger a release:
-
-```bash
-# Dry-run (shows what would happen)
-cargo release
-
-# Actually perform the release and push to GitHub
-cargo release --execute
-```
+3. **Merging the release PR** triggers the actual release: Release Please creates the git tag and GitHub release, then the build jobs produce binaries for all three platforms and attach them.
 
 ## Version Bump Rules
 
-| Commit Type | Version Impact |
-|------------|-------------------|
-| `feat:` | Minor bump (0.1.x → 0.2.0) |
-| `fix:` | Patch bump (0.1.0 → 0.1.1) |
-| `feat!:` or `fix!:` | Major bump (0.1.0 → 1.0.0) |
-| `refactor:`, `perf:`, `chore:`, `docs:`, `style:`, `test:` | No bump |
+| Commit type | Version impact |
+|---|---|
+| `feat:` | Minor bump (`0.1.x` → `0.2.0`) |
+| `fix:` | Patch bump (`0.1.0` → `0.1.1`) |
+| `feat!:`, `fix!:`, or any type with `BREAKING CHANGE:` footer | Major bump (`0.1.0` → `1.0.0`) |
+| `refactor:`, `perf:`, `chore:`, `docs:`, `style:`, `test:`, `ci:` | No bump (still appears in changelog) |
 
-## Examples
+> Before `v1.0.0`, breaking changes bump **minor** instead of major (configured via `bump-minor-pre-major: true` in `release-please-config.json`).
 
-```bash
-# Feature release (0.1.0 → 0.2.0)
-git commit -m "feat: add provider abstraction support"
+## Commit Message Format
 
-# Bug fix (0.1.0 → 0.1.1)
-git commit -m "fix: resolve firewall mapping issue"
-
-# Breaking change (0.1.0 → 1.0.0)
-git commit -m "feat!: redesign configuration format\n\nBREAKING CHANGE: config files must now use new format"
-
-# No version bump
-git commit -m "chore: update dependencies"
-git commit -m "docs: improve README"
-git commit -m "test: add integration tests"
 ```
+<type>(<optional scope>): <description>
+
+# Examples
+feat: add Azure provider
+fix(network): resolve firewall merge bug
+feat!: redesign provider API
+docs: improve README
+```
+
+The `commit-msg` git hook in `.githooks/` validates this locally. Run `git config core.hooksPath .githooks` once after cloning to activate it. PR commit messages are also validated by the `conventional-commits` workflow.
 
 ## Workflow Files
 
-- **`.github/workflows/ci.yml`**: Runs tests and linting on all PRs
-- **`.github/workflows/conventional-commits.yml`**: Validates commit messages
-- **`.github/workflows/automated-release.yml`**: Automatically creates releases on push to main
-- **`.github/workflows/release.yml`**: Builds and publishes binaries when tags are pushed
+| File | Purpose |
+|---|---|
+| `.github/workflows/ci.yml` | fmt, clippy, tests on every push and PR |
+| `.github/workflows/conventional-commits.yml` | Validates commit messages on PRs |
+| `.github/workflows/release-please.yml` | Creates release PRs and builds/publishes binaries |
 
-## GitHub Token Permission
+## Manual Trigger
 
-The release workflow uses `GITHUB_TOKEN` which is automatically available in GitHub Actions. No additional setup needed!
+The release workflow can also be triggered manually from the **Actions** tab (`workflow_dispatch`) if needed.
 
-## Disable Auto-Release
-
-If you want to manually control releases, comment out or remove the push in `.github/workflows/automated-release.yml`:
-
-```yaml
-- name: Create release
-  if: steps.check-release.outputs.needs-release == 'true'
-  run: cargo release --no-confirm --git-token ${{ secrets.GITHUB_TOKEN }}
-```
-
-Then manually run:
-```bash
-cargo release --execute
-```
