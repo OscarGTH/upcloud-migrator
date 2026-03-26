@@ -128,7 +128,7 @@ fn render_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let list = List::new(items).block(block).highlight_style(
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::accent_color())
             .add_modifier(Modifier::BOLD),
     );
 

@@ -284,15 +284,32 @@ That's it — the generator, cross-reference resolver, diff view, and TODO syste
 
 ## Environment variables
 
-The AI advisor (optional) for the TODO suggestions and chat require an LLM API. By default, the tool targets **OpenAI's API**:
+The tool supports optional theme and LLM configuration:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `LLM_API_KEY` | OpenAI API key (or compatible LLM provider) | *(required)* |
+| `UPCLOUD_MIGRATE_THEME` | UI theme (`light` or `dark`) | Auto-detect from terminal |
+| `LLM_API_KEY` | OpenAI API key (or compatible LLM provider) | *(required for AI features)* |
 | `LLM_API_URL` | API endpoint URL | `https://api.openai.com/v1` |
 | `LLM_MODEL` | Model name | `gpt-4o-mini` |
 
-**Setup:**
+**Theme:**
+
+By default, the theme is auto-detected from your terminal:
+- Checks `COLORFGBG` (background color index set by most terminals)
+- Checks `TERM_BACKGROUND_COLOR` (macOS Terminal.app, iTerm2, etc.)
+- Falls back to dark theme if detection fails
+
+To force a specific theme:
+
+```bash
+export UPCLOUD_MIGRATE_THEME="light"  # for white/light terminal backgrounds
+export UPCLOUD_MIGRATE_THEME="dark"   # for black/dark terminal backgrounds
+```
+
+**LLM Setup (optional):**
+
+The AI advisor for TODO suggestions and chat require an LLM API. By default, the tool targets **OpenAI's API**:
 
 1. Get an OpenAI API key from [platform.openai.com](https://platform.openai.com/api-keys)
 2. Export it:

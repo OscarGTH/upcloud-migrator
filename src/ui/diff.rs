@@ -82,14 +82,14 @@ pub fn render(f: &mut Frame, app: &App) {
         Span::styled(
             format!("{} \"{}\"", short_src, result.resource_name),
             Style::default()
-                .fg(theme::HCL_KEY)
+                .fg(theme::hcl_key_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ──→  ", theme::dim()),
         Span::styled(
             format!("{} \"{}\"", short_dst, result.resource_name),
             Style::default()
-                .fg(theme::PRIMARY)
+                .fg(theme::primary_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("   ", theme::dim()),
@@ -135,7 +135,7 @@ fn render_source_panel(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 result.source_file.rsplit('/').next().unwrap_or("")
             ),
             Style::default()
-                .fg(theme::HCL_KEY)
+                .fg(theme::hcl_key_color())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -239,7 +239,7 @@ fn colorize_source_line(line: &str) -> Line<'static> {
         Line::from(Span::styled(
             line,
             Style::default()
-                .fg(theme::HCL_KEY)
+                .fg(theme::hcl_key_color())
                 .add_modifier(Modifier::BOLD),
         ))
     } else if trimmed.starts_with('#') || trimmed == "}" || trimmed == "{" {
@@ -250,7 +250,7 @@ fn colorize_source_line(line: &str) -> Line<'static> {
             let key = line[..eq + 1].to_string();
             let val = line[eq + 1..].to_string();
             Line::from(vec![
-                Span::styled(key, Style::default().fg(theme::HCL_KEY)),
+                Span::styled(key, Style::default().fg(theme::hcl_key_color())),
                 Span::styled(val, theme::dim()),
             ])
         } else {
@@ -269,14 +269,14 @@ fn colorize_generated_line(line: &str) -> Line<'static> {
         Line::from(Span::styled(
             line,
             Style::default()
-                .fg(theme::WARNING)
+                .fg(theme::warning_color())
                 .add_modifier(Modifier::BOLD),
         ))
     } else if trimmed.starts_with("resource ") {
         Line::from(Span::styled(
             line,
             Style::default()
-                .fg(theme::PRIMARY)
+                .fg(theme::primary_color())
                 .add_modifier(Modifier::BOLD),
         ))
     } else if trimmed.starts_with('#') || trimmed == "}" || trimmed == "{" {
@@ -286,8 +286,8 @@ fn colorize_generated_line(line: &str) -> Line<'static> {
             let key = line[..eq + 1].to_string();
             let val = line[eq + 1..].to_string();
             Line::from(vec![
-                Span::styled(key, Style::default().fg(theme::PRIMARY)),
-                Span::styled(val, Style::default().fg(theme::WHITE)),
+                Span::styled(key, Style::default().fg(theme::primary_color())),
+                Span::styled(val, Style::default().fg(theme::white_color())),
             ])
         } else {
             Line::from(Span::styled(line, theme::primary()))

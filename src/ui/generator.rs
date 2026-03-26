@@ -273,7 +273,7 @@ fn render_zone_picker(f: &mut Frame, app: &App) {
 
     let list = List::new(items).block(list_block).highlight_style(
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::accent_color())
             .add_modifier(Modifier::BOLD),
     );
 
@@ -407,7 +407,7 @@ fn render_generation_view(f: &mut Frame, app: &App) {
             Span::styled(
                 format!("Generated {} files", app.gen_files_count),
                 Style::default()
-                    .fg(theme::SUCCESS)
+                    .fg(theme::success_color())
                     .add_modifier(Modifier::BOLD),
             ),
         ]))

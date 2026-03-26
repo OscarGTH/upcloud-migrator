@@ -62,7 +62,7 @@ pub fn render(f: &mut Frame, app: &App) {
             Span::styled(
                 format!("{} resources found", app.resources.len()),
                 Style::default()
-                    .fg(theme::SUCCESS)
+                    .fg(theme::success_color())
                     .add_modifier(Modifier::BOLD),
             ),
         ])

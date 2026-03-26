@@ -27,10 +27,10 @@ fn logo_line_spans(line: &str, row: usize, tick: u64) -> Line<'static> {
         if ch == '#' {
             let style = if is_sparkle(tick, row, col) {
                 Style::default()
-                    .fg(theme::UPCLOUD_SPARKLE)
+                    .fg(theme::upcloud_sparkle_color())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::UPCLOUD_PURPLE)
+                Style::default().fg(theme::upcloud_purple_color())
             };
             spans.push(Span::styled(ch.to_string(), style));
         } else {
@@ -101,7 +101,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Span::styled(
             "UpCloud",
             Style::default()
-                .fg(theme::UPCLOUD_PURPLE)
+                .fg(theme::upcloud_purple_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" Terraform!", theme::dim()),
@@ -120,7 +120,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::UPCLOUD_PURPLE))
+        .border_style(Style::default().fg(theme::upcloud_purple_color()))
         .title(Span::styled(
             " PATH TO TERRAFORM DIRECTORY ",
             Style::default()

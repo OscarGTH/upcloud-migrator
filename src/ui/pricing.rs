@@ -15,29 +15,48 @@ use crate::ui::theme::{self, *};
 
 /// Category color based on UpCloud resource type.
 fn category_color(upcloud_type: &str) -> Color {
+    use crate::ui::theme::{ThemeMode, mode};
     if upcloud_type.contains("server") || upcloud_type.contains("kubernetes") {
-        Color::Rgb(0, 210, 255) // compute → electric cyan
+        match mode() {
+            ThemeMode::Dark => Color::Rgb(0, 210, 255),   // electric cyan
+            ThemeMode::Light => Color::Rgb(0, 100, 180),  // deep cyan
+        }
     } else if upcloud_type.contains("database") || upcloud_type.contains("valkey") {
-        Color::Rgb(200, 80, 255) // database → magenta
+        match mode() {
+            ThemeMode::Dark => Color::Rgb(200, 80, 255),  // magenta
+            ThemeMode::Light => Color::Rgb(140, 0, 200),  // deep magenta
+        }
     } else if upcloud_type.contains("loadbalancer") {
-        Color::Rgb(255, 160, 0) // lb → amber
+        match mode() {
+            ThemeMode::Dark => Color::Rgb(255, 160, 0),   // amber
+            ThemeMode::Light => Color::Rgb(160, 90, 0),   // dark amber
+        }
     } else if upcloud_type.contains("storage") {
-        Color::Rgb(0, 210, 130) // storage → teal
+        match mode() {
+            ThemeMode::Dark => Color::Rgb(0, 210, 130),   // teal
+            ThemeMode::Light => Color::Rgb(0, 130, 80),   // dark teal
+        }
     } else if upcloud_type.contains("gateway") {
-        Color::Rgb(100, 200, 255) // gateway → light cyan
+        match mode() {
+            ThemeMode::Dark => Color::Rgb(100, 200, 255), // light cyan
+            ThemeMode::Light => Color::Rgb(0, 90, 170),   // deep blue
+        }
     } else {
-        Color::Rgb(80, 90, 110) // network/other → dim slate
+        match mode() {
+            ThemeMode::Dark => Color::Rgb(80, 90, 110),   // dim slate
+            ThemeMode::Light => Color::Rgb(80, 70, 100),  // medium slate
+        }
     }
 }
 
 /// Color code based on monthly cost level.
 fn cost_color(monthly: f64) -> Style {
     match monthly as u64 {
-        0 => Style::default().fg(DIM),
-        1..=30 => Style::default().fg(SUCCESS),
-        31..=150 => Style::default().fg(PRIMARY),
-        151..=500 => Style::default().fg(WARNING),
-        _ => Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+        0 => Style::default().fg(dim_color()),
+        1..=30 => Style::default().fg(success_color()),
+        31..=150 => Style::default().fg(primary_color()),
+        151..=500 => Style::default().fg(warning_color()),
+        _ => Style::default().fg(danger_color()).add_modifier(Modifier::BOLD),
     }
 }
 
@@ -47,11 +66,11 @@ pub fn render(f: &mut Frame, app: &App) {
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Rgb(255, 160, 0))) // amber border
+        .border_style(Style::default().fg(theme::warning_color())) // amber border
         .title(Span::styled(
             " ₿ UPCLOUD PRICING ESTIMATE ",
             Style::default()
-                .fg(Color::Rgb(255, 160, 0))
+                .fg(theme::warning_color())
                 .add_modifier(Modifier::BOLD),
         ))
         .title_alignment(Alignment::Center);
@@ -122,41 +141,37 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         Cell::from(Span::styled(
             "TYPE",
             Style::default()
-                .fg(Color::Rgb(200, 80, 255))
+                .fg(theme::hcl_kw_color())
                 .add_modifier(Modifier::BOLD),
         )),
         Cell::from(Span::styled(
             "NAME",
             Style::default()
-                .fg(Color::Rgb(200, 80, 255))
+                .fg(theme::hcl_kw_color())
                 .add_modifier(Modifier::BOLD),
         )),
         Cell::from(Span::styled(
             "PLAN / SIZE",
             Style::default()
-                .fg(Color::Rgb(200, 80, 255))
+                .fg(theme::hcl_kw_color())
                 .add_modifier(Modifier::BOLD),
         )),
         Cell::from(Span::styled(
             "€/MO",
             Style::default()
-                .fg(Color::Rgb(200, 80, 255))
+                .fg(theme::hcl_kw_color())
                 .add_modifier(Modifier::BOLD),
         )),
     ])
-    .style(Style::default().bg(Color::Rgb(20, 10, 40))) // dark purple header bg
+    .style(Style::default()) // let terminal decide header bg
     .height(1);
 
     let rows: Vec<Row> = costs
         .iter()
         .enumerate()
         .map(|(i, entry)| {
-            // Alternate row background for readability
-            let row_bg = if i % 2 == 0 {
-                Color::Rgb(8, 12, 25) // very dark blue-black
-            } else {
-                Color::Rgb(12, 18, 35) // slightly lighter dark blue
-            };
+            // No alternating row backgrounds — let terminal decide
+            let row_bg = Color::Reset;
 
             let type_color = category_color(&entry.upcloud_type);
             let short_type = short_upcloud_type(&entry.upcloud_type);
@@ -180,11 +195,11 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
                 )),
                 Cell::from(Span::styled(
                     entry.resource_name.clone(),
-                    Style::default().fg(WHITE),
+                    Style::default().fg(white_color()),
                 )),
                 Cell::from(Span::styled(
                     plan_display,
-                    Style::default().fg(Color::Rgb(130, 200, 255)), // soft cyan
+                    Style::default().fg(theme::primary_color()),
                 )),
                 Cell::from(Span::styled(cost_str, cost_color(entry.monthly_eur))),
             ])
@@ -211,17 +226,17 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Rgb(60, 40, 80))) // dark purple border
+.border_style(Style::default().fg(theme::dim_color()))
             .title(Span::styled(
                 format!(" {} resources ", costs.len()),
                 theme::muted(),
             )),
-    )
-    .column_spacing(1)
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::Rgb(40, 20, 70))
-            .add_modifier(Modifier::BOLD),
+        )
+        .column_spacing(1)
+        .row_highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
     );
 
     let mut table_state = TableState::default();
@@ -256,40 +271,39 @@ fn render_totals(f: &mut Frame, app: &App, area: Rect) {
     let free_count = costs.iter().filter(|e| e.monthly_eur == 0.0).count();
 
     let total_style = if total == 0.0 {
-        Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD)
+        Style::default().fg(success_color()).add_modifier(Modifier::BOLD)
     } else if total < 100.0 {
-        Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)
+        Style::default().fg(primary_color()).add_modifier(Modifier::BOLD)
     } else if total < 500.0 {
-        Style::default().fg(WARNING).add_modifier(Modifier::BOLD)
+        Style::default().fg(warning_color()).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(DANGER).add_modifier(Modifier::BOLD)
+        Style::default().fg(danger_color()).add_modifier(Modifier::BOLD)
     };
 
     let line = Line::from(vec![
         Span::styled(
             "  ESTIMATED TOTAL: ",
             Style::default()
-                .fg(Color::Rgb(200, 80, 255))
+                .fg(theme::hcl_kw_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("€{:.2}/mo", total), total_style),
         Span::styled("  │  ", theme::dim()),
-        Span::styled(format!("€{:.0}/yr", yearly), Style::default().fg(MUTED)),
+        Span::styled(format!("€{:.0}/yr", yearly), Style::default().fg(muted_color())),
         Span::styled("  │  ", theme::dim()),
         Span::styled(
             format!("{} priced", priced_count),
-            Style::default().fg(WARNING),
+            Style::default().fg(warning_color()),
         ),
         Span::styled("  +  ", theme::dim()),
-        Span::styled(format!("{} free", free_count), Style::default().fg(DIM)),
+        Span::styled(format!("{} free", free_count), Style::default().fg(dim_color())),
         Span::styled("  (excludes: data transfer, IPs, EKS nodes)", theme::dim()),
     ]);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(60, 40, 80)))
-        .style(Style::default().bg(Color::Rgb(15, 8, 30))); // dark purple bg for totals
+        .border_style(theme::dim());
 
     f.render_widget(Paragraph::new(line).block(block), area);
 }
