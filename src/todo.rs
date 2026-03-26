@@ -126,15 +126,13 @@ fn extract_placeholder(line: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn make_temp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "upcloud_todo_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos()
-        ));
+        let id = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("upcloud_todo_test_{}", id));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
