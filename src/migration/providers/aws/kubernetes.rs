@@ -44,7 +44,7 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
   network                 = "<TODO: upcloud_network reference>"
   zone                    = "__ZONE__"
   version                 = {version_hcl}
-  # plan                    = "prod-md"  # use "dev" for non-production clusters (check `upctl kubernetes plans`)
+  # plan = "prod-md"  # use "dev" for non-production clusters (check `upctl kubernetes plans`)
   # private_node_groups = true  # uncomment if all node-group subnets are private (NAT-only outbound)
 }}
 "#,
