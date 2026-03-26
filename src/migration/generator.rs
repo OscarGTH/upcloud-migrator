@@ -394,6 +394,23 @@ fn resolve_k8s_and_generic_refs(hcl: &str, xref: &CrossRefTables) -> String {
     s
 }
 
+/// Inject `lifecycle { ignore_changes = [router] }` before the final closing brace
+/// of an `upcloud_network` resource block. Called only when Kubernetes clusters are
+/// present in the project, since UKS attaches a router automatically.
+fn inject_network_lifecycle_block(hcl: &str) -> String {
+    let lifecycle = "\n  # UpCloud Kubernetes Service will attach a router automatically.\n  # Ignore router changes to avoid detaching it on subsequent applies.\n  lifecycle {\n    ignore_changes = [router]\n  }\n";
+    // Insert before the final closing brace of the resource block
+    if let Some(pos) = hcl.rfind('}') {
+        let mut result = String::with_capacity(hcl.len() + lifecycle.len());
+        result.push_str(&hcl[..pos]);
+        result.push_str(lifecycle);
+        result.push_str(&hcl[pos..]);
+        result
+    } else {
+        hcl.to_string()
+    }
+}
+
 /// Resolve placeholders in HCL (zones, cross-references, SSH keys, provider-specific values).
 fn resolve_placeholders(
     hcl: &str,
@@ -793,7 +810,7 @@ provider "upcloud" {
                     continue;
                 }
 
-                let resolved = resolve_placeholders(
+                let mut resolved = resolve_placeholders(
                     hcl,
                     &result.resource_name,
                     zone,
@@ -801,6 +818,12 @@ provider "upcloud" {
                     &xref,
                     &*provider,
                 );
+
+                // Inject lifecycle { ignore_changes = [router] } into upcloud_network
+                // resources only when the project contains Kubernetes clusters.
+                if result.upcloud_type == "upcloud_network" && !xref.k8s_names.is_empty() {
+                    resolved = inject_network_lifecycle_block(&resolved);
+                }
 
                 // Name-based firewall server_id resolution with rule merging
                 if result.upcloud_type == "upcloud_firewall_rules" {
@@ -3790,5 +3813,111 @@ resource "kubernetes_deployment_v1" "nginx" {
         }
 
         let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn network_lifecycle_block_injected_when_k8s_present() {
+        let network = make_result(
+            "aws_subnet",
+            "main",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "main" {
+  name = "main"
+  zone = "__ZONE__"
+
+  ip_network {
+    address = "10.0.1.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+
+  router = upcloud_router.main_router.id
+}
+"#,
+            ),
+            None,
+        );
+        let k8s = make_result(
+            "aws_eks_cluster",
+            "cluster",
+            "upcloud_kubernetes_cluster",
+            Some(
+                r#"resource "upcloud_kubernetes_cluster" "cluster" {
+  name    = "cluster"
+  zone    = "__ZONE__"
+  network = "<TODO: upcloud_network reference>"
+  plan    = "K8S-2xCPU-4GB"
+}
+"#,
+            ),
+            None,
+        );
+        let output = run_generate(&[network, k8s], "lifecycle_with_k8s");
+        assert!(
+            output.contains("lifecycle"),
+            "lifecycle block should be injected when k8s cluster is present\n{output}"
+        );
+        assert!(
+            output.contains("ignore_changes = [router]"),
+            "lifecycle block must ignore router changes\n{output}"
+        );
+    }
+
+    #[test]
+    fn network_lifecycle_block_not_injected_without_k8s() {
+        let network = make_result(
+            "aws_subnet",
+            "main",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "main" {
+  name = "main"
+  zone = "__ZONE__"
+
+  ip_network {
+    address = "10.0.1.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+
+  router = upcloud_router.main_router.id
+}
+"#,
+            ),
+            None,
+        );
+        let server = make_result(
+            "aws_instance",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  hostname = "web"
+  zone     = "__ZONE__"
+  plan     = "1xCPU-1GB"
+
+  template {
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = 50
+  }
+
+  network_interface {
+    type = "public"
+  }
+}
+"#,
+            ),
+            None,
+        );
+        let output = run_generate(&[network, server], "lifecycle_without_k8s");
+        assert!(
+            !output.contains("lifecycle"),
+            "lifecycle block must NOT be present when no k8s cluster exists\n{output}"
+        );
+        assert!(
+            !output.contains("ignore_changes"),
+            "ignore_changes must NOT be present when no k8s cluster exists\n{output}"
+        );
     }
 }

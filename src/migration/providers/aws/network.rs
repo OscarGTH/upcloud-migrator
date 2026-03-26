@@ -82,12 +82,6 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
   }}
 
   router = {router_ref}
-
-  # UpCloud Kubernetes Service will attach a router automatically.
-  # Ignore router changes to avoid detaching it on subsequent applies.
-  lifecycle {{
-    ignore_changes = [router]
-  }}
 }}
 "#,
         name = res.name,
@@ -109,7 +103,6 @@ pub fn map_subnet(res: &TerraformResource) -> MigrationResult {
         notes: {
             let mut n = vec![
                 "AWS Subnet → upcloud_network (private SDN; public internet via server network_interface type=public).".into(),
-                "lifecycle { ignore_changes = [router] } added — UpCloud Kubernetes Service attaches a router automatically.".into(),
             ];
             let is_public = res
                 .attributes
@@ -781,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn subnet_has_lifecycle_ignore_changes_router() {
+    fn subnet_does_not_include_lifecycle_block() {
         let res = make_res(
             "aws_subnet",
             "s",
@@ -789,22 +782,22 @@ mod tests {
         );
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
         assert!(
-            hcl.contains("lifecycle"),
-            "upcloud_network must include a lifecycle block\n{hcl}"
+            !hcl.contains("lifecycle"),
+            "upcloud_network must NOT include lifecycle block at mapping time (added by generator only when k8s present)\n{hcl}"
         );
         assert!(
-            hcl.contains("ignore_changes = [router]"),
-            "lifecycle block must ignore router changes\n{hcl}"
+            !hcl.contains("ignore_changes"),
+            "upcloud_network must NOT include ignore_changes at mapping time\n{hcl}"
         );
     }
 
     #[test]
-    fn subnet_note_mentions_lifecycle_ignore_changes() {
+    fn subnet_note_does_not_mention_lifecycle() {
         let res = make_res("aws_subnet", "s", &[("cidr_block", "10.0.4.0/24")]);
         let r = map_subnet(&res);
         assert!(
-            r.notes.iter().any(|n| n.contains("ignore_changes")),
-            "note should mention lifecycle ignore_changes\n{:?}",
+            !r.notes.iter().any(|n| n.contains("ignore_changes")),
+            "note should NOT mention lifecycle ignore_changes at mapping time\n{:?}",
             r.notes
         );
     }
