@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.3.0...upcloud-migrate-v0.4.0) (2026-03-26)
+
+
+### Features
+
+* **style:** add better colors for dark and light terminals, and make the terminal color be auto detected. ([b5adedc](https://github.com/OscarGTH/upcloud-migrator/commit/b5adedc215f7831f5bd394be0922a92c7d2da639))
+
 ## [0.3.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.2.0...upcloud-migrate-v0.3.0) (2026-03-26)
 
 
