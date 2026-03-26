@@ -5,6 +5,7 @@
 [![Stargazers][stars-shield]][stars-url]
 [![Issues][issues-shield]][issues-url]
 [![MIT License][license-shield]][license-url]
+[![CI][ci-shield]][ci-url]
 
 <br />
 <div align="center">
@@ -77,6 +78,7 @@ Download the latest release from [Releases][releases-url] — binaries are avail
 - `x86_64-unknown-linux-gnu` (Linux x64)
 - `aarch64-apple-darwin` (macOS Apple Silicon)
 - `x86_64-apple-darwin` (macOS Intel)
+- `x86_64-pc-windows-msvc` (Windows x64)
 
 ### Build from source
 
@@ -382,6 +384,8 @@ Distributed under the MIT License. See `LICENSE` for more information.
 [issues-url]: https://github.com/OscarGTH/upcloud-migrator/issues
 [license-shield]: https://img.shields.io/github/license/OscarGTH/upcloud-migrator.svg?style=for-the-badge
 [license-url]: https://github.com/OscarGTH/upcloud-migrator/blob/main/LICENSE
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/OscarGTH/upcloud-migrator/ci.yml?style=for-the-badge&label=CI
+[ci-url]: https://github.com/OscarGTH/upcloud-migrator/actions/workflows/ci.yml
 [releases-url]: https://github.com/OscarGTH/upcloud-migrator/releases
 [rust-shield]: https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white
 [rust-url]: https://www.rust-lang.org/
