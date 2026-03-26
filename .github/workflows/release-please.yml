@@ -76,6 +76,6 @@ jobs:
           merge-multiple: true
 
       - name: Upload binaries to release
-        run: gh release upload ${{ needs.release-please.outputs.tag_name }} artifacts/*
+        run: gh release upload ${{ needs.release-please.outputs.tag_name }} artifacts/* --repo ${{ github.repository }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

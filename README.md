@@ -13,9 +13,9 @@
     A terminal tool that converts cloud infrastructure Terraform into UpCloud Terraform — automatically.
     <br />
     <br />
-    <a href="https://github.com/OscarGTH/upcloud-migrate/issues/new?labels=bug">Report Bug</a>
+    <a href="https://github.com/OscarGTH/upcloud-migrator/issues/new?labels=bug">Report Bug</a>
     &middot;
-    <a href="https://github.com/OscarGTH/upcloud-migrate/issues/new?labels=enhancement">Request Feature</a>
+    <a href="https://github.com/OscarGTH/upcloud-migrator/issues/new?labels=enhancement">Request Feature</a>
   </p>
 </div>
 
@@ -355,17 +355,17 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ---
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/OscarGTH/upcloud-migrate.svg?style=for-the-badge
-[contributors-url]: https://github.com/OscarGTH/upcloud-migrate/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/OscarGTH/upcloud-migrate.svg?style=for-the-badge
-[forks-url]: https://github.com/OscarGTH/upcloud-migrate/network/members
-[stars-shield]: https://img.shields.io/github/stars/OscarGTH/upcloud-migrate.svg?style=for-the-badge
-[stars-url]: https://github.com/OscarGTH/upcloud-migrate/stargazers
-[issues-shield]: https://img.shields.io/github/issues/OscarGTH/upcloud-migrate.svg?style=for-the-badge
-[issues-url]: https://github.com/OscarGTH/upcloud-migrate/issues
-[license-shield]: https://img.shields.io/github/license/OscarGTH/upcloud-migrate.svg?style=for-the-badge
-[license-url]: https://github.com/OscarGTH/upcloud-migrate/blob/main/LICENSE
-[releases-url]: https://github.com/OscarGTH/upcloud-migrate/releases
+[contributors-shield]: https://img.shields.io/github/contributors/OscarGTH/upcloud-migrator.svg?style=for-the-badge
+[contributors-url]: https://github.com/OscarGTH/upcloud-migrator/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/OscarGTH/upcloud-migrator.svg?style=for-the-badge
+[forks-url]: https://github.com/OscarGTH/upcloud-migrator/network/members
+[stars-shield]: https://img.shields.io/github/stars/OscarGTH/upcloud-migrator.svg?style=for-the-badge
+[stars-url]: https://github.com/OscarGTH/upcloud-migrator/stargazers
+[issues-shield]: https://img.shields.io/github/issues/OscarGTH/upcloud-migrator.svg?style=for-the-badge
+[issues-url]: https://github.com/OscarGTH/upcloud-migrator/issues
+[license-shield]: https://img.shields.io/github/license/OscarGTH/upcloud-migrator.svg?style=for-the-badge
+[license-url]: https://github.com/OscarGTH/upcloud-migrator/blob/main/LICENSE
+[releases-url]: https://github.com/OscarGTH/upcloud-migrator/releases
 [rust-shield]: https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white
 [rust-url]: https://www.rust-lang.org/
 [ratatui-shield]: https://img.shields.io/badge/ratatui-1e1e2e?style=for-the-badge&logo=rust&logoColor=cdd6f4
