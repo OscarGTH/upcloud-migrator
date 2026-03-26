@@ -18,23 +18,23 @@ fn category_color(upcloud_type: &str) -> Color {
     use crate::ui::theme::{ThemeMode, mode};
     if upcloud_type.contains("server") || upcloud_type.contains("kubernetes") {
         match mode() {
-            ThemeMode::Dark => Color::Rgb(0, 210, 255),   // electric cyan
-            ThemeMode::Light => Color::Rgb(0, 100, 180),  // deep cyan
+            ThemeMode::Dark => Color::Rgb(0, 210, 255), // electric cyan
+            ThemeMode::Light => Color::Rgb(0, 100, 180), // deep cyan
         }
     } else if upcloud_type.contains("database") || upcloud_type.contains("valkey") {
         match mode() {
-            ThemeMode::Dark => Color::Rgb(200, 80, 255),  // magenta
-            ThemeMode::Light => Color::Rgb(140, 0, 200),  // deep magenta
+            ThemeMode::Dark => Color::Rgb(200, 80, 255), // magenta
+            ThemeMode::Light => Color::Rgb(140, 0, 200), // deep magenta
         }
     } else if upcloud_type.contains("loadbalancer") {
         match mode() {
-            ThemeMode::Dark => Color::Rgb(255, 160, 0),   // amber
-            ThemeMode::Light => Color::Rgb(160, 90, 0),   // dark amber
+            ThemeMode::Dark => Color::Rgb(255, 160, 0), // amber
+            ThemeMode::Light => Color::Rgb(160, 90, 0), // dark amber
         }
     } else if upcloud_type.contains("storage") {
         match mode() {
-            ThemeMode::Dark => Color::Rgb(0, 210, 130),   // teal
-            ThemeMode::Light => Color::Rgb(0, 130, 80),   // dark teal
+            ThemeMode::Dark => Color::Rgb(0, 210, 130), // teal
+            ThemeMode::Light => Color::Rgb(0, 130, 80), // dark teal
         }
     } else if upcloud_type.contains("gateway") {
         match mode() {
@@ -43,8 +43,8 @@ fn category_color(upcloud_type: &str) -> Color {
         }
     } else {
         match mode() {
-            ThemeMode::Dark => Color::Rgb(80, 90, 110),   // dim slate
-            ThemeMode::Light => Color::Rgb(80, 70, 100),  // medium slate
+            ThemeMode::Dark => Color::Rgb(80, 90, 110),  // dim slate
+            ThemeMode::Light => Color::Rgb(80, 70, 100), // medium slate
         }
     }
 }
@@ -56,7 +56,9 @@ fn cost_color(monthly: f64) -> Style {
         1..=30 => Style::default().fg(success_color()),
         31..=150 => Style::default().fg(primary_color()),
         151..=500 => Style::default().fg(warning_color()),
-        _ => Style::default().fg(danger_color()).add_modifier(Modifier::BOLD),
+        _ => Style::default()
+            .fg(danger_color())
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -168,8 +170,7 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
 
     let rows: Vec<Row> = costs
         .iter()
-        .enumerate()
-        .map(|(i, entry)| {
+        .map(|entry| {
             // No alternating row backgrounds — let terminal decide
             let row_bg = Color::Reset;
 
@@ -226,17 +227,17 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-.border_style(Style::default().fg(theme::dim_color()))
+            .border_style(Style::default().fg(theme::dim_color()))
             .title(Span::styled(
                 format!(" {} resources ", costs.len()),
                 theme::muted(),
             )),
-        )
-        .column_spacing(1)
-        .row_highlight_style(
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
+    )
+    .column_spacing(1)
+    .row_highlight_style(
+        Style::default()
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::REVERSED),
     );
 
     let mut table_state = TableState::default();
@@ -271,13 +272,21 @@ fn render_totals(f: &mut Frame, app: &App, area: Rect) {
     let free_count = costs.iter().filter(|e| e.monthly_eur == 0.0).count();
 
     let total_style = if total == 0.0 {
-        Style::default().fg(success_color()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(success_color())
+            .add_modifier(Modifier::BOLD)
     } else if total < 100.0 {
-        Style::default().fg(primary_color()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(primary_color())
+            .add_modifier(Modifier::BOLD)
     } else if total < 500.0 {
-        Style::default().fg(warning_color()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(warning_color())
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(danger_color()).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(danger_color())
+            .add_modifier(Modifier::BOLD)
     };
 
     let line = Line::from(vec![
@@ -289,14 +298,20 @@ fn render_totals(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(format!("€{:.2}/mo", total), total_style),
         Span::styled("  │  ", theme::dim()),
-        Span::styled(format!("€{:.0}/yr", yearly), Style::default().fg(muted_color())),
+        Span::styled(
+            format!("€{:.0}/yr", yearly),
+            Style::default().fg(muted_color()),
+        ),
         Span::styled("  │  ", theme::dim()),
         Span::styled(
             format!("{} priced", priced_count),
             Style::default().fg(warning_color()),
         ),
         Span::styled("  +  ", theme::dim()),
-        Span::styled(format!("{} free", free_count), Style::default().fg(dim_color())),
+        Span::styled(
+            format!("{} free", free_count),
+            Style::default().fg(dim_color()),
+        ),
         Span::styled("  (excludes: data transfer, IPs, EKS nodes)", theme::dim()),
     ]);
 

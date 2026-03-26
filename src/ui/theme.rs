@@ -20,31 +20,29 @@ fn detect_theme_mode() -> ThemeMode {
     }
     // COLORFGBG is set by many terminals: format is "fg_index;bg_index"
     // bg_index 7 = light gray, 15 = white → light terminal background
-    if let Ok(val) = std::env::var("COLORFGBG") {
-        if let Some(bg) = val.split(';').last() {
-            if let Ok(n) = bg.trim().parse::<u8>() {
-                if matches!(n, 7 | 15) {
-                    return ThemeMode::Light;
-                }
-            }
-        }
+    if let Ok(val) = std::env::var("COLORFGBG")
+        && let Some(bg) = val.split(';').next_back()
+        && let Ok(n) = bg.trim().parse::<u8>()
+        && matches!(n, 7 | 15)
+    {
+        return ThemeMode::Light;
     }
     // TERM_BACKGROUND_COLOR is set by some terminals (e.g. Terminal.app) as an RGB hex string.
     // A high luminance value indicates a light background.
     if let Ok(val) = std::env::var("TERM_BACKGROUND_COLOR") {
         // Example value: "#ffffff" or "rgb:ffff/ffff/ffff"
         let s = val.trim_start_matches('#');
-        if s.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
+        if s.len() == 6
+            && let (Ok(r), Ok(g), Ok(b)) = (
                 u8::from_str_radix(&s[0..2], 16),
                 u8::from_str_radix(&s[2..4], 16),
                 u8::from_str_radix(&s[4..6], 16),
-            ) {
-                // Perceived luminance; threshold 128
-                let lum = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
-                if lum > 128 {
-                    return ThemeMode::Light;
-                }
+            )
+        {
+            // Perceived luminance; threshold 128
+            let lum = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+            if lum > 128 {
+                return ThemeMode::Light;
             }
         }
     }
@@ -67,31 +65,31 @@ pub fn primary_color() -> Color {
 }
 pub fn accent_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(200, 0, 255),  // hot magenta-purple
+        ThemeMode::Dark => Color::Rgb(200, 0, 255), // hot magenta-purple
         ThemeMode::Light => Color::Rgb(155, 0, 200), // deep magenta
     }
 }
 pub fn success_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(0, 255, 120),  // neon green
-        ThemeMode::Light => Color::Rgb(0, 140, 60),  // forest green
+        ThemeMode::Dark => Color::Rgb(0, 255, 120), // neon green
+        ThemeMode::Light => Color::Rgb(0, 140, 60), // forest green
     }
 }
 pub fn warning_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(255, 200, 0),  // electric amber
+        ThemeMode::Dark => Color::Rgb(255, 200, 0), // electric amber
         ThemeMode::Light => Color::Rgb(170, 100, 0), // dark amber
     }
 }
 pub fn danger_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(255, 50, 80),  // hot red
-        ThemeMode::Light => Color::Rgb(200, 0, 30),  // deep red
+        ThemeMode::Dark => Color::Rgb(255, 50, 80), // hot red
+        ThemeMode::Light => Color::Rgb(200, 0, 30), // deep red
     }
 }
 pub fn dim_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(75, 60, 105),  // muted purple-slate
+        ThemeMode::Dark => Color::Rgb(75, 60, 105), // muted purple-slate
         ThemeMode::Light => Color::Rgb(130, 115, 160), // medium gray-lavender
     }
 }
@@ -115,20 +113,20 @@ pub fn hcl_key_color() -> Color {
 }
 pub fn hcl_val_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(255, 200, 80),  // amber
-        ThemeMode::Light => Color::Rgb(150, 80, 0),   // dark amber/brown
+        ThemeMode::Dark => Color::Rgb(255, 200, 80), // amber
+        ThemeMode::Light => Color::Rgb(150, 80, 0),  // dark amber/brown
     }
 }
 pub fn hcl_kw_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(200, 80, 255),  // magenta
-        ThemeMode::Light => Color::Rgb(155, 0, 200),  // deep magenta
+        ThemeMode::Dark => Color::Rgb(200, 80, 255), // magenta
+        ThemeMode::Light => Color::Rgb(155, 0, 200), // deep magenta
     }
 }
 pub fn upcloud_purple_color() -> Color {
     match mode() {
-        ThemeMode::Dark => Color::Rgb(123, 0, 255),  // brand #7b00ff
-        ThemeMode::Light => Color::Rgb(90, 0, 200),  // darker brand purple
+        ThemeMode::Dark => Color::Rgb(123, 0, 255), // brand #7b00ff
+        ThemeMode::Light => Color::Rgb(90, 0, 200), // darker brand purple
     }
 }
 pub fn upcloud_sparkle_color() -> Color {
