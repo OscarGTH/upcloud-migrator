@@ -85,6 +85,8 @@ fn lookup_plan_price(upcloud_type: &str, plan: &str, pricing: &serde_json::Value
             .iter()
             .find(|e| e["plan"].as_str() == Some(plan))?["eur_monthly"]
             .as_f64(),
+        // Node group VMs are priced identically to upcloud_server plans
+        "upcloud_kubernetes_node_group" => lookup_server_plan(plan, pricing),
         "upcloud_gateway" => pricing["upcloud_gateway"]["plans"]
             .as_array()?
             .iter()

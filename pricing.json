@@ -166,9 +166,13 @@
   "upcloud_kubernetes_cluster": {
     "terraform_resource": "upcloud_kubernetes_cluster",
     "plans": [
-      { "plan": "development", "eur_monthly": 0.0,  "eur_hourly": 0.0    },
-      { "plan": "production",  "eur_monthly": 60.0, "eur_hourly": 0.0833 }
+      { "plan": "dev",     "eur_monthly": 0.0,  "eur_hourly": 0.0    },
+      { "plan": "prod-md", "eur_monthly": 60.0, "eur_hourly": 0.0833 }
     ]
+  },
+  "upcloud_kubernetes_node_group": {
+    "terraform_resource": "upcloud_kubernetes_node_group",
+    "note": "Node group VMs use the same plan pricing as upcloud_server. See upcloud_server.plans for rates."
   },
   "upcloud_storage": {
     "terraform_resource": "upcloud_storage",
