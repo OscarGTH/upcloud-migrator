@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.2.0...upcloud-migrate-v0.3.0) (2026-03-26)
+
+
+### Features
+
+* only add lifecycle ignore changes to subnets when kube is included. ([4901723](https://github.com/OscarGTH/upcloud-migrator/commit/49017233659d4d5fa525ad20037d50f8dd5eb21e))
+
 ## [0.2.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.1.0...upcloud-migrate-v0.2.0) (2026-03-26)
 
 
