@@ -47,6 +47,20 @@ pub fn map_resource(res: &TerraformResource) -> MigrationResult {
     let mut result = if rt.starts_with("aws_") {
         let provider = detect_provider(&[]);
         map_resource_with(provider.mapper().as_ref(), res)
+    } else if rt.starts_with("azurerm_") {
+        let provider = detect_provider(&[crate::migration::types::MigrationResult {
+            resource_type: rt.to_string(),
+            resource_name: String::new(),
+            source_file: String::new(),
+            status: crate::migration::types::MigrationStatus::Unknown,
+            upcloud_type: String::new(),
+            upcloud_hcl: None,
+            snippet: None,
+            parent_resource: None,
+            notes: vec![],
+            source_hcl: None,
+        }]);
+        map_resource_with(provider.mapper().as_ref(), res)
     } else if is_cloud_provider {
         // Known cloud provider but not yet supported — mark as Unknown
         MigrationResult {

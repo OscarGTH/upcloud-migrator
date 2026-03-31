@@ -1,3 +1,4 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -5,13 +6,7 @@ pub fn map_vpc(res: &TerraformResource) -> MigrationResult {
     // AWS VPC → UpCloud Router only.
     // Each subnet maps to its own upcloud_network resource (provider allows exactly 1 ip_network
     // block per upcloud_network, so subnets cannot be injected as ip_network blocks).
-    let hcl = format!(
-        r#"resource "upcloud_router" "{name}_router" {{
-  name = "{name}-router"
-}}
-"#,
-        name = res.name,
-    );
+    let hcl = shared::upcloud_router_hcl(&res.name);
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -130,7 +125,7 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
         if *direction == "out" && *is_all_traffic {
             has_egress_allow_all = true;
         }
-        rule_blocks.push_str(&build_firewall_rule(
+        rule_blocks.push_str(&shared::build_firewall_rule(
             direction,
             *from_port,
             *to_port,
@@ -143,9 +138,7 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
 
     // Always include a catch-all outbound rule if none was generated
     if !has_egress_allow_all {
-        rule_blocks.push_str(
-            "  firewall_rule {\n    direction = \"out\"\n    action    = \"accept\"\n    family    = \"IPv4\"\n    comment   = \"Allow all outbound\"\n  }\n"
-        );
+        rule_blocks.push_str(shared::FIREWALL_CATCHALL_EGRESS);
     }
 
     let status = if rules.is_empty() {
@@ -240,43 +233,6 @@ fn parse_sg_rules(raw_hcl: &str) -> Vec<(String, i32, i32, String, Option<String
         }
     }
     rules
-}
-
-fn build_firewall_rule(
-    direction: &str,
-    from_port: i32,
-    to_port: i32,
-    protocol: &str,
-    description: Option<&str>,
-    is_all_traffic: bool,
-) -> String {
-    let mut s = String::from("  firewall_rule {\n");
-    s.push_str(&format!("    direction = \"{}\"\n", direction));
-    s.push_str("    action    = \"accept\"\n");
-    s.push_str("    family    = \"IPv4\"\n");
-
-    if !is_all_traffic && protocol != "-1" {
-        let proto = match protocol {
-            "tcp" => "tcp",
-            "udp" => "udp",
-            "icmp" | "1" => "icmp",
-            _ => "tcp",
-        };
-        s.push_str(&format!("    protocol  = \"{}\"\n", proto));
-        if from_port > 0 || to_port < 65535 {
-            s.push_str(&format!("    destination_port_start = \"{}\"\n", from_port));
-            s.push_str(&format!("    destination_port_end   = \"{}\"\n", to_port));
-        }
-    }
-
-    if let Some(desc) = description
-        && !desc.is_empty()
-    {
-        s.push_str(&format!("    comment = \"{}\"\n", desc));
-    }
-
-    s.push_str("  }");
-    s
 }
 
 pub fn map_network_interface(res: &TerraformResource) -> MigrationResult {
@@ -383,7 +339,7 @@ fn map_sg_standalone_rule(res: &TerraformResource, direction: &str) -> Migration
 
     let is_all_traffic = protocol == "-1" || protocol == "all";
 
-    let rule_block = build_firewall_rule(
+    let rule_block = shared::build_firewall_rule(
         direction,
         from_port,
         to_port,

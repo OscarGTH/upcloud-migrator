@@ -1,3 +1,4 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -35,9 +36,7 @@ pub fn map_volume_attachment(res: &TerraformResource) -> MigrationResult {
         .unwrap_or("<TODO: server>")
         .to_string();
 
-    let snippet = format!(
-        "# Add inside resource \"upcloud_server\" \"{server_ref}\" {{\n  storage_devices {{\n    storage = upcloud_storage.{storage_ref}.id\n    type    = \"disk\"\n  }}"
-    );
+    let snippet = shared::storage_devices_snippet(&server_ref, &storage_ref);
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -134,21 +133,7 @@ pub fn map_s3_bucket(res: &TerraformResource) -> MigrationResult {
         .map(|b| b.trim_matches('"').to_string())
         .unwrap_or_else(|| res.name.replace('_', "-"));
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_object_storage" "{name}" {{
-  name              = "{name}-storage"
-  region            = "__OBJSTORAGE_REGION__"
-  configured_status = "started"
-}}
-
-resource "upcloud_managed_object_storage_bucket" "{name}_bucket" {{
-  service_uuid = upcloud_managed_object_storage.{name}.id
-  name         = "{bucket}"
-}}
-"#,
-        name = res.name,
-        bucket = bucket_name,
-    );
+    let hcl = shared::upcloud_object_storage_hcl(&res.name, &bucket_name);
 
     MigrationResult {
         resource_type: res.resource_type.clone(),

@@ -1,24 +1,7 @@
+use super::super::shared;
 use super::compute::aws_instance_type_to_upcloud_plan;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
-
-/// Returns true if `val` (after stripping outer `"`) is a bare Terraform
-/// expression that must be emitted **unquoted** — i.e. a plain reference like
-/// `var.x` or `local.x`.  Template strings like `${var.x}-suffix` are *not*
-/// bare expressions; they still need surrounding quotes in HCL.
-fn is_tf_expr(val: &str) -> bool {
-    val.starts_with("var.") || val.starts_with("local.")
-}
-
-/// Return an HCL value token for `val`: unquoted if it is already a Terraform
-/// expression, otherwise wrapped in double-quotes.
-fn hcl_value(val: &str) -> String {
-    if is_tf_expr(val) {
-        val.to_string()
-    } else {
-        format!("\"{}\"", val)
-    }
-}
 
 pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
     let k8s_version_raw = res
@@ -26,7 +9,7 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
         .get("version")
         .map(|v| v.trim_matches('"').to_string())
         .unwrap_or_else(|| "1.31".to_string());
-    let version_hcl = hcl_value(&k8s_version_raw);
+    let version_hcl = shared::hcl_value(&k8s_version_raw);
 
     // Use the `name` attribute from the source (may be var.cluster_name etc.),
     // falling back to the resource identifier if absent.
@@ -35,23 +18,9 @@ pub fn map_eks_cluster(res: &TerraformResource) -> MigrationResult {
         .get("name")
         .map(|v| v.trim_matches('"').to_string())
         .unwrap_or_else(|| res.name.clone());
-    let name_hcl = hcl_value(&name_raw);
+    let name_hcl = shared::hcl_value(&name_raw);
 
-    let hcl = format!(
-        r#"resource "upcloud_kubernetes_cluster" "{id}" {{
-  control_plane_ip_filter = ["0.0.0.0/0"]  # restrict to known CIDRs in production
-  name                    = {name_hcl}
-  network                 = "<TODO: upcloud_network reference>"
-  zone                    = "__ZONE__"
-  version                 = {version_hcl}
-  # plan = "prod-md"  # use "dev" for non-production clusters (check `upctl kubernetes plans`)
-  # private_node_groups = true  # uncomment if all node-group subnets are private (NAT-only outbound)
-}}
-"#,
-        id = res.name,
-        name_hcl = name_hcl,
-        version_hcl = version_hcl,
-    );
+    let hcl = shared::upcloud_kubernetes_cluster_hcl(&res.name, &name_hcl, &version_hcl);
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -120,7 +89,7 @@ pub fn map_eks_node_group(res: &TerraformResource) -> MigrationResult {
         .or_else(|| res.attributes.get("name"))
         .map(|v| v.trim_matches('"').to_string())
         .unwrap_or_else(|| res.name.clone());
-    let ng_name_hcl = hcl_value(&ng_name_raw);
+    let ng_name_hcl = shared::hcl_value(&ng_name_raw);
 
     let hcl = format!(
         r#"resource "upcloud_kubernetes_node_group" "{id}" {{

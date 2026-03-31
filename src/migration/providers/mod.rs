@@ -1,4 +1,6 @@
 pub mod aws;
+pub mod azure;
+pub mod shared;
 
 use crate::migration::types::MigrationResult;
 
@@ -99,11 +101,13 @@ pub trait SourceProvider {
 /// Detect the source cloud provider from migration results.
 /// Falls back to AWS if no provider-specific prefix is recognized.
 pub fn detect_provider(results: &[MigrationResult]) -> Box<dyn SourceProvider> {
+    let is_azure = results.iter().any(|r| r.resource_type.starts_with("azurerm_"));
     let _is_aws = results.iter().any(|r| r.resource_type.starts_with("aws_"));
-    // Future: add Azure/GCP detection here
-    // let is_azure = results.iter().any(|r| r.resource_type.starts_with("azurerm_"));
-    // let is_gcp = results.iter().any(|r| r.resource_type.starts_with("google_"));
 
-    // Default to AWS (currently the only supported provider)
-    Box::new(aws::AwsSourceProvider)
+    if is_azure {
+        Box::new(azure::AzureSourceProvider)
+    } else {
+        // Default to AWS
+        Box::new(aws::AwsSourceProvider)
+    }
 }
