@@ -179,6 +179,32 @@ fn build_cross_ref_tables(
         })
         .collect();
 
+    // Supplement firewall_to_server_map via subnet-association chain (e.g. Azure NSG→subnet→VM).
+    // In Azure, NSGs are not attached to VMs directly — they are applied to subnets via
+    // `azurerm_subnet_network_security_group_association`. Build a subnet→NSG map, then
+    // join it with server_subnet_map to discover which servers each NSG covers.
+    if let Some(assoc_type) = provider.subnet_nsg_association_type() {
+        let subnet_to_nsg: HashMap<String, String> = results
+            .iter()
+            .filter(|r| r.resource_type == assoc_type)
+            .filter_map(|r| {
+                r.source_hcl
+                    .as_deref()
+                    .and_then(|hcl| provider.extract_nsg_from_subnet_association(hcl))
+            })
+            .collect();
+        if !subnet_to_nsg.is_empty() {
+            for (server, subnet) in &server_subnet_map {
+                if let Some(nsg) = subnet_to_nsg.get(subnet) {
+                    let servers = firewall_to_server_map.entry(nsg.clone()).or_default();
+                    if !servers.contains(server) {
+                        servers.push(server.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut tg_servers_map: HashMap<String, Vec<String>> = HashMap::new();
     for r in results.iter().filter(|r| {
         provider.resource_role(&r.resource_type) == ResourceRole::LbTargetGroupAttachment
@@ -878,21 +904,25 @@ provider "upcloud" {
                         }
                     }
 
-                    // Store resolved HCL for the diff view (first resolved server's HCL, or SKIPPED).
+                    // Store resolved HCL for the diff view (best available, may contain TODO).
                     let diff_hcl = first_resolved_hcl.unwrap_or_else(|| resolved.clone());
                     resolved_hcl_map.insert(
                         (result.resource_type.clone(), result.resource_name.clone()),
-                        if any_resolved {
-                            diff_hcl
-                        } else {
-                            SKIPPED_SENTINEL.to_string()
-                        },
+                        diff_hcl,
                     );
 
                     if !any_resolved {
-                        log.push(format!("  [SKIP] upcloud_firewall_rules.{}: if this SG guards a database, cache, or LB, UpCloud manages their access control separately", result.resource_name));
+                        // No server could be resolved (e.g. Azure subnet-level NSGs, or SGs that
+                        // only guard managed services). Emit the HCL with the TODO placeholder
+                        // intact so users can see and manually complete the assignment.
+                        for note in &result.notes {
+                            content.push_str(&format!("# NOTE: {}\n", note));
+                        }
+                        content.push_str(&resolved);
+                        content.push('\n');
+                        log.push(format!("  [TODO] upcloud_firewall_rules.{}: server_id unresolved — assign manually", result.resource_name));
                     }
-                    continue; // deferred — written after the resource loop below
+                    continue; // deferred to fw_by_server loop (for resolved ones)
                 }
 
                 // Store the resolved HCL for the diff view.
@@ -1014,7 +1044,9 @@ provider "upcloud" {
                     || pt.kind == PassthroughKind::Locals
                     || pt.kind == PassthroughKind::Data
                 {
-                    provider.rewrite_output_refs(&pt.raw_hcl)
+                    // rewrite_output_refs may leave ${<TODO: ...>} when a ref can't be mapped.
+                    // remove_todo_interpolations strips the ${} wrapper, producing valid HCL.
+                    remove_todo_interpolations(provider.rewrite_output_refs(&pt.raw_hcl))
                 } else if pt.kind == PassthroughKind::Variable {
                     let var_name = pt.name.as_deref().unwrap_or("");
                     let (default_val, description) = extract_variable_info(&pt.raw_hcl);
@@ -2083,10 +2115,10 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
     }
 
     #[test]
-    fn firewall_rule_with_unresolved_todo_is_skipped_even_with_other_servers() {
+    fn firewall_rule_with_unresolved_server_is_emitted_with_todo() {
         // aws_security_group "lb" → upcloud_firewall_rules "lb", but there is no
-        // upcloud_server named "lb". Even though other servers exist (web, app),
-        // the rule must be dropped entirely — not emitted with a broken <TODO>.
+        // upcloud_server named "lb". The rule must still be emitted (with a TODO
+        // server_id) so users can see and manually complete the assignment.
         let lb_fw = make_result(
             "aws_security_group",
             "lb",
@@ -2117,14 +2149,15 @@ resource "upcloud_loadbalancer_static_backend_member" "web_member" {
             ),
             None,
         );
-        let output = run_generate(&[lb_fw, web, app], "fw_lb_skip");
+        let output = run_generate(&[lb_fw, web, app], "fw_lb_emit");
+        // Unresolved firewall rules are emitted with a TODO so the user can assign them.
         assert!(
-            !output.contains("upcloud_firewall_rules"),
-            "lb firewall rule must be skipped when no server named 'lb' exists\n{output}"
+            output.contains("upcloud_firewall_rules\" \"lb\""),
+            "unresolved firewall rule must be present in output\n{output}"
         );
         assert!(
-            !output.contains("upcloud_server.<TODO>"),
-            "no unresolved TODO must appear in output\n{output}"
+            output.contains("upcloud_server.<TODO>.id"),
+            "unresolved server_id TODO must appear in output\n{output}"
         );
         // The server resources must still be present
         assert!(output.contains("upcloud_server\" \"web\""), "{output}");
@@ -2272,16 +2305,25 @@ resource "aws_instance" "app" {
             .expect("generate_files must produce webapp-e2e.tf");
         let _ = std::fs::remove_dir_all(&out_dir);
 
-        // No unresolved server_id TODOs in the entire output.
+        // No unresolved server_id TODOs from server-attached SGs — they should all resolve.
+        // (The 'lb' SG has no matching server and will be emitted with a TODO.)
         assert!(
-            !output.contains("upcloud_server.<TODO>"),
-            "no unresolved server_id TODO should remain in output\n{output}"
+            !output.contains("upcloud_server.web.<TODO>"),
+            "web server_id must be resolved\n{output}"
+        );
+        assert!(
+            !output.contains("upcloud_server.app.<TODO>"),
+            "app server_id must be resolved\n{output}"
         );
 
-        // LB security group must be dropped — 'lb' is not a server name.
+        // LB security group has no matching server — emitted with TODO so users can assign it.
         assert!(
-            !output.contains("upcloud_firewall_rules\" \"lb\""),
-            "firewall_rules for 'lb' SG must be skipped (LB uses built-in security)\n{output}"
+            output.contains("upcloud_firewall_rules\" \"lb\""),
+            "firewall_rules for 'lb' SG must be emitted with TODO\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.<TODO>.id"),
+            "lb firewall rules must have TODO server_id\n{output}"
         );
 
         // Server-attached firewall rules must be present with resolved server_id.

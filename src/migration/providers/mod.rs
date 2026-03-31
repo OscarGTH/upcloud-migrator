@@ -54,6 +54,19 @@ pub trait SourceProvider {
     /// Extract the subnet/network resource name from a compute instance's source HCL.
     fn extract_subnet_from_instance(&self, hcl: &str) -> Option<String>;
 
+    /// Return the source resource type that associates a subnet with a firewall/NSG.
+    /// Returns `None` (default) for providers that attach security groups directly to instances.
+    fn subnet_nsg_association_type(&self) -> Option<&str> {
+        None
+    }
+
+    /// Parse a subnet-NSG association resource's source HCL.
+    /// Returns `(subnet_name, nsg_name)` if both references can be extracted.
+    /// Default implementation returns `None`.
+    fn extract_nsg_from_subnet_association(&self, _hcl: &str) -> Option<(String, String)> {
+        None
+    }
+
     /// Extract parameter key-value pairs from a parameter group's source HCL.
     fn extract_parameter_blocks(&self, hcl: &str) -> Vec<(String, String)>;
 

@@ -25,7 +25,8 @@ impl SourceProvider for AzureSourceProvider {
     fn resource_role(&self, resource_type: &str) -> ResourceRole {
         match resource_type {
             "azurerm_linux_virtual_machine" | "azurerm_windows_virtual_machine"
-            | "azurerm_virtual_machine" => ResourceRole::ComputeInstance,
+            | "azurerm_virtual_machine"
+            | "azurerm_linux_virtual_machine_scale_set" => ResourceRole::ComputeInstance,
             "azurerm_ssh_public_key" => ResourceRole::KeyPair,
             "azurerm_managed_disk" => ResourceRole::Other,
             "azurerm_virtual_machine_data_disk_attachment" => ResourceRole::VolumeAttachment,
@@ -45,6 +46,14 @@ impl SourceProvider for AzureSourceProvider {
 
     fn extract_subnet_from_instance(&self, hcl: &str) -> Option<String> {
         generator_support::extract_subnet_from_instance_hcl(hcl)
+    }
+
+    fn subnet_nsg_association_type(&self) -> Option<&str> {
+        Some("azurerm_subnet_network_security_group_association")
+    }
+
+    fn extract_nsg_from_subnet_association(&self, hcl: &str) -> Option<(String, String)> {
+        generator_support::extract_nsg_subnet_association_hcl(hcl)
     }
 
     fn extract_parameter_blocks(&self, _hcl: &str) -> Vec<(String, String)> {

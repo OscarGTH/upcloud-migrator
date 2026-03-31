@@ -147,11 +147,7 @@ pub fn map_security_group(res: &TerraformResource) -> MigrationResult {
         MigrationStatus::Compatible
     };
 
-    let hcl = format!(
-        "resource \"upcloud_firewall_rules\" \"{name}\" {{\n  server_id = upcloud_server.<TODO>.id\n\n{rules}}}\n",
-        name = res.name,
-        rules = rule_blocks,
-    );
+    let hcl = shared::upcloud_firewall_rules_hcl(&res.name, &rule_blocks);
 
     let mut notes = vec![
         "Security groups → UpCloud Firewall Rules (attached per-server, not per-network)".into(),

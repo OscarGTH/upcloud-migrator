@@ -1,3 +1,4 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -58,17 +59,13 @@ fn map_region(region: &str) -> &'static str {
     }
 }
 
-fn is_vm_size_expression(s: &str) -> bool {
-    s.starts_with("var.") || s.starts_with("${") || s.starts_with("local.")
-}
-
 pub fn map_linux_virtual_machine(res: &TerraformResource) -> MigrationResult {
     let vm_size = res
         .attributes
         .get("size")
         .map(|s| s.trim_matches('"'))
         .unwrap_or("Standard_B2s");
-    let is_expr = is_vm_size_expression(vm_size);
+    let is_expr = shared::is_tf_expr(vm_size);
     let plan = if is_expr { "" } else { map_vm_size(vm_size) };
     let zone = res
         .attributes
@@ -363,18 +360,102 @@ pub fn map_availability_set(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_virtual_machine_scale_set(res: &TerraformResource) -> MigrationResult {
+    let vm_size = res
+        .attributes
+        .get("sku")
+        .map(|s| s.trim_matches('"'))
+        .unwrap_or("Standard_B2s");
+    let is_expr = shared::is_tf_expr(vm_size);
+    let plan = if is_expr { "" } else { map_vm_size(vm_size) };
+    let zone = res
+        .attributes
+        .get("location")
+        .map(|l| map_region(l.trim_matches('"')))
+        .unwrap_or("__ZONE__");
+    let hostname_base = res.name.replace('_', "-");
+    let admin_username = res
+        .attributes
+        .get("admin_username")
+        .map(|v| v.trim_matches('"').to_string())
+        .unwrap_or_else(|| "root".into());
+    let os_disk_size = res
+        .attributes
+        .get("os_disk.disk_size_gb")
+        .and_then(|v| v.trim_matches('"').parse::<u32>().ok())
+        .unwrap_or(50);
+    let instances = res
+        .attributes
+        .get("instances")
+        .map(|v| v.trim_matches('"').to_string())
+        .unwrap_or_else(|| "2".into());
+
+    let plan_line = if is_expr {
+        format!("  plan     = {}\n", vm_size)
+    } else {
+        format!("  plan     = \"{}\"\n", plan)
+    };
+
+    let storage_sentinel = format!("  # __STORAGE_END_{}__\n", res.name);
+
+    let hcl = format!(
+        r#"resource "upcloud_server" "{name}" {{
+  count    = {instances}
+  hostname = "{hostname_base}-${{count.index}}"
+  zone     = "{zone}"
+{plan_line}  firewall = true
+
+  template {{
+    storage = "Ubuntu Server 24.04 LTS (Noble Numbat)"
+    size    = {os_disk_size}
+  }}
+
+  network_interface {{
+    type = "public"
+  }}
+
+  network_interface {{
+    type    = "private"
+    network = "<TODO: upcloud_network reference>"
+  }}
+
+  login {{
+    user = "{admin_username}"
+    keys = ["<TODO: paste SSH public key>"]
+  }}
+
+{sentinel}}}
+"#,
+        name = res.name,
+        instances = instances,
+        hostname_base = hostname_base,
+        zone = zone,
+        plan_line = plan_line,
+        os_disk_size = os_disk_size,
+        admin_username = admin_username,
+        sentinel = storage_sentinel,
+    );
+
+    let size_note = if is_expr {
+        format!(
+            "VM SKU '{}' is a variable — update its default in variables.tf to an UpCloud plan.",
+            vm_size
+        )
+    } else {
+        format!("VM SKU '{}' → plan '{}'", vm_size, plan)
+    };
+
     MigrationResult {
         resource_type: res.resource_type.clone(),
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Partial,
-        upcloud_type: "upcloud_server (multiple)".into(),
-        upcloud_hcl: None,
+        status: MigrationStatus::Native,
+        upcloud_type: "upcloud_server".into(),
+        upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
         notes: vec![
-            "Azure VMSS → create individual upcloud_server resources with count.".into(),
-            "UpCloud does not have auto-scaling — manage instance count manually or via external tooling.".into(),
+            size_note,
+            "Azure VMSS → UpCloud servers with count. No auto-scaling equivalent — manage instance count manually.".into(),
         ],
         source_hcl: None,
     }

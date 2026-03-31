@@ -1,55 +1,9 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
-/// Returns true if `name` is a recognized property of `upcloud_managed_database_postgresql`.
-pub(crate) fn is_valid_pg_property(name: &str) -> bool {
-    matches!(
-        name,
-        "admin_password"
-            | "admin_username"
-            | "automatic_utility_network_ip_filter"
-            | "autovacuum_analyze_scale_factor"
-            | "autovacuum_analyze_threshold"
-            | "autovacuum_freeze_max_age"
-            | "autovacuum_max_workers"
-            | "autovacuum_naptime"
-            | "autovacuum_vacuum_cost_delay"
-            | "autovacuum_vacuum_cost_limit"
-            | "autovacuum_vacuum_scale_factor"
-            | "autovacuum_vacuum_threshold"
-            | "backup_hour"
-            | "backup_minute"
-            | "bgwriter_delay"
-            | "bgwriter_flush_after"
-            | "bgwriter_lru_maxpages"
-            | "bgwriter_lru_multiplier"
-            | "deadlock_timeout"
-            | "idle_in_transaction_session_timeout"
-            | "jit"
-            | "log_autovacuum_min_duration"
-            | "log_error_verbosity"
-            | "log_line_prefix"
-            | "log_min_duration_statement"
-            | "log_temp_files"
-            | "max_connections"
-            | "max_locks_per_transaction"
-            | "max_parallel_workers"
-            | "max_parallel_workers_per_gather"
-            | "max_replication_slots"
-            | "max_wal_senders"
-            | "max_worker_processes"
-            | "public_access"
-            | "shared_buffers_percentage"
-            | "synchronous_replication"
-            | "timezone"
-            | "track_activity_query_size"
-            | "track_commit_timestamp"
-            | "track_functions"
-            | "track_io_timing"
-            | "version"
-            | "work_mem"
-    )
-}
+/// Re-export from shared for use in mod.rs trait impl.
+pub(crate) use shared::is_valid_pg_property;
 
 fn map_db_sku(sku_name: &str) -> &'static str {
     match sku_name {
@@ -73,29 +27,13 @@ pub fn map_postgresql_server(res: &TerraformResource) -> MigrationResult {
         .map(|v| v.trim_matches('"'))
         .unwrap_or("16");
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_database_postgresql" "{name}" {{
-  name  = "{name}-db"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
-  }}
-
-  properties {{
-    public_access = false
-    version       = "{version}"
-  }}
-}}
-"#,
-        name = res.name,
-        plan = plan,
-        version = version,
+    let hcl = shared::upcloud_managed_database_hcl(
+        "upcloud_managed_database_postgresql",
+        &res.name,
+        &format!("{}-db", res.name),
+        plan,
+        "<TODO: upcloud_network UUID>",
+        &format!("    version       = \"{}\"", version),
     );
 
     MigrationResult {
@@ -129,29 +67,13 @@ pub fn map_postgresql_flexible_server(res: &TerraformResource) -> MigrationResul
         .map(|v| v.trim_matches('"'))
         .unwrap_or("16");
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_database_postgresql" "{name}" {{
-  name  = "{name}-db"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
-  }}
-
-  properties {{
-    public_access = false
-    version       = "{version}"
-  }}
-}}
-"#,
-        name = res.name,
-        plan = plan,
-        version = version,
+    let hcl = shared::upcloud_managed_database_hcl(
+        "upcloud_managed_database_postgresql",
+        &res.name,
+        &format!("{}-db", res.name),
+        plan,
+        "<TODO: upcloud_network UUID>",
+        &format!("    version       = \"{}\"", version),
     );
 
     MigrationResult {
@@ -184,29 +106,13 @@ pub fn map_mysql_server(res: &TerraformResource) -> MigrationResult {
         .map(|v| v.trim_matches('"'))
         .unwrap_or("8.0");
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_database_mysql" "{name}" {{
-  name  = "{name}-db"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
-  }}
-
-  properties {{
-    public_access = false
-    version       = "{version}"
-  }}
-}}
-"#,
-        name = res.name,
-        plan = plan,
-        version = version,
+    let hcl = shared::upcloud_managed_database_hcl(
+        "upcloud_managed_database_mysql",
+        &res.name,
+        &format!("{}-db", res.name),
+        plan,
+        "<TODO: upcloud_network UUID>",
+        &format!("    version       = \"{}\"", version),
     );
 
     MigrationResult {
@@ -234,27 +140,13 @@ pub fn map_mysql_flexible_server(res: &TerraformResource) -> MigrationResult {
         .unwrap_or("GP_Standard_D2s_v3");
     let plan = map_db_sku(sku);
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_database_mysql" "{name}" {{
-  name  = "{name}-db"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
-  }}
-
-  properties {{
-    public_access = false
-  }}
-}}
-"#,
-        name = res.name,
-        plan = plan,
+    let hcl = shared::upcloud_managed_database_hcl(
+        "upcloud_managed_database_mysql",
+        &res.name,
+        &format!("{}-db", res.name),
+        plan,
+        "<TODO: upcloud_network UUID>",
+        "",
     );
 
     MigrationResult {
@@ -296,27 +188,13 @@ pub fn map_redis_cache(res: &TerraformResource) -> MigrationResult {
         _ => "1x1xCPU-2GB",
     };
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_database_valkey" "{name}" {{
-  name  = "{name}-cache"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "<TODO: upcloud_network UUID>"
-  }}
-
-  properties {{
-    public_access = false
-  }}
-}}
-"#,
-        name = res.name,
-        plan = plan,
+    let hcl = shared::upcloud_managed_database_hcl(
+        "upcloud_managed_database_valkey",
+        &res.name,
+        &format!("{}-cache", res.name),
+        plan,
+        "<TODO: upcloud_network UUID>",
+        "",
     );
 
     MigrationResult {

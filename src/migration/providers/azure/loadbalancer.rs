@@ -1,3 +1,4 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -8,31 +9,19 @@ pub fn map_lb(res: &TerraformResource) -> MigrationResult {
         .map(|s| s.trim_matches('"'))
         .unwrap_or("Standard");
 
-    let hcl = format!(
-        r#"resource "upcloud_loadbalancer" "{name}" {{
-  name              = "{name}"
-  plan              = "development"  # update to production-small or higher for production
-  zone              = "__ZONE__"
-  configured_status = "started"
-
-  networks {{
+    let networks_block = r#"  networks {
     name    = "private"
     type    = "private"
     family  = "IPv4"
     network = "<TODO: upcloud_network reference>"
-  }}
+  }
 
-  networks {{
+  networks {
     name   = "public"
     type   = "public"
     family = "IPv4"
-  }}
-
-  # Backends and frontends are separate resources
-}}
-"#,
-        name = res.name,
-    );
+  }"#;
+    let hcl = shared::upcloud_loadbalancer_hcl(&res.name, "development", networks_block, "  # update to production-small or higher for production");
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -202,31 +191,19 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
 }
 
 pub fn map_application_gateway(res: &TerraformResource) -> MigrationResult {
-    let hcl = format!(
-        r#"resource "upcloud_loadbalancer" "{name}" {{
-  name              = "{name}"
-  plan              = "production-small"
-  zone              = "__ZONE__"
-  configured_status = "started"
-
-  networks {{
+    let networks_block = r#"  networks {
     name    = "private"
     type    = "private"
     family  = "IPv4"
     network = "<TODO: upcloud_network reference>"
-  }}
+  }
 
-  networks {{
+  networks {
     name   = "public"
     type   = "public"
     family = "IPv4"
-  }}
-
-  # Application Gateway features (WAF, path-based routing, etc.) need manual migration
-}}
-"#,
-        name = res.name,
-    );
+  }"#;
+    let hcl = shared::upcloud_loadbalancer_hcl(&res.name, "production-small", networks_block, "  # Application Gateway features (WAF, path-based routing, etc.) need manual migration");
 
     MigrationResult {
         resource_type: res.resource_type.clone(),

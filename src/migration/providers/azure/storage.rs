@@ -20,18 +20,7 @@ pub fn map_managed_disk(res: &TerraformResource) -> MigrationResult {
         _ => "maxiops",
     };
 
-    let hcl = format!(
-        r#"resource "upcloud_storage" "{name}" {{
-  title = "{name}"
-  size  = {size}
-  tier  = "{tier}"
-  zone  = "__ZONE__"
-}}
-"#,
-        name = res.name,
-        size = size,
-        tier = upcloud_tier,
-    );
+    let hcl = shared::upcloud_storage_hcl(&res.name, &res.name, size, upcloud_tier, "");
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -135,9 +124,12 @@ pub fn map_storage_container(res: &TerraformResource) -> MigrationResult {
         .map(|b| b.trim_matches('"').to_string())
         .unwrap_or_else(|| res.name.replace('_', "-"));
 
+    // The Azure provider used to expose `storage_account_name` (string) but switched to
+    // `storage_account_id` (resource reference) in newer provider versions. Try both.
     let storage_account_name = res
         .attributes
         .get("storage_account_name")
+        .or_else(|| res.attributes.get("storage_account_id"))
         .and_then(|v| {
             let v = v.trim_matches('"');
             if v.starts_with("azurerm_storage_account.") {

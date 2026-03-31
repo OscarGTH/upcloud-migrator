@@ -1,3 +1,4 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -39,21 +40,7 @@ pub fn map_lb(res: &TerraformResource) -> MigrationResult {
         .to_string()
     };
 
-    let hcl = format!(
-        r#"resource "upcloud_loadbalancer" "{name}" {{
-  name              = "{name}"
-  plan              = "development"  # update to production-small or higher for production
-  zone              = "__ZONE__"
-  configured_status = "started"
-
-{networks}
-
-  # Backends and frontends are separate resources
-}}
-"#,
-        name = res.name,
-        networks = networks_block,
-    );
+    let hcl = shared::upcloud_loadbalancer_hcl(&res.name, "development", &networks_block, "  # update to production-small or higher for production");
 
     let mut notes = vec![
         format!("ALB/NLB ({}) → UpCloud Load Balancer", lb_type),

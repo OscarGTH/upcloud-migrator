@@ -5,7 +5,8 @@
 //! They parse AWS Terraform patterns (resource references, data sources, etc.)
 //! and rewrite them for UpCloud.
 
-use crate::migration::generator::{inside_todo_marker, remove_todo_interpolations};
+use crate::migration::generator::inside_todo_marker;
+use crate::migration::providers::shared;
 
 // ── Source HCL extraction helpers ─────────────────────────────────────────────
 
@@ -149,52 +150,8 @@ pub fn extract_lb_name_from_listener_hcl(hcl: &str) -> Option<String> {
 /// Handles patterns like `data.aws_caller_identity.current.account_id`.
 /// Also replaces cross-resource AWS refs like `aws_security_group.main.id`.
 /// Skips any `aws_` occurrences that are already inside a `<TODO: ...>` marker.
-pub fn sanitize_aws_refs(mut s: String) -> String {
-    // data.aws_* data source references
-    let mut search_from = 0;
-    while let Some(rel) = s[search_from..].find("data.aws_") {
-        let start = search_from + rel;
-        if inside_todo_marker(&s, start) {
-            search_from = start + "data.aws_".len();
-            continue;
-        }
-        let end = s[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
-            .map(|off| start + off)
-            .unwrap_or(s.len());
-        let aws_ref = s[start..end].to_string();
-        s = s.replacen(&aws_ref, "<TODO: remove AWS data source ref>", 1);
-        search_from = 0; // restart since string changed
-    }
-    // aws_type.name.attr resource references inside interpolations ${...}
-    // These have the form "aws_*.*.*" with at least one dot
-    let mut search_from = 0;
-    while let Some(rel) = s[search_from..].find("aws_") {
-        let start = search_from + rel;
-        if inside_todo_marker(&s, start) {
-            search_from = start + "aws_".len();
-            continue;
-        }
-        let end = s[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
-            .map(|off| start + off)
-            .unwrap_or(s.len());
-        let candidate = &s[start..end];
-        if candidate.matches('.').count() >= 1 {
-            let owned = candidate.to_string();
-            s = s.replacen(&owned, "<TODO: remove AWS resource ref>", 1);
-            // reset search since string changed
-            search_from = 0;
-        } else {
-            // no dots = likely a comment or type name; skip past it
-            search_from = end;
-        }
-    }
-    // Clean up any "${<TODO: ...>...}" that were created by replacing an AWS ref
-    // that was inside a Terraform template expression (e.g. in a user_data heredoc).
-    s = remove_todo_interpolations(s);
-
-    s
+pub fn sanitize_aws_refs(s: String) -> String {
+    shared::sanitize_provider_refs(s, "aws_", "aws_", "AWS")
 }
 
 /// Map an AWS resource type name to its UpCloud equivalent.

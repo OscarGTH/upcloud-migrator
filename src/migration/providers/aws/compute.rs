@@ -1,3 +1,4 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -58,19 +59,13 @@ fn map_region(region: &str) -> &'static str {
     }
 }
 
-/// Returns true when `instance_type` is a Terraform variable/expression rather than a literal.
-/// A literal is a plain string like "t3.micro"; expressions include var refs and interpolations.
-fn is_instance_type_expression(s: &str) -> bool {
-    s.starts_with("var.") || s.starts_with("${") || s.starts_with("local.")
-}
-
 pub fn map_instance(res: &TerraformResource) -> MigrationResult {
     let instance_type = res
         .attributes
         .get("instance_type")
         .map(|s| s.trim_matches('"'))
         .unwrap_or("t3.micro");
-    let is_expr = is_instance_type_expression(instance_type);
+    let is_expr = shared::is_tf_expr(instance_type);
     let plan = if is_expr {
         ""
     } else {

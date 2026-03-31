@@ -3,7 +3,8 @@
 //! These functions are used by [`AzureSourceProvider`](super::AzureSourceProvider) to
 //! implement the [`SourceProvider`](crate::migration::providers::SourceProvider) trait.
 
-use crate::migration::generator::{inside_todo_marker, remove_todo_interpolations};
+use crate::migration::generator::inside_todo_marker;
+use crate::migration::providers::shared;
 
 // ── Source HCL extraction helpers ─────────────────────────────────────────────
 
@@ -45,6 +46,39 @@ pub fn extract_subnet_from_instance_hcl(hcl: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Parse an `azurerm_subnet_network_security_group_association` source HCL block.
+/// Returns `(subnet_name, nsg_name)` if both can be extracted.
+pub fn extract_nsg_subnet_association_hcl(hcl: &str) -> Option<(String, String)> {
+    let mut subnet_name: Option<String> = None;
+    let mut nsg_name: Option<String> = None;
+    for line in hcl.lines() {
+        let trimmed = line.trim();
+        if subnet_name.is_none() && trimmed.starts_with("subnet_id") {
+            if let Some(pos) = trimmed.find("azurerm_subnet.") {
+                let after = &trimmed[pos + "azurerm_subnet.".len()..];
+                let name = after.split('.').next().unwrap_or("").trim_matches('"');
+                if !name.is_empty() {
+                    subnet_name = Some(name.to_string());
+                }
+            }
+        }
+        if nsg_name.is_none() && trimmed.starts_with("network_security_group_id") {
+            if let Some(pos) = trimmed.find("azurerm_network_security_group.") {
+                let after =
+                    &trimmed[pos + "azurerm_network_security_group.".len()..];
+                let name = after.split('.').next().unwrap_or("").trim_matches('"');
+                if !name.is_empty() {
+                    nsg_name = Some(name.to_string());
+                }
+            }
+        }
+    }
+    match (subnet_name, nsg_name) {
+        (Some(s), Some(n)) => Some((s, n)),
+        _ => None,
+    }
 }
 
 /// Extract (backend_pool_name, server_name) from an `azurerm_lb_backend_address_pool_association` source HCL.
@@ -121,46 +155,8 @@ pub fn extract_lb_name_from_rule_hcl(hcl: &str) -> Option<String> {
 // ── Output reference sanitization and rewriting ───────────────────────────────
 
 /// Replace Azure-specific references that leaked into output HCL.
-pub fn sanitize_azure_refs(mut s: String) -> String {
-    // data.azurerm_* data source references
-    let mut search_from = 0;
-    while let Some(rel) = s[search_from..].find("data.azurerm_") {
-        let start = search_from + rel;
-        if inside_todo_marker(&s, start) {
-            search_from = start + "data.azurerm_".len();
-            continue;
-        }
-        let end = s[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
-            .map(|off| start + off)
-            .unwrap_or(s.len());
-        let azure_ref = s[start..end].to_string();
-        s = s.replacen(&azure_ref, "<TODO: remove Azure data source ref>", 1);
-        search_from = 0;
-    }
-    // azurerm_type.name.attr resource references
-    let mut search_from = 0;
-    while let Some(rel) = s[search_from..].find("azurerm_") {
-        let start = search_from + rel;
-        if inside_todo_marker(&s, start) {
-            search_from = start + "azurerm_".len();
-            continue;
-        }
-        let end = s[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '.' && c != '_')
-            .map(|off| start + off)
-            .unwrap_or(s.len());
-        let candidate = &s[start..end];
-        if candidate.matches('.').count() >= 1 {
-            let owned = candidate.to_string();
-            s = s.replacen(&owned, "<TODO: remove Azure resource ref>", 1);
-            search_from = 0;
-        } else {
-            search_from = end;
-        }
-    }
-    s = remove_todo_interpolations(s);
-    s
+pub fn sanitize_azure_refs(s: String) -> String {
+    shared::sanitize_provider_refs(s, "azurerm_", "azurerm_", "Azure")
 }
 
 /// Map an Azure resource type name to its UpCloud equivalent.
@@ -179,6 +175,9 @@ pub fn upcloud_type_for_azure(azure_type: &str) -> Option<&'static str> {
             Some("upcloud_managed_database_mysql")
         }
         "azurerm_redis_cache" => Some("upcloud_managed_database_valkey"),
+        "azurerm_storage_account" => Some("upcloud_managed_object_storage"),
+        "azurerm_storage_share" | "azurerm_storage_share_file" => Some("upcloud_file_storage"),
+        "azurerm_linux_virtual_machine_scale_set" => Some("upcloud_server"),
         "azurerm_kubernetes_cluster" => Some("upcloud_kubernetes_cluster"),
         "azurerm_public_ip" => Some("upcloud_floating_ip_address"),
         _ => None,
@@ -205,11 +204,14 @@ pub fn upcloud_attr_for(upcloud_type: &str, azure_attr: &str) -> Option<&'static
         ("upcloud_firewall_rules", "id") => Some("id"),
         (t, "id") if t.starts_with("upcloud_managed_database") => Some("id"),
         (t, "fqdn") if t.starts_with("upcloud_managed_database") => Some("service_host"),
+        (t, "hostname") if t.starts_with("upcloud_managed_database") => Some("service_host"),
         (t, "port") if t.starts_with("upcloud_managed_database") => Some("service_port"),
         ("upcloud_kubernetes_cluster", "id") => Some("id"),
         ("upcloud_kubernetes_cluster", "name") => Some("name"),
         ("upcloud_floating_ip_address", "id") => Some("id"),
         ("upcloud_floating_ip_address", "ip_address") => Some("ip_address"),
+        ("upcloud_managed_object_storage", "name") => Some("name"),
+        ("upcloud_file_storage", "name") => Some("name"),
         _ => None,
     }
 }

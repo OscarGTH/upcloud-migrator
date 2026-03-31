@@ -1,89 +1,9 @@
+use super::super::shared;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
-/// Returns true if `name` is a recognized property of `upcloud_managed_database_postgresql`.
-/// Used to filter AWS RDS parameter names before suggesting or injecting them.
-pub(crate) fn is_valid_pg_property(name: &str) -> bool {
-    matches!(
-        name,
-        "admin_password"
-            | "admin_username"
-            | "automatic_utility_network_ip_filter"
-            | "autovacuum_analyze_scale_factor"
-            | "autovacuum_analyze_threshold"
-            | "autovacuum_freeze_max_age"
-            | "autovacuum_max_workers"
-            | "autovacuum_naptime"
-            | "autovacuum_vacuum_cost_delay"
-            | "autovacuum_vacuum_cost_limit"
-            | "autovacuum_vacuum_scale_factor"
-            | "autovacuum_vacuum_threshold"
-            | "backup_hour"
-            | "backup_interval_hours"
-            | "backup_minute"
-            | "backup_retention_days"
-            | "bgwriter_delay"
-            | "bgwriter_flush_after"
-            | "bgwriter_lru_maxpages"
-            | "bgwriter_lru_multiplier"
-            | "deadlock_timeout"
-            | "default_toast_compression"
-            | "enable_ha_replica_dns"
-            | "idle_in_transaction_session_timeout"
-            | "io_combine_limit"
-            | "io_max_combine_limit"
-            | "io_max_concurrency"
-            | "io_method"
-            | "io_workers"
-            | "ip_filter"
-            | "jit"
-            | "log_autovacuum_min_duration"
-            | "log_error_verbosity"
-            | "log_line_prefix"
-            | "log_min_duration_statement"
-            | "log_temp_files"
-            | "max_connections"
-            | "max_files_per_process"
-            | "max_locks_per_transaction"
-            | "max_logical_replication_workers"
-            | "max_parallel_workers"
-            | "max_parallel_workers_per_gather"
-            | "max_pred_locks_per_transaction"
-            | "max_prepared_transactions"
-            | "max_replication_slots"
-            | "max_slot_wal_keep_size"
-            | "max_stack_depth"
-            | "max_standby_archive_delay"
-            | "max_standby_streaming_delay"
-            | "max_sync_workers_per_subscription"
-            | "max_wal_senders"
-            | "max_worker_processes"
-            | "node_count"
-            | "password_encryption"
-            | "pg_partman_bgw_interval"
-            | "pg_partman_bgw_role"
-            | "pg_stat_monitor_enable"
-            | "pg_stat_monitor_pgsm_enable_query_plan"
-            | "pg_stat_monitor_pgsm_max_buckets"
-            | "pg_stat_statements_track"
-            | "public_access"
-            | "service_log"
-            | "shared_buffers_percentage"
-            | "switchover_windows"
-            | "synchronous_replication"
-            | "temp_file_limit"
-            | "timezone"
-            | "track_activity_query_size"
-            | "track_commit_timestamp"
-            | "track_functions"
-            | "track_io_timing"
-            | "variant"
-            | "version"
-            | "wal_sender_timeout"
-            | "wal_writer_delay"
-            | "work_mem"
-    )
-}
+/// Re-export from shared for use in mod.rs trait impl.
+pub(crate) use shared::is_valid_pg_property;
 
 fn map_engine(engine: &str) -> (&'static str, &'static str) {
     match engine.to_lowercase().as_str() {
@@ -173,32 +93,13 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
         .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
         .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
 
-    let hcl = format!(
-        r#"resource "{upcloud_type}" "{name}" {{
-  name  = "{name}-db"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  # Private network access — required for servers to reach the database.
-  # Set uuid to the upcloud_network in the same zone.
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "{network_uuid_placeholder}"
-  }}
-
-  properties {{
-    public_access = false{param_group_marker}
-  }}
-}}
-"#,
-        upcloud_type = upcloud_type,
-        name = res.name,
-        plan = plan,
-        network_uuid_placeholder = network_uuid_placeholder,
-        param_group_marker = param_group_marker,
+    let hcl = shared::upcloud_managed_database_hcl(
+        upcloud_type,
+        &res.name,
+        &format!("{}-db", res.name),
+        plan,
+        &network_uuid_placeholder,
+        &format!("    # Private network access — required for servers to reach the database.{}", param_group_marker),
     );
 
     let network_note = if network_uuid_placeholder.contains("subnet_group=") {
@@ -247,29 +148,13 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
         .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
         .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
 
-    let hcl = format!(
-        r#"resource "{upcloud_type}" "{name}" {{
-  name  = "{name}-cluster"
-  plan  = "1x2xCPU-4GB-50GB"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "{network_uuid_placeholder}"
-  }}
-
-  properties {{
-    public_access = false{param_group_marker}
-  }}
-}}
-"#,
-        upcloud_type = upcloud_type,
-        name = res.name,
-        network_uuid_placeholder = network_uuid_placeholder,
-        param_group_marker = param_group_marker,
+    let hcl = shared::upcloud_managed_database_hcl(
+        upcloud_type,
+        &res.name,
+        &format!("{}-cluster", res.name),
+        "1x2xCPU-4GB-50GB",
+        &network_uuid_placeholder,
+        &param_group_marker.trim_start_matches('\n'),
     );
 
     MigrationResult {
@@ -483,28 +368,13 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
         .map(|sg| format!("<TODO: upcloud_network UUID subnet_group={}>", sg))
         .unwrap_or_else(|| "<TODO: upcloud_network UUID>".to_string());
 
-    let hcl = format!(
-        r#"resource "upcloud_managed_database_valkey" "{name}" {{
-  name  = "{name}-cache"
-  plan  = "{plan}"
-  title = "{name}"
-  zone  = "__ZONE__"
-
-  network {{
-    family = "IPv4"
-    name   = "private"
-    type   = "private"
-    uuid   = "{network_uuid_placeholder}"
-  }}
-
-  properties {{
-    public_access = false
-  }}
-}}
-"#,
-        name = res.name,
-        plan = plan,
-        network_uuid_placeholder = network_uuid_placeholder,
+    let hcl = shared::upcloud_managed_database_hcl(
+        "upcloud_managed_database_valkey",
+        &res.name,
+        &format!("{}-cache", res.name),
+        plan,
+        &network_uuid_placeholder,
+        "",
     );
 
     let mut notes = vec![

@@ -89,20 +89,7 @@ pub fn map_ebs_volume(res: &TerraformResource) -> MigrationResult {
         res.name.to_string()
     };
 
-    let hcl = format!(
-        r#"resource "upcloud_storage" "{name}" {{
-{count_line}  title = "{title}"
-  size  = {size}
-  tier  = "{tier}"
-  zone  = "__ZONE__"
-}}
-"#,
-        name = res.name,
-        count_line = count_line,
-        title = title_val,
-        size = size,
-        tier = upcloud_tier,
-    );
+    let hcl = shared::upcloud_storage_hcl(&res.name, &title_val, size, upcloud_tier, &count_line);
 
     let mut notes = vec![format!(
         "EBS type '{}' → UpCloud tier '{}'",
