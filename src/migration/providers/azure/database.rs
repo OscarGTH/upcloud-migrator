@@ -214,6 +214,101 @@ pub fn map_redis_cache(res: &TerraformResource) -> MigrationResult {
     }
 }
 
+pub fn map_postgresql_flexible_server_database(res: &TerraformResource) -> MigrationResult {
+    let db_name = res
+        .attributes
+        .get("name")
+        .map(|n| n.trim_matches('"'))
+        .unwrap_or(&res.name);
+    let server_ref = res
+        .attributes
+        .get("server_id")
+        .and_then(|v| {
+            let v = v.trim_matches('"');
+            // azurerm_postgresql_flexible_server.<name>.id
+            if v.starts_with("azurerm_postgresql_flexible_server.") {
+                v.split('.').nth(1).map(|n| format!("upcloud_managed_database_postgresql.{}", n))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "upcloud_managed_database_postgresql.<TODO>".to_string());
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "(no separate sub-database resource)".into(),
+        upcloud_hcl: None,
+        snippet: None,
+        parent_resource: None,
+        notes: vec![
+            format!(
+                "UpCloud Managed PostgreSQL has no dedicated Terraform resource for sub-databases."
+            ),
+            format!(
+                "Create the '{}' database manually after provisioning {} or via an init script.",
+                db_name, server_ref
+            ),
+        ],
+        source_hcl: None,
+    }
+}
+
+pub fn map_postgresql_flexible_server_configuration(res: &TerraformResource) -> MigrationResult {
+    let config_name = res
+        .attributes
+        .get("name")
+        .map(|n| n.trim_matches('"'))
+        .unwrap_or(&res.name);
+    let config_value = res
+        .attributes
+        .get("value")
+        .map(|v| v.trim_matches('"'))
+        .unwrap_or("");
+    let server_ref = res
+        .attributes
+        .get("server_id")
+        .and_then(|v| {
+            let v = v.trim_matches('"');
+            if v.starts_with("azurerm_postgresql_flexible_server.") {
+                v.split('.').nth(1).map(|n| format!("upcloud_managed_database_postgresql.{}", n))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "upcloud_managed_database_postgresql.<TODO>".to_string());
+
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Partial,
+        upcloud_type: "properties block in upcloud_managed_database_postgresql".into(),
+        upcloud_hcl: None,
+        snippet: Some(format!(
+            r#"  # Add to {server_ref}:
+  properties {{
+    # {config_name} = "{config_value}"
+  }}
+"#,
+            server_ref = server_ref,
+            config_name = config_name,
+            config_value = config_value,
+        )),
+        parent_resource: None,
+        notes: vec![
+            format!(
+                "PostgreSQL configuration '{}' = '{}' should be set in the properties block of {}.",
+                config_name, config_value, server_ref
+            ),
+            "UpCloud Managed Database properties replace Azure server configurations.".into(),
+        ],
+        source_hcl: None,
+    }
+}
+
 pub fn map_cosmosdb_account(res: &TerraformResource) -> MigrationResult {
     let kind = res
         .attributes

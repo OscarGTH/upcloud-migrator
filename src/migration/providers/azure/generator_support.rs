@@ -522,6 +522,15 @@ pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
             })
             .collect();
 
+    // redirect_configuration name → target listener name
+    let redirect_target_map: HashMap<String, String> =
+        extract_appgw_named_blocks(hcl, "redirect_configuration")
+            .into_iter()
+            .filter_map(|(name, content)| {
+                extract_hcl_attr(&content, "target_listener_name").map(|listener| (name, listener))
+            })
+            .collect();
+
     // http_listener name → (port_name, protocol, ssl_cert?, host_name?)
     let listener_map: HashMap<String, (String, String, Option<String>, Option<String>)> =
         extract_appgw_named_blocks(hcl, "http_listener")
@@ -555,6 +564,14 @@ pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
             backend_health_map.insert(backend.clone(), probe_props);
         }
     }
+
+    // listener → backend pool (from normal routing rules)
+    let listener_backend_map: HashMap<String, String> = routing_rules
+        .iter()
+        .filter_map(|(_, listener, backend_opt, _, _)| {
+            backend_opt.as_ref().map(|backend| (listener.clone(), backend.clone()))
+        })
+        .collect();
 
     let mut out = String::new();
 
@@ -609,12 +626,20 @@ pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
                 }
             }
         } else if let Some(redirect_cfg) = redirect_opt {
+            let resolved_backend = redirect_target_map
+            .get(redirect_cfg)
+                .and_then(|target_listener| listener_backend_map.get(target_listener))
+                .or_else(|| backend_pools.first());
+            let backend_ref = resolved_backend
+                .map(|backend_name| format!("upcloud_loadbalancer_backend.{}.name", tf_id(backend_name)))
+                .unwrap_or_else(|| "<TODO: assign a backend>".into());
             out.push_str(&format!(
-                "# NOTE: HTTP\u{2192}HTTPS redirect \u{2014} the rule below handles all traffic.\nresource \"upcloud_loadbalancer_frontend\" \"{lid}\" {{\n  loadbalancer         = upcloud_loadbalancer.{lb}.id\n  name                 = \"{name}\"\n  mode                 = \"http\"\n  port                 = {port}\n  default_backend_name = \"<TODO: required \u{2014} assign a backend (redirect rule handles all traffic)>\"\n\n  networks {{\n    name = \"public\"\n  }}\n}}\n\n",
+                "# NOTE: HTTP\u{2192}HTTPS redirect \u{2014} reuse the target listener backend so the frontend is applyable.\nresource \"upcloud_loadbalancer_frontend\" \"{lid}\" {{\n  loadbalancer         = upcloud_loadbalancer.{lb}.id\n  name                 = \"{name}\"\n  mode                 = \"http\"\n  port                 = {port}\n  default_backend_name = {backend_ref}\n\n  networks {{\n    name = \"public\"\n  }}\n}}\n\n",
                 lid = lid,
                 lb = lb_name,
                 name = listener_name,
                 port = port,
+                backend_ref = backend_ref,
             ));
             out.push_str(&format!(
                 "resource \"upcloud_loadbalancer_frontend_rule\" \"{lid}_redirect\" {{\n  frontend = upcloud_loadbalancer_frontend.{lid}.name\n  name     = \"{cfg_name}\"\n  priority = 100\n\n  actions {{\n    http_redirect {{\n      scheme = \"https\"\n    }}\n  }}\n\n  matchers {{}}\n}}\n\n",

@@ -30,6 +30,10 @@ impl ResourceMapper for AzureResourceMapper {
             "azurerm_storage_account" => storage::map_storage_account(res),
             "azurerm_storage_container" => storage::map_storage_container(res),
             "azurerm_storage_share" => storage::map_storage_share(res),
+            "azurerm_storage_management_policy" => unsupported(
+                res,
+                "(no lifecycle policy resource in UpCloud Terraform provider — configure via S3 API)",
+            ),
 
             // Network
             "azurerm_virtual_network" => network::map_virtual_network(res),
@@ -55,6 +59,12 @@ impl ResourceMapper for AzureResourceMapper {
             // Databases
             "azurerm_postgresql_server" => database::map_postgresql_server(res),
             "azurerm_postgresql_flexible_server" => database::map_postgresql_flexible_server(res),
+            "azurerm_postgresql_flexible_server_database" => {
+                database::map_postgresql_flexible_server_database(res)
+            }
+            "azurerm_postgresql_flexible_server_configuration" => {
+                database::map_postgresql_flexible_server_configuration(res)
+            }
             "azurerm_mysql_server" => database::map_mysql_server(res),
             "azurerm_mysql_flexible_server" => database::map_mysql_flexible_server(res),
             "azurerm_redis_cache" => database::map_redis_cache(res),
@@ -77,6 +87,10 @@ impl ResourceMapper for AzureResourceMapper {
             // DNS
             "azurerm_dns_zone" | "azurerm_dns_a_record" | "azurerm_dns_cname_record"
             | "azurerm_private_dns_zone" => partial_dns(res),
+            "azurerm_private_dns_zone_virtual_network_link" => unsupported(
+                res,
+                "(Azure-specific private DNS VNet link — not needed in UpCloud SDN)",
+            ),
 
             // Identity / IAM
             "azurerm_user_assigned_identity" | "azurerm_role_assignment"
@@ -104,7 +118,8 @@ impl ResourceMapper for AzureResourceMapper {
 
             // Monitoring
             "azurerm_monitor_metric_alert" | "azurerm_monitor_action_group"
-            | "azurerm_log_analytics_workspace" | "azurerm_application_insights" => {
+            | "azurerm_log_analytics_workspace" | "azurerm_application_insights"
+            | "azurerm_monitor_diagnostic_setting" => {
                 unsupported(res, "(no equivalent monitoring resource)")
             }
 
