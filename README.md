@@ -33,6 +33,8 @@
     </li>
     <li><a href="#quick-start">Quick start</a></li>
     <li><a href="#supported-providers">Supported providers</a></li>
+    <li><a href="#aws--upcloud">AWS → UpCloud</a></li>
+    <li><a href="#azure--upcloud">Azure → UpCloud</a></li>
     <li><a href="#adding-a-new-provider">Adding a new provider</a></li>
     <li><a href="#key-behaviours">Key behaviours</a></li>
     <li><a href="#environment-variables">Environment variables</a></li>
@@ -130,79 +132,163 @@ The `demo/` directory contains a realistic SaaS setup: web + API servers, Postgr
 
 ### AWS → UpCloud
 
-#### Compute
+<details>
+  <summary>Show AWS resource mappings</summary>
 
-| AWS resource | UpCloud equivalent |
-|---|---|
-| `aws_instance` | `upcloud_server` |
-| `aws_key_pair` | `login {}` block in `upcloud_server` |
-| `aws_launch_template` | `upcloud_server` snippet |
-| `variable` / `output` / `locals` | passed through with refs rewritten |
+  #### Compute
 
-#### Network
+  | AWS resource | UpCloud equivalent |
+  |---|---|
+  | `aws_instance` | `upcloud_server` |
+  | `aws_key_pair` | `login {}` block in `upcloud_server` |
+  | `aws_launch_template` | `upcloud_server` snippet |
+  | `variable` / `output` / `locals` | passed through with refs rewritten |
 
-| AWS resource | UpCloud equivalent |
-|---|---|
-| `aws_vpc` | `upcloud_router` |
-| `aws_subnet` | `upcloud_network` |
-| `aws_security_group` | `upcloud_firewall_rules` |
-| `aws_vpc_security_group_ingress_rule` | `firewall_rule` block snippet |
-| `aws_vpc_security_group_egress_rule` | `firewall_rule` block snippet |
-| `aws_network_interface` | `network_interface {}` block in `upcloud_server` |
-| `aws_internet_gateway` | *(not needed — UpCloud networks have public routing by default)* |
-| `aws_nat_gateway` | *(not needed)* |
-| `aws_route_table` / `aws_route_table_association` | `static_route` in `upcloud_router` |
-| `aws_eip` | `upcloud_floating_ip_address` |
-| `aws_eip_association` | `mac_address` snippet for floating IP |
+  #### Network
 
-#### Storage
+  | AWS resource | UpCloud equivalent |
+  |---|---|
+  | `aws_vpc` | `upcloud_router` |
+  | `aws_subnet` | `upcloud_network` |
+  | `aws_security_group` | `upcloud_firewall_rules` |
+  | `aws_vpc_security_group_ingress_rule` | `firewall_rule` block snippet |
+  | `aws_vpc_security_group_egress_rule` | `firewall_rule` block snippet |
+  | `aws_network_interface` | `network_interface {}` block in `upcloud_server` |
+  | `aws_internet_gateway` | *(not needed — UpCloud networks have public routing by default)* |
+  | `aws_nat_gateway` | *(not needed)* |
+  | `aws_route_table` / `aws_route_table_association` | `static_route` in `upcloud_router` |
+  | `aws_eip` | `upcloud_floating_ip_address` |
+  | `aws_eip_association` | `mac_address` snippet for floating IP |
 
-| AWS resource | UpCloud equivalent |
-|---|---|
-| `aws_ebs_volume` | `upcloud_storage` |
-| `aws_volume_attachment` | `storage_devices {}` block in server |
-| `aws_ebs_snapshot` / `aws_ebs_snapshot_copy` | `upcloud_storage_backup` |
-| `aws_db_snapshot` / `aws_db_cluster_snapshot` | *(informational — UpCloud managed DBs include automatic backups)* |
-| `aws_s3_bucket` | `upcloud_object_storage` |
-| `aws_s3_bucket_policy` / `aws_s3_bucket_acl` | *(informational — use UpCloud access keys and policies)* |
-| `aws_efs_file_system` | `upcloud_file_storage` |
+  #### Storage
 
-#### Load balancers
+  | AWS resource | UpCloud equivalent |
+  |---|---|
+  | `aws_ebs_volume` | `upcloud_storage` |
+  | `aws_volume_attachment` | `storage_devices {}` block in server |
+  | `aws_ebs_snapshot` / `aws_ebs_snapshot_copy` | `upcloud_storage_backup` |
+  | `aws_db_snapshot` / `aws_db_cluster_snapshot` | *(informational — UpCloud managed DBs include automatic backups)* |
+  | `aws_s3_bucket` | `upcloud_object_storage` |
+  | `aws_s3_bucket_policy` / `aws_s3_bucket_acl` | *(informational — use UpCloud access keys and policies)* |
+  | `aws_efs_file_system` | `upcloud_file_storage` |
 
-| AWS resource | UpCloud equivalent |
-|---|---|
-| `aws_lb` / `aws_alb` | `upcloud_loadbalancer` |
-| `aws_lb_target_group` / `aws_alb_target_group` | `upcloud_loadbalancer_backend` |
-| `aws_lb_listener` / `aws_alb_listener` | `upcloud_loadbalancer_frontend` |
-| `aws_lb_target_group_attachment` / `aws_alb_target_group_attachment` | `upcloud_loadbalancer_static_backend_member` |
-| `aws_acm_certificate` | `upcloud_loadbalancer_manual_certificate_bundle` |
+  #### Load balancers
 
-#### Databases & caches
+  | AWS resource | UpCloud equivalent |
+  |---|---|
+  | `aws_lb` / `aws_alb` | `upcloud_loadbalancer` |
+  | `aws_lb_target_group` / `aws_alb_target_group` | `upcloud_loadbalancer_backend` |
+  | `aws_lb_listener` / `aws_alb_listener` | `upcloud_loadbalancer_frontend` |
+  | `aws_lb_target_group_attachment` / `aws_alb_target_group_attachment` | `upcloud_loadbalancer_static_backend_member` |
+  | `aws_acm_certificate` | `upcloud_loadbalancer_manual_certificate_bundle` |
 
-| AWS resource | UpCloud equivalent |
-|---|---|
-| `aws_db_instance` / `aws_rds_instance` | `upcloud_managed_database_postgresql` / `_mysql` |
-| `aws_rds_cluster` | `upcloud_managed_database_postgresql` / `_mysql` |
-| `aws_db_parameter_group` | `properties {}` block injection |
-| `aws_db_subnet_group` | *(informational — network configured on the managed DB resource)* |
-| `aws_elasticache_cluster` / `aws_elasticache_replication_group` | `upcloud_managed_database_valkey` |
-| `aws_elasticache_subnet_group` | *(informational)* |
-| `aws_elasticache_parameter_group` | *(informational)* |
+  #### Databases & caches
 
-#### Kubernetes
+  | AWS resource | UpCloud equivalent |
+  |---|---|
+  | `aws_db_instance` / `aws_rds_instance` | `upcloud_managed_database_postgresql` / `_mysql` |
+  | `aws_rds_cluster` | `upcloud_managed_database_postgresql` / `_mysql` |
+  | `aws_db_parameter_group` | `properties {}` block injection |
+  | `aws_db_subnet_group` | *(informational — network configured on the managed DB resource)* |
+  | `aws_elasticache_cluster` / `aws_elasticache_replication_group` | `upcloud_managed_database_valkey` |
+  | `aws_elasticache_subnet_group` | *(informational)* |
+  | `aws_elasticache_parameter_group` | *(informational)* |
 
-| AWS resource | UpCloud equivalent |
-|---|---|
-| `aws_eks_cluster` | `upcloud_kubernetes_cluster` |
-| `aws_eks_node_group` | `upcloud_kubernetes_node_group` |
-| `aws_eks_fargate_profile` | *(unsupported — UpCloud k8s uses node groups only)* |
-| `aws_eks_addon` | *(unsupported — configure add-ons via kubectl/Helm)* |
+  #### Kubernetes
 
-#### Recognized but unsupported
+  | AWS resource | UpCloud equivalent |
+  |---|---|
+  | `aws_eks_cluster` | `upcloud_kubernetes_cluster` |
+  | `aws_eks_node_group` | `upcloud_kubernetes_node_group` |
+  | `aws_eks_fargate_profile` | *(unsupported — UpCloud k8s uses node groups only)* |
+  | `aws_eks_addon` | *(unsupported — configure add-ons via kubectl/Helm)* |
 
-These resource types are detected and documented in the generated `MIGRATION_NOTES.md`, but have no UpCloud equivalent:
+  #### Recognized but unsupported
 
-`aws_autoscaling_group`, `aws_launch_configuration`, `aws_iam_*`, `aws_lambda_*`, `aws_cloudfront_*`, `aws_sqs_*`, `aws_sns_*`, `aws_api_gateway_*`, `aws_apigatewayv2_*`, `aws_cognito_*`, `aws_cloudwatch_*`, `aws_route53_*`
+  These resource types are detected and documented in the generated `MIGRATION_NOTES.md`, but have no UpCloud equivalent:
+
+  `aws_autoscaling_group`, `aws_launch_configuration`, `aws_iam_*`, `aws_lambda_*`, `aws_cloudfront_*`, `aws_sqs_*`, `aws_sns_*`, `aws_api_gateway_*`, `aws_apigatewayv2_*`, `aws_cognito_*`, `aws_cloudwatch_*`, `aws_route53_*`
+
+</details>
+
+### Azure → UpCloud
+
+<details>
+  <summary>Show Azure resource mappings</summary>
+
+  #### Compute
+
+  | Azure resource | UpCloud equivalent |
+  |---|---|
+  | `azurerm_linux_virtual_machine` | `upcloud_server` |
+  | `azurerm_windows_virtual_machine` | `upcloud_server` |
+  | `azurerm_virtual_machine` | `upcloud_server` |
+  | `azurerm_linux_virtual_machine_scale_set` / `azurerm_windows_virtual_machine_scale_set` | `upcloud_server` snippet / manual split into servers |
+  | `azurerm_ssh_public_key` | `login {}` block in `upcloud_server` |
+  | `azurerm_managed_disk` | `upcloud_storage` |
+  | `azurerm_virtual_machine_data_disk_attachment` | `storage_devices {}` block in server |
+  | `azurerm_availability_set` | informational only |
+
+  #### Storage
+
+  | Azure resource | UpCloud equivalent |
+  |---|---|
+  | `azurerm_storage_account` | `upcloud_managed_object_storage` + bucket resources |
+  | `azurerm_storage_container` | `upcloud_managed_object_storage_bucket` |
+  | `azurerm_storage_share` | `upcloud_file_storage` |
+  | `azurerm_storage_management_policy` | *(unsupported — configure S3 lifecycle rules via API)* |
+
+  #### Network
+
+  | Azure resource | UpCloud equivalent |
+  |---|---|
+  | `azurerm_virtual_network` | `upcloud_network` |
+  | `azurerm_subnet` | `upcloud_network` subnet/snippet |
+  | `azurerm_network_security_group` | `upcloud_firewall_rules` |
+  | `azurerm_network_security_rule` | `firewall_rule` block snippet |
+  | `azurerm_public_ip` | `upcloud_floating_ip_address` |
+  | `azurerm_network_interface` | `network_interface {}` block in `upcloud_server` |
+  | `azurerm_subnet_network_security_group_association` | snippet / merged firewall rules |
+  | `azurerm_private_dns_zone` | partial — DNS managed outside UpCloud Terraform |
+  | `azurerm_private_dns_zone_virtual_network_link` | unsupported |
+
+  #### Load balancers
+
+  | Azure resource | UpCloud equivalent |
+  |---|---|
+  | `azurerm_lb` | `upcloud_loadbalancer` |
+  | `azurerm_lb_backend_address_pool` | `upcloud_loadbalancer_backend` |
+  | `azurerm_lb_rule` | `upcloud_loadbalancer_frontend` |
+  | `azurerm_lb_backend_address_pool_association` | `upcloud_loadbalancer_static_backend_member` |
+  | `azurerm_lb_probe` | `properties {}` health check injection |
+  | `azurerm_application_gateway` | `upcloud_loadbalancer` + backends/frontends/rules |
+
+  #### Databases & caches
+
+  | Azure resource | UpCloud equivalent |
+  |---|---|
+  | `azurerm_postgresql_server` / `azurerm_postgresql_flexible_server` | `upcloud_managed_database_postgresql` |
+  | `azurerm_postgresql_flexible_server_database` | manual database creation after provisioning |
+  | `azurerm_postgresql_flexible_server_configuration` | `properties {}` block injection |
+  | `azurerm_mysql_server` / `azurerm_mysql_flexible_server` | `upcloud_managed_database_mysql` |
+  | `azurerm_redis_cache` | `upcloud_managed_database_valkey` |
+  | `azurerm_cosmosdb_account` | unsupported |
+  | `azurerm_mssql_server` / `azurerm_mssql_database` | unsupported |
+
+  #### Kubernetes
+
+  | Azure resource | UpCloud equivalent |
+  |---|---|
+  | `azurerm_kubernetes_cluster` | `upcloud_kubernetes_cluster` |
+  | `azurerm_kubernetes_cluster_node_pool` | `upcloud_kubernetes_node_group` |
+
+  #### Recognized but unsupported
+
+  These resource types are detected and documented in the generated `MIGRATION_NOTES.md`, but have no UpCloud equivalent:
+
+  `azurerm_log_analytics_workspace`, `azurerm_monitor_metric_alert`, `azurerm_monitor_action_group`, `azurerm_monitor_diagnostic_setting`, `azurerm_application_insights`, `azurerm_user_assigned_identity`, `azurerm_role_assignment`, `azurerm_role_definition`, `azurerm_function_app`, `azurerm_linux_function_app`, `azurerm_windows_function_app`, `azurerm_service_plan`, `azurerm_cdn_profile`, `azurerm_cdn_endpoint`, `azurerm_frontdoor`, `azurerm_servicebus_namespace`, `azurerm_servicebus_queue`, `azurerm_servicebus_topic`, `azurerm_eventgrid_topic`, `azurerm_eventhub_namespace`, `azurerm_eventhub`, `azurerm_key_vault`, `azurerm_key_vault_secret`, `azurerm_key_vault_key`
+
+</details>
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
