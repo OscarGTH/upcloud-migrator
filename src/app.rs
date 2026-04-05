@@ -837,7 +837,11 @@ impl App {
                                 }
                             };
 
-                            if content.contains(crate::migration::generator::TODO_PLACEHOLDER_PREFIX) {
+                            let has_active_todo = content.lines().any(|l| {
+                                let t = l.trim_start();
+                                !t.starts_with('#') && t.contains(crate::migration::generator::TODO_PLACEHOLDER_PREFIX)
+                            });
+                            if has_active_todo {
                                 let _ = tx
                                     .send(AppMessage::GenerateLog(format!(
                                         "[terraform fmt] {} skipped — unresolved TODO placeholders remain",

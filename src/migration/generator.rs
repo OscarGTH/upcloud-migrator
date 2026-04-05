@@ -44,6 +44,10 @@ struct CrossRefTables {
     /// Maps backend_pool_name → health_check property lines for UpCloud backend `properties {}`.
     /// Built from provider probe resources (e.g. `azurerm_lb_probe`) chained via LB rules.
     probe_health_map: HashMap<String, String>,
+    /// Set of security-group resource names that are attached to managed services (load balancers,
+    /// managed databases, caches, etc.) rather than servers.  These SGs have no
+    /// `upcloud_server` equivalent and should not generate active firewall rules.
+    managed_sg_names: std::collections::HashSet<String>,
 }
 
 /// Build cross-reference lookup tables from migration results.
@@ -396,6 +400,16 @@ fn build_cross_ref_tables(
             HashMap::new()
         };
 
+    // Build managed_sg_names: SG resource names referenced by managed services (LBs,
+    // managed databases, caches) rather than EC2 instances.  When server_id resolution
+    // fails for these, emit an explanatory comment instead of an unresolvable <TODO>.
+    let managed_sg_names: std::collections::HashSet<String> = results
+        .iter()
+        .filter(|r| provider.resource_role(&r.resource_type) != ResourceRole::ComputeInstance)
+        .filter_map(|r| r.source_hcl.as_deref())
+        .flat_map(|hcl| provider.extract_security_refs_from_instance(hcl))
+        .collect();
+
     CrossRefTables {
         lb_names,
         network_names,
@@ -413,6 +427,7 @@ fn build_cross_ref_tables(
         storage_inject_map,
         storage_promote_count,
         probe_health_map,
+        managed_sg_names,
     }
 }
 
@@ -1012,15 +1027,38 @@ provider "upcloud" {
                     );
 
                     if !any_resolved {
-                        // No server could be resolved (e.g. subnet-level security groups, or
-                        // groups that only guard managed services). Emit the HCL with the TODO placeholder
-                        // intact so users can see and manually complete the assignment.
-                        for note in &result.notes {
-                            content.push_str(&format!("# NOTE: {}\n", note));
+                        if xref.managed_sg_names.contains(&result.resource_name) {
+                            // This SG guards a managed service (LB, DB, cache) rather than a server.
+                            // UpCloud managed services handle network access differently —
+                            // comment out the block for user reference but don't emit an
+                            // active resource with an unresolvable server_id.
+                            content.push_str(&format!(
+                                "# aws_security_group.{name}: attached to a managed service — no direct UpCloud equivalent.\n\
+                                 # UpCloud managed databases and load balancers control access via their own network/ACL config.\n\
+                                 # Review the rules below if you need to apply them to backend servers instead.\n",
+                                name = result.resource_name
+                            ));
+                            for line in resolved.lines() {
+                                content.push_str("# ");
+                                content.push_str(line);
+                                content.push('\n');
+                            }
+                            content.push('\n');
+                            log.push(format!(
+                                "  [NOTE] upcloud_firewall_rules.{}: managed-service SG — no server firewall needed",
+                                result.resource_name
+                            ));
+                        } else {
+                            // No server could be resolved (e.g. subnet-level security groups, or
+                            // groups that only guard managed services). Emit the HCL with the TODO placeholder
+                            // intact so users can see and manually complete the assignment.
+                            for note in &result.notes {
+                                content.push_str(&format!("# NOTE: {}\n", note));
+                            }
+                            content.push_str(&resolved);
+                            content.push('\n');
+                            log.push(format!("  [TODO] upcloud_firewall_rules.{}: server_id unresolved — assign manually", result.resource_name));
                         }
-                        content.push_str(&resolved);
-                        content.push('\n');
-                        log.push(format!("  [TODO] upcloud_firewall_rules.{}: server_id unresolved — assign manually", result.resource_name));
                     }
                     continue; // deferred to fw_by_server loop (for resolved ones)
                 }
@@ -4306,6 +4344,76 @@ resource "kubernetes_deployment_v1" "nginx" {
         assert!(
             !output.contains("upcloud_server.<TODO>.id"),
             "no unresolved TODO must remain for web NSG\n{output}"
+        );
+    }
+
+    #[test]
+    fn lb_only_sg_emits_comment_instead_of_todo_server_id() {
+        // aws_security_group "lb" is attached to an aws_lb, not any EC2 instance.
+        // The generator must emit an explanatory comment instead of the broken
+        // `upcloud_server.<TODO>.id` placeholder.
+        use crate::migration::types::MigrationStatus;
+
+        let lb_sg = MigrationResult {
+            resource_type: "aws_security_group".to_string(),
+            resource_name: "lb".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Compatible,
+            upcloud_type: "upcloud_firewall_rules".to_string(),
+            upcloud_hcl: Some(
+                "resource \"upcloud_firewall_rules\" \"lb\" {\n  \
+                 server_id = upcloud_server.<TODO>.id\n\
+                 \n  firewall_rule {\n    direction = \"in\"\n    action = \"accept\"\n  }\n}\n"
+                    .to_string(),
+            ),
+            snippet: None,
+            parent_resource: None,
+            notes: vec![
+                "Security groups → UpCloud Firewall Rules".into(),
+                "server_id auto-resolved from vpc_security_group_ids on the instance.".into(),
+            ],
+            source_hcl: None,
+        };
+
+        // aws_lb "main" references aws_security_group.lb via source_hcl
+        let aws_lb_hcl = concat!(
+            "resource \"aws_lb\" \"main\" {\n",
+            "  name               = \"saas-alb\"\n",
+            "  load_balancer_type = \"application\"\n",
+            "  security_groups    = [aws_security_group.lb.id]\n",
+            "}\n"
+        );
+        let lb = MigrationResult {
+            resource_type: "aws_lb".to_string(),
+            resource_name: "main".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Compatible,
+            upcloud_type: "upcloud_loadbalancer".to_string(),
+            upcloud_hcl: Some(
+                "resource \"upcloud_loadbalancer\" \"main\" {\n  name = \"main\"\n  zone = \"__ZONE__\"\n  plan = \"development\"\n}\n".to_string(),
+            ),
+            snippet: None,
+            parent_resource: None,
+            notes: vec![],
+            source_hcl: Some(aws_lb_hcl.to_string()),
+        };
+
+        let output = run_generate(&[lb_sg, lb], "lb_only_sg");
+
+        // The block must be commented out — no active (uncommented) firewall rules resource
+        assert!(
+            !output.contains("\nresource \"upcloud_firewall_rules\" \"lb\""),
+            "LB-only SG block must not appear as active HCL\n{output}"
+        );
+        // Must emit the explanatory comment about managed service attachment
+        assert!(
+            output.contains("attached to a managed service"),
+            "LB-only SG must emit a managed-service comment\n{output}"
+        );
+        // The firewall rules HCL is still present (commented out) for user reference
+        assert!(
+            output.contains("# resource \"upcloud_firewall_rules\" \"lb\""),
+            "firewall_rules block must still appear commented-out in output\n{output}"
         );
     }
 }

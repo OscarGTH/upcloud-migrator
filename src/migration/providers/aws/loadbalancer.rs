@@ -63,7 +63,7 @@ pub fn map_lb(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes,
-        source_hcl: None,
+        source_hcl: Some(res.raw_hcl.clone()),
     }
 }
 

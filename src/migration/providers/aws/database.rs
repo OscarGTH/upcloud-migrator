@@ -122,7 +122,7 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
             "Migrate DB parameters and connection strings manually".into(),
             network_note,
         ],
-        source_hcl: None,
+        source_hcl: Some(res.raw_hcl.clone()),
     }
 }
 
@@ -398,7 +398,7 @@ pub fn map_elasticache_cluster(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes,
-        source_hcl: None,
+        source_hcl: Some(res.raw_hcl.clone()),
     }
 }
 

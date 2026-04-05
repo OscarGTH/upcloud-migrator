@@ -361,7 +361,7 @@ pub fn map_instance(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes,
-        source_hcl: None,
+        source_hcl: Some(res.raw_hcl.clone()),
     }
 }
 
@@ -685,6 +685,37 @@ mod tests {
             hcl.contains("plan     = \"1xCPU-1GB\""),
             "t3.micro should map to 1xCPU-1GB\n{hcl}"
         );
+    }
+
+    #[test]
+    fn instance_preserves_source_hcl_for_firewall_resolution() {
+        use crate::terraform::parser::parse_tf_file;
+
+        let tf_source = concat!(
+            "resource \"aws_instance\" \"web\" {\n",
+            "  instance_type = \"t3.micro\"\n",
+            "  subnet_id = aws_subnet.public_a.id\n",
+            "  vpc_security_group_ids = [aws_security_group.web.id, aws_security_group.monitoring.id]\n",
+            "}\n",
+        );
+
+        let tmp_path = std::env::temp_dir().join(format!(
+            "upcloud_firewall_source_{}.tf",
+            std::process::id()
+        ));
+        std::fs::write(&tmp_path, tf_source).unwrap();
+        let tf_file = parse_tf_file(&tmp_path).unwrap();
+        let _ = std::fs::remove_file(&tmp_path);
+
+        let res = &tf_file.resources[0];
+        let mapped = map_instance(res);
+        let source_hcl = mapped
+            .source_hcl
+            .as_deref()
+            .expect("instance mapping must keep source HCL");
+
+        assert!(source_hcl.contains("vpc_security_group_ids"), "{source_hcl}");
+        assert!(source_hcl.contains("aws_security_group.web"), "{source_hcl}");
     }
 
     #[test]
