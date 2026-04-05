@@ -54,6 +54,24 @@ pub trait SourceProvider {
     /// Extract the subnet/network resource name from a compute instance's source HCL.
     fn extract_subnet_from_instance(&self, hcl: &str) -> Option<String>;
 
+    /// Return the source resource type for a network interface resource.
+    /// Returns `None` (default) for providers where NICs are inlined in the instance.
+    fn nic_resource_type(&self) -> Option<&str> {
+        None
+    }
+
+    /// Extract NIC resource names referenced from a compute instance's source HCL.
+    /// Returns an empty vec by default (when NICs are inlined).
+    fn extract_nic_refs_from_instance(&self, _hcl: &str) -> Vec<String> {
+        vec![]
+    }
+
+    /// Extract the subnet resource name from a NIC resource's source HCL.
+    /// Returns `None` by default.
+    fn extract_subnet_from_nic(&self, _hcl: &str) -> Option<String> {
+        None
+    }
+
     /// Return the source resource type that associates a subnet with a firewall/NSG.
     /// Returns `None` (default) for providers that attach security groups directly to instances.
     fn subnet_nsg_association_type(&self) -> Option<&str> {
@@ -85,6 +103,26 @@ pub trait SourceProvider {
     /// Extract LB resource name from a listener's source HCL.
     /// Used as fallback when `parent_resource` is not set.
     fn extract_lb_name_from_listener(&self, hcl: &str) -> Option<String>;
+
+    /// Return the source resource type for a health probe/check resource, if applicable.
+    /// Returns `None` (default) for providers that embed health checks in the target group.
+    fn lb_probe_resource_type(&self) -> Option<&str> {
+        None
+    }
+
+    /// Extract (backend_pool_name, probe_name) from an LB rule/listener source HCL.
+    /// Used to chain probe health check data into backend pool generation.
+    /// Returns `None` by default.
+    fn extract_probe_from_lb_rule(&self, _hcl: &str) -> Option<(String, String)> {
+        None
+    }
+
+    /// Extract health check property lines from a probe/health-check resource's source HCL.
+    /// Returns the `health_check_*` property lines for an UpCloud backend `properties {}` block.
+    /// Returns empty string by default.
+    fn extract_probe_health_check_props(&self, _hcl: &str) -> String {
+        String::new()
+    }
 
     // --- Placeholder text builders ---
 

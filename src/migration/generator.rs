@@ -41,6 +41,9 @@ struct CrossRefTables {
     lb_backend_net_map: HashMap<String, String>,
     storage_inject_map: HashMap<String, Vec<String>>,
     storage_promote_count: HashMap<String, String>,
+    /// Maps backend_pool_name → health_check property lines for UpCloud backend `properties {}`.
+    /// Built from provider probe resources (e.g. `azurerm_lb_probe`) chained via LB rules.
+    probe_health_map: HashMap<String, String>,
 }
 
 /// Build cross-reference lookup tables from migration results.
@@ -167,7 +170,7 @@ fn build_cross_ref_tables(
         .collect();
 
     // Build server_subnet_map and related tables for load balancer network resolution
-    let server_subnet_map: HashMap<String, String> = results
+    let mut server_subnet_map: HashMap<String, String> = results
         .iter()
         .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance)
         .filter_map(|r| {
@@ -179,10 +182,45 @@ fn build_cross_ref_tables(
         })
         .collect();
 
-    // Supplement firewall_to_server_map via subnet-association chain (e.g. Azure NSG→subnet→VM).
-    // In Azure, NSGs are not attached to VMs directly — they are applied to subnets via
-    // `azurerm_subnet_network_security_group_association`. Build a subnet→NSG map, then
-    // join it with server_subnet_map to discover which servers each NSG covers.
+    // Supplement server_subnet_map via NIC indirection (e.g. VM→NIC→subnet).
+    // Some providers use standalone NIC resources instead of inline subnet references.
+    if let Some(nic_type) = provider.nic_resource_type() {
+        let nic_to_subnet: HashMap<String, String> = results
+            .iter()
+            .filter(|r| r.resource_type == nic_type)
+            .filter_map(|r| {
+                r.source_hcl
+                    .as_deref()
+                    .and_then(|hcl| provider.extract_subnet_from_nic(hcl))
+                    .map(|subnet| (r.resource_name.clone(), subnet))
+            })
+            .collect();
+        if !nic_to_subnet.is_empty() {
+            let supplements: Vec<(String, String)> = results
+                .iter()
+                .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance)
+                .filter(|r| !server_subnet_map.contains_key(&r.resource_name))
+                .filter_map(|r| {
+                    r.source_hcl.as_deref().and_then(|hcl| {
+                        provider
+                            .extract_nic_refs_from_instance(hcl)
+                            .into_iter()
+                            .find_map(|nic_name| nic_to_subnet.get(&nic_name).cloned())
+                            .map(|subnet| (r.resource_name.clone(), subnet))
+                    })
+                })
+                .collect();
+            for (server, subnet) in supplements {
+                server_subnet_map.insert(server, subnet);
+            }
+        }
+    }
+
+    // Supplement firewall_to_server_map via subnet-association chain.
+    // Some providers attach security groups to subnets rather than directly to instances.
+    // When the provider defines a subnet↔security-group association type, build a
+    // subnet→security-group map and join it with server_subnet_map to discover
+    // which servers each security group covers.
     if let Some(assoc_type) = provider.subnet_nsg_association_type() {
         let subnet_to_nsg: HashMap<String, String> = results
             .iter()
@@ -324,6 +362,40 @@ fn build_cross_ref_tables(
             .push(block);
     }
 
+    // Build probe_health_map: backend_pool_name → health check property lines.
+    // Chain: azurerm_lb_probe (or similar) → azurerm_lb_rule (probe_id + backend_pool_ids)
+    let probe_health_map: HashMap<String, String> =
+        if let Some(probe_type) = provider.lb_probe_resource_type() {
+            let probe_snippet_map: HashMap<String, String> = results
+                .iter()
+                .filter(|r| r.resource_type == probe_type)
+                .filter_map(|r| {
+                    r.source_hcl.as_ref().map(|hcl| {
+                        let props = provider.extract_probe_health_check_props(hcl);
+                        (r.resource_name.clone(), props)
+                    })
+                })
+                .filter(|(_, props)| !props.is_empty())
+                .collect();
+
+            let mut map: HashMap<String, String> = HashMap::new();
+            for r in results
+                .iter()
+                .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener)
+            {
+                if let Some(hcl) = r.source_hcl.as_deref()
+                    && let Some((backend_name, probe_name)) =
+                        provider.extract_probe_from_lb_rule(hcl)
+                    && let Some(props) = probe_snippet_map.get(&probe_name)
+                {
+                    map.entry(backend_name).or_insert_with(|| props.clone());
+                }
+            }
+            map
+        } else {
+            HashMap::new()
+        };
+
     CrossRefTables {
         lb_names,
         network_names,
@@ -340,6 +412,7 @@ fn build_cross_ref_tables(
         lb_backend_net_map,
         storage_inject_map,
         storage_promote_count,
+        probe_health_map,
     }
 }
 
@@ -455,9 +528,36 @@ fn resolve_placeholders(
     s = resolve_network_refs(&s, resource_name, xref);
     s = resolve_ssh_key_refs(&s, xref, provider);
     s = resolve_db_parameter_refs(&s, xref, provider);
+    s = resolve_lb_probe_refs(&s, resource_name, xref);
     s = provider.sanitize_source_refs(s);
 
     s
+}
+
+/// Resolve LB probe health check markers (`# __PROBE_HC__`) in backend pool HCL.
+/// Replaces the marker line with the health check properties from the cross-reference table.
+fn resolve_lb_probe_refs(hcl: &str, resource_name: &str, xref: &CrossRefTables) -> String {
+    if !hcl.contains("# __PROBE_HC__") {
+        return hcl.to_string();
+    }
+    let mut out = String::with_capacity(hcl.len());
+    for line in hcl.lines() {
+        if line.trim() == "# __PROBE_HC__" {
+            if let Some(props) = xref.probe_health_map.get(resource_name) {
+                out.push_str(props);
+            } else {
+                // Fallback: keep a tcp health check if no probe data available
+                out.push_str("    health_check_type     = \"tcp\"\n");
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !hcl.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 /// Resolve network references for both generic and subnet-specific cases.
@@ -912,8 +1012,8 @@ provider "upcloud" {
                     );
 
                     if !any_resolved {
-                        // No server could be resolved (e.g. Azure subnet-level NSGs, or SGs that
-                        // only guard managed services). Emit the HCL with the TODO placeholder
+                        // No server could be resolved (e.g. subnet-level security groups, or
+                        // groups that only guard managed services). Emit the HCL with the TODO placeholder
                         // intact so users can see and manually complete the assignment.
                         for note in &result.notes {
                             content.push_str(&format!("# NOTE: {}\n", note));
@@ -3960,6 +4060,252 @@ resource "kubernetes_deployment_v1" "nginx" {
         assert!(
             !output.contains("ignore_changes"),
             "ignore_changes must NOT be present when no k8s cluster exists\n{output}"
+        );
+    }
+
+    // ── Azure end-to-end ──────────────────────────────────────────────────────
+
+    #[test]
+    fn azure_webapp_terraform_example_end_to_end() {
+        use crate::migration::mapper::map_resource;
+        use crate::terraform::parser::parse_tf_file;
+
+        let tf_path = std::path::PathBuf::from("test-fixtures/webapp-azure-e2e.tf");
+        let parsed =
+            parse_tf_file(&tf_path).expect("test-fixtures/webapp-azure-e2e.tf should parse");
+        let results: Vec<MigrationResult> = parsed.resources.iter().map(map_resource).collect();
+
+        let out_dir = std::env::temp_dir().join("upcloud_e2e_azure_webapp");
+        let mut log = vec![];
+        generate_files(&results, &[], &out_dir, None, "de-fra1", &mut log).unwrap();
+        let output = std::fs::read_to_string(out_dir.join("webapp-azure-e2e.tf"))
+            .expect("generate_files must produce webapp-azure-e2e.tf");
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        // Server resources.
+        assert!(
+            output.contains("resource \"upcloud_server\" \"web\""),
+            "must contain web server\n{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_server\" \"app\""),
+            "must contain app server\n{output}"
+        );
+
+        // Networking: VNet → router, subnets → networks.
+        assert!(
+            output.contains("resource \"upcloud_router\" \"main_router\""),
+            "must contain router from VNet\n{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_network\" \"web\""),
+            "must contain web network from subnet\n{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_network\" \"app\""),
+            "must contain app network from subnet\n{output}"
+        );
+
+        // Firewall rules from NSGs.
+        assert!(
+            output.contains("upcloud_firewall_rules"),
+            "must contain firewall rules from NSGs\n{output}"
+        );
+
+        // NSG→subnet→server resolution: web NSG should resolve to web server.
+        assert!(
+            output.contains("upcloud_server.web.id"),
+            "web NSG firewall must resolve server_id to web via NIC→subnet chain\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_server.app.id"),
+            "app NSG firewall must resolve server_id to app via NIC→subnet chain\n{output}"
+        );
+
+        // Load balancer and its components.
+        assert!(
+            output.contains("resource \"upcloud_loadbalancer\" \"main\""),
+            "must contain load balancer\n{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_loadbalancer_backend\" \"web\""),
+            "must contain LB backend\n{output}"
+        );
+        assert!(
+            output.contains("resource \"upcloud_loadbalancer_frontend\" \"http\""),
+            "must contain LB frontend\n{output}"
+        );
+
+        // LB frontend should resolve LB and backend refs via source HCL extraction.
+        assert!(
+            output.contains("upcloud_loadbalancer.main.id"),
+            "LB frontend must reference resolved LB ID\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_loadbalancer_backend.web.name"),
+            "LB frontend must reference resolved backend name\n{output}"
+        );
+
+        // LB probe health check should be injected into the backend pool properties block.
+        assert!(
+            output.contains("health_check_type     = \"http\""),
+            "LB backend must have http health check from probe\n{output}"
+        );
+        assert!(
+            output.contains("health_check_url      = \"/health\""),
+            "LB backend must have health check URL from probe\n{output}"
+        );
+
+        // Database resources.
+        assert!(
+            output.contains("resource \"upcloud_managed_database_postgresql\" \"main\""),
+            "must contain PostgreSQL database\n{output}"
+        );
+
+        // Storage resources.
+        assert!(
+            output.contains("upcloud_storage"),
+            "must contain storage from managed disk\n{output}"
+        );
+        assert!(
+            output.contains("upcloud_managed_object_storage"),
+            "must contain object storage from storage account\n{output}"
+        );
+    }
+
+    #[test]
+    fn azure_nsg_resolves_to_server_via_subnet_association_and_nic() {
+        // Azure NSGs are attached to subnets, not directly to VMs.
+        // VMs reference NICs, and NICs reference subnets.
+        // The chain is: NSG→association→subnet→NIC→VM
+        let nsg = make_result(
+            "azurerm_network_security_group",
+            "web_nsg",
+            "upcloud_firewall_rules",
+            Some(
+                r#"resource "upcloud_firewall_rules" "web_nsg" {
+  server_id = upcloud_server.<TODO>.id
+
+  firewall_rule {
+    direction = "in"
+    action    = "accept"
+    family    = "IPv4"
+    protocol  = "tcp"
+    destination_port_start = "80"
+    destination_port_end   = "80"
+  }
+
+  firewall_rule {
+    direction = "out"
+    action    = "accept"
+    family    = "IPv4"
+    comment   = "Allow all outbound"
+  }
+}
+"#,
+            ),
+            None,
+        );
+
+        let nsg_assoc = MigrationResult {
+            resource_type: "azurerm_subnet_network_security_group_association".to_string(),
+            resource_name: "web_assoc".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Native,
+            upcloud_type: "(consumed by firewall resolution)".into(),
+            upcloud_hcl: None,
+            snippet: None,
+            parent_resource: None,
+            notes: vec![],
+            source_hcl: Some(
+                r#"resource "azurerm_subnet_network_security_group_association" "web_assoc" {
+  subnet_id                 = azurerm_subnet.web.id
+  network_security_group_id = azurerm_network_security_group.web_nsg.id
+}"#
+                .to_string(),
+            ),
+        };
+
+        let nic = MigrationResult {
+            resource_type: "azurerm_network_interface".to_string(),
+            resource_name: "web_nic".to_string(),
+            source_file: "test.tf".to_string(),
+            status: MigrationStatus::Partial,
+            upcloud_type: "network_interface block in upcloud_server".into(),
+            upcloud_hcl: None,
+            snippet: None,
+            parent_resource: None,
+            notes: vec![],
+            source_hcl: Some(
+                r#"resource "azurerm_network_interface" "web_nic" {
+  name = "web-nic"
+  ip_configuration {
+    subnet_id = azurerm_subnet.web.id
+  }
+}"#
+                .to_string(),
+            ),
+        };
+
+        let mut server = make_result(
+            "azurerm_linux_virtual_machine",
+            "web",
+            "upcloud_server",
+            Some(
+                r#"resource "upcloud_server" "web" {
+  hostname = "web"
+  zone     = "__ZONE__"
+  plan     = "2xCPU-4GB"
+}
+"#,
+            ),
+            None,
+        );
+        server.source_hcl = Some(
+            r#"resource "azurerm_linux_virtual_machine" "web" {
+  name                  = "web"
+  size                  = "Standard_B2s"
+  network_interface_ids = [azurerm_network_interface.web_nic.id]
+}"#
+            .to_string(),
+        );
+
+        let subnet = make_result(
+            "azurerm_subnet",
+            "web",
+            "upcloud_network",
+            Some(
+                r#"resource "upcloud_network" "web" {
+  name = "web"
+  zone = "__ZONE__"
+  ip_network {
+    address = "10.0.1.0/24"
+    dhcp    = true
+    family  = "IPv4"
+  }
+}
+"#,
+            ),
+            None,
+        );
+
+        let output = run_generate(
+            &[nsg, nsg_assoc, nic, server, subnet],
+            "azure_nsg_chain",
+        );
+
+        // The NSG should resolve to the web server via the chain:
+        // NSG 'web_nsg' → association links subnet 'web' ↔ NSG 'web_nsg'
+        // NIC 'web_nic' → subnet 'web'
+        // VM 'web' → NIC 'web_nic'
+        // Therefore: NSG 'web_nsg' covers server 'web'
+        assert!(
+            output.contains("upcloud_server.web.id"),
+            "NSG server_id must resolve to 'web' via subnet-association + NIC chain\n{output}"
+        );
+        assert!(
+            !output.contains("upcloud_server.<TODO>.id"),
+            "no unresolved TODO must remain for web NSG\n{output}"
         );
     }
 }

@@ -1,4 +1,5 @@
 use super::super::shared;
+use super::generator_support;
 use crate::migration::types::{MigrationResult, MigrationStatus};
 use crate::terraform::types::TerraformResource;
 
@@ -64,7 +65,7 @@ pub fn map_lb_backend_address_pool(res: &TerraformResource) -> MigrationResult {
   name         = "{name}"
 
   properties {{
-    health_check_type = "tcp"
+    # __PROBE_HC__
   }}
 }}
 "#,
@@ -106,13 +107,22 @@ pub fn map_lb_rule(res: &TerraformResource) -> MigrationResult {
         _ => "http",
     };
 
+    // Resolve LB and backend pool names directly from source HCL where possible.
+    let lb_ref = generator_support::extract_lb_name_from_rule_hcl(&res.raw_hcl)
+        .map(|n| format!("upcloud_loadbalancer.{}.id", n))
+        .unwrap_or_else(|| "upcloud_loadbalancer.<TODO>.id".into());
+
+    let backend_ref = generator_support::extract_backend_pool_from_lb_rule_hcl(&res.raw_hcl)
+        .map(|n| format!("upcloud_loadbalancer_backend.{}.name", n))
+        .unwrap_or_else(|| "upcloud_loadbalancer_backend.<TODO>.name".into());
+
     let hcl = format!(
         r#"resource "upcloud_loadbalancer_frontend" "{name}" {{
-  loadbalancer         = upcloud_loadbalancer.<TODO>.id
+  loadbalancer         = {lb_ref}
   name                 = "{name}"
   mode                 = "{mode}"
   port                 = {port}
-  default_backend_name = upcloud_loadbalancer_backend.<TODO>.name
+  default_backend_name = {backend_ref}
 
   networks {{
     name = "public"
@@ -120,8 +130,10 @@ pub fn map_lb_rule(res: &TerraformResource) -> MigrationResult {
 }}
 "#,
         name = res.name,
+        lb_ref = lb_ref,
         mode = upcloud_mode,
         port = port,
+        backend_ref = backend_ref,
     );
 
     MigrationResult {
@@ -158,11 +170,19 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
         .map(|n| format!("upcloud_loadbalancer_backend.{}.id", n))
         .unwrap_or_else(|| "upcloud_loadbalancer_backend.<TODO>.id".into());
 
+    // Extract the NIC name to give users a clearer hint for IP resolution.
+    let nic_name = generator_support::extract_backend_pool_server_from_association_hcl(&res.raw_hcl)
+        .map(|(_, nic)| nic);
+    let ip_ref = nic_name
+        .as_deref()
+        .map(|nic| format!("upcloud_server.<TODO: server using NIC {}>.network_interface[1].ip_address", nic))
+        .unwrap_or_else(|| "<TODO: server IP>".into());
+
     let hcl = format!(
         r#"resource "upcloud_loadbalancer_static_backend_member" "{name}" {{
   backend      = {backend_ref}
   name         = "{name}"
-  ip           = "<TODO: server IP>"
+  ip           = "{ip_ref}"
   port         = 80
   weight       = 100
   max_sessions = 1000
@@ -171,7 +191,20 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
 "#,
         name = res.name,
         backend_ref = backend_ref,
+        ip_ref = ip_ref,
     );
+
+    let mut notes = vec![
+        "Backend pool association → upcloud_loadbalancer_static_backend_member.".into(),
+    ];
+    if let Some(ref nic) = nic_name {
+        notes.push(format!(
+            "Set ip to the private IP of the server using azurerm_network_interface.{} (e.g. upcloud_server.NAME.network_interface[1].ip_address).",
+            nic
+        ));
+    } else {
+        notes.push("Set ip to the server's private IP address.".into());
+    }
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -182,10 +215,7 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: pool_name,
-        notes: vec![
-            "Backend pool association → upcloud_loadbalancer_static_backend_member.".into(),
-            "Set ip to the server's private IP address.".into(),
-        ],
+        notes,
         source_hcl: None,
     }
 }
@@ -223,18 +253,44 @@ pub fn map_application_gateway(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_lb_probe(res: &TerraformResource) -> MigrationResult {
+    let protocol = res
+        .attributes
+        .get("protocol")
+        .map(|p| p.trim_matches('"'))
+        .unwrap_or("Tcp");
+    let hc_type = match protocol.to_lowercase().as_str() {
+        "http" => "http",
+        "https" => "https",
+        _ => "tcp",
+    };
+
+    // Extract the health check properties so the generator can inject them
+    // into the associated backend pool via probe_health_map cross-reference.
+    let props = generator_support::extract_probe_health_check_props_hcl(&res.raw_hcl);
+
+    let mut notes = vec![
+        format!(
+            "Azure LB Probe ({}) → health_check_* properties on upcloud_loadbalancer_backend.",
+            protocol
+        ),
+        "Health check settings are automatically injected into the associated backend pool.".into(),
+    ];
+    if hc_type != "tcp" {
+        if let Some(path) = res.attributes.get("request_path") {
+            notes.push(format!("Health check path: {}", path.trim_matches('"')));
+        }
+    }
+
     MigrationResult {
         resource_type: res.resource_type.clone(),
         resource_name: res.name.clone(),
         source_file: res.source_file.display().to_string(),
-        status: MigrationStatus::Partial,
+        status: MigrationStatus::Native,
         upcloud_type: "properties block in upcloud_loadbalancer_backend".into(),
         upcloud_hcl: None,
-        snippet: None,
+        snippet: if props.is_empty() { None } else { Some(props) },
         parent_resource: None,
-        notes: vec![
-            "Azure LB Probe → configure health_check_* properties on upcloud_loadbalancer_backend.".into(),
-        ],
+        notes,
         source_hcl: None,
     }
 }
@@ -254,6 +310,19 @@ mod tests {
                 .collect(),
             source_file: PathBuf::from("test.tf"),
             raw_hcl: String::new(),
+        }
+    }
+
+    fn make_res_with_hcl(resource_type: &str, name: &str, attrs: &[(&str, &str)], raw_hcl: &str) -> TerraformResource {
+        TerraformResource {
+            resource_type: resource_type.to_string(),
+            name: name.to_string(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            source_file: PathBuf::from("test.tf"),
+            raw_hcl: raw_hcl.to_string(),
         }
     }
 
@@ -307,6 +376,67 @@ mod tests {
         assert!(hcl.contains("upcloud_loadbalancer.<TODO>.id"), "{hcl}");
     }
 
+    #[test]
+    fn backend_pool_has_probe_marker_for_cross_ref_injection() {
+        let res = make_res("azurerm_lb_backend_address_pool", "pool", &[]);
+        let hcl = map_lb_backend_address_pool(&res).upcloud_hcl.unwrap();
+        // The generator will replace # __PROBE_HC__ with actual health check properties.
+        assert!(hcl.contains("# __PROBE_HC__"), "{hcl}");
+    }
+
+    // ── map_lb_probe ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn lb_probe_http_is_native_and_has_snippet() {
+        let res = make_res_with_hcl(
+            "azurerm_lb_probe",
+            "health",
+            &[("protocol", "Http"), ("request_path", "/health")],
+            r#"resource "azurerm_lb_probe" "health" {
+  protocol            = "Http"
+  port                = 80
+  request_path        = "/health"
+  interval_in_seconds = 15
+  number_of_probes    = 2
+}"#,
+        );
+        let r = map_lb_probe(&res);
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Native);
+        let snippet = r.snippet.expect("http probe should have a snippet");
+        assert!(snippet.contains("health_check_type     = \"http\""), "{snippet}");
+        assert!(snippet.contains("health_check_url      = \"/health\""), "{snippet}");
+        assert!(snippet.contains("health_check_interval = 15"), "{snippet}");
+        assert!(snippet.contains("health_check_rise     = 2"), "{snippet}");
+        assert!(snippet.contains("health_check_fall     = 2"), "{snippet}");
+    }
+
+    #[test]
+    fn lb_probe_tcp_has_tcp_type() {
+        let res = make_res_with_hcl(
+            "azurerm_lb_probe",
+            "tcp_probe",
+            &[("protocol", "Tcp")],
+            r#"resource "azurerm_lb_probe" "tcp_probe" {
+  protocol = "Tcp"
+  port     = 443
+}"#,
+        );
+        let r = map_lb_probe(&res);
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Native);
+        let snippet = r.snippet.expect("tcp probe should have a snippet");
+        assert!(snippet.contains("health_check_type     = \"tcp\""), "{snippet}");
+        // No URL for tcp
+        assert!(!snippet.contains("health_check_url"), "{snippet}");
+    }
+
+    #[test]
+    fn lb_probe_without_attributes_is_native_no_snippet() {
+        let res = make_res("azurerm_lb_probe", "empty_probe", &[]);
+        let r = map_lb_probe(&res);
+        // Default protocol is "Tcp" with no extra attrs — still produces a snippet
+        assert_eq!(r.status, crate::migration::types::MigrationStatus::Native);
+    }
+
     // ── map_lb_rule ───────────────────────────────────────────────────────────
 
     #[test]
@@ -334,6 +464,37 @@ mod tests {
         assert!(hcl.contains("mode                 = \"http\""), "{hcl}");
     }
 
+    #[test]
+    fn lb_rule_resolves_lb_and_backend_from_raw_hcl() {
+        let res = make_res_with_hcl(
+            "azurerm_lb_rule",
+            "http",
+            &[("protocol", "Tcp"), ("frontend_port", "80")],
+            r#"resource "azurerm_lb_rule" "http" {
+  loadbalancer_id          = azurerm_lb.main.id
+  protocol                 = "Tcp"
+  frontend_port            = 80
+  backend_port             = 80
+  backend_address_pool_ids = [azurerm_lb_backend_address_pool.web.id]
+}"#,
+        );
+        let hcl = map_lb_rule(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("upcloud_loadbalancer.main.id"), "{hcl}");
+        assert!(hcl.contains("upcloud_loadbalancer_backend.web.name"), "{hcl}");
+    }
+
+    #[test]
+    fn lb_rule_without_source_hcl_has_todo_refs() {
+        let res = make_res(
+            "azurerm_lb_rule",
+            "rule",
+            &[("protocol", "Tcp"), ("frontend_port", "80")],
+        );
+        let hcl = map_lb_rule(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("upcloud_loadbalancer.<TODO>.id"), "{hcl}");
+        assert!(hcl.contains("upcloud_loadbalancer_backend.<TODO>.name"), "{hcl}");
+    }
+
     // ── map_lb_backend_address_pool_association ────────────────────────────────
 
     #[test]
@@ -354,6 +515,22 @@ mod tests {
         let res = make_res("azurerm_lb_backend_address_pool_association", "a", &[]);
         let hcl = map_lb_backend_address_pool_association(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_loadbalancer_backend.<TODO>.id"), "{hcl}");
+    }
+
+    #[test]
+    fn pool_association_includes_nic_name_in_ip_hint() {
+        let res = make_res_with_hcl(
+            "azurerm_lb_backend_address_pool_association",
+            "web_assoc",
+            &[("backend_address_pool_id", "azurerm_lb_backend_address_pool.web.id")],
+            r#"resource "azurerm_lb_backend_address_pool_association" "web_assoc" {
+  network_interface_id    = azurerm_network_interface.web.id
+  ip_configuration_name   = "internal"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.web.id
+}"#,
+        );
+        let hcl = map_lb_backend_address_pool_association(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("web"), "NIC name 'web' should appear in IP hint\n{hcl}");
     }
 
     // ── map_application_gateway ───────────────────────────────────────────────

@@ -48,6 +48,18 @@ impl SourceProvider for AzureSourceProvider {
         generator_support::extract_subnet_from_instance_hcl(hcl)
     }
 
+    fn nic_resource_type(&self) -> Option<&str> {
+        Some("azurerm_network_interface")
+    }
+
+    fn extract_nic_refs_from_instance(&self, hcl: &str) -> Vec<String> {
+        generator_support::extract_nic_refs_from_instance_hcl(hcl)
+    }
+
+    fn extract_subnet_from_nic(&self, hcl: &str) -> Option<String> {
+        generator_support::extract_subnet_from_instance_hcl(hcl)
+    }
+
     fn subnet_nsg_association_type(&self) -> Option<&str> {
         Some("azurerm_subnet_network_security_group_association")
     }
@@ -80,6 +92,18 @@ impl SourceProvider for AzureSourceProvider {
 
     fn extract_lb_name_from_listener(&self, hcl: &str) -> Option<String> {
         generator_support::extract_lb_name_from_rule_hcl(hcl)
+    }
+
+    fn lb_probe_resource_type(&self) -> Option<&str> {
+        Some("azurerm_lb_probe")
+    }
+
+    fn extract_probe_from_lb_rule(&self, hcl: &str) -> Option<(String, String)> {
+        generator_support::extract_probe_and_backend_from_lb_rule_hcl(hcl)
+    }
+
+    fn extract_probe_health_check_props(&self, hcl: &str) -> String {
+        generator_support::extract_probe_health_check_props_hcl(hcl)
     }
 
     fn ssh_key_placeholder(&self, key_name: &str) -> String {

@@ -30,7 +30,7 @@ pub fn extract_nsg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
     refs
 }
 
-/// Extract the subnet name from an Azure VM source HCL block.
+/// Extract the subnet name from an Azure VM or NIC source HCL block.
 /// Returns the subnet resource name from `subnet_id = azurerm_subnet.NAME.id`.
 pub fn extract_subnet_from_instance_hcl(hcl: &str) -> Option<String> {
     for line in hcl.lines() {
@@ -46,6 +46,27 @@ pub fn extract_subnet_from_instance_hcl(hcl: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract NIC resource names from an Azure VM's `network_interface_ids` attribute.
+pub fn extract_nic_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    const PREFIX: &str = "azurerm_network_interface.";
+    for line in hcl.lines() {
+        let mut search = line;
+        while let Some(pos) = search.find(PREFIX) {
+            let after = &search[pos + PREFIX.len()..];
+            let end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
+            let name = &after[..end];
+            if !name.is_empty() {
+                refs.push(name.to_string());
+            }
+            search = &search[pos + 1..];
+        }
+    }
+    refs
 }
 
 /// Parse an `azurerm_subnet_network_security_group_association` source HCL block.
@@ -149,6 +170,71 @@ pub fn extract_lb_name_from_rule_hcl(hcl: &str) -> Option<String> {
         .and_then(|l| l.find("azurerm_lb.").map(|p| &l[p + "azurerm_lb.".len()..]))
         .and_then(|s| s.split('.').next())
         .map(|s| s.trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract (backend_pool_name, probe_name) from an `azurerm_lb_rule` source HCL.
+/// Used to chain probe health check properties into the backend pool during generation.
+pub fn extract_probe_and_backend_from_lb_rule_hcl(hcl: &str) -> Option<(String, String)> {
+    let backend = extract_backend_pool_from_lb_rule_hcl(hcl)?;
+    let probe_name = hcl
+        .lines()
+        .find(|l| {
+            let t = l.trim();
+            t.starts_with("probe_id") && t.contains("azurerm_lb_probe.")
+        })
+        .and_then(|l| {
+            l.find("azurerm_lb_probe.").map(|pos| {
+                let after = &l[pos + "azurerm_lb_probe.".len()..];
+                after
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+        })
+        .filter(|s| !s.is_empty())?;
+    Some((backend, probe_name))
+}
+
+/// Extract health check property lines from an `azurerm_lb_probe` source HCL block.
+/// Returns the `health_check_*` property lines suitable for an UpCloud backend `properties {}` block.
+pub fn extract_probe_health_check_props_hcl(hcl: &str) -> String {
+    let protocol = extract_hcl_attr(hcl, "protocol").unwrap_or_default();
+    let hc_type = match protocol.to_lowercase().as_str() {
+        "http" => "http",
+        "https" => "https",
+        _ => "tcp",
+    };
+    let mut props = format!("    health_check_type     = \"{hc_type}\"\n");
+
+    if matches!(hc_type, "http" | "https") {
+        if let Some(path) = extract_hcl_attr(hcl, "request_path") {
+            props.push_str(&format!("    health_check_url      = \"{path}\"\n"));
+        }
+    }
+    if let Some(interval) = extract_hcl_attr(hcl, "interval_in_seconds") {
+        if let Ok(v) = interval.parse::<u32>() {
+            props.push_str(&format!("    health_check_interval = {v}\n"));
+        }
+    }
+    if let Some(n) = extract_hcl_attr(hcl, "number_of_probes") {
+        if let Ok(v) = n.parse::<u32>() {
+            props.push_str(&format!("    health_check_rise     = {v}\n"));
+            props.push_str(&format!("    health_check_fall     = {v}\n"));
+        }
+    }
+    props
+}
+
+/// Extract a simple `attr = "value"` or `attr = value` from source HCL.
+fn extract_hcl_attr(hcl: &str, attr: &str) -> Option<String> {
+    hcl.lines()
+        .find(|l| {
+            let t = l.trim();
+            t.starts_with(attr)
+                && t[attr.len()..].trim_start().starts_with('=')
+        })
+        .and_then(|l| l.find('=').map(|pos| l[pos + 1..].trim().trim_matches('"').to_string()))
         .filter(|s| !s.is_empty())
 }
 

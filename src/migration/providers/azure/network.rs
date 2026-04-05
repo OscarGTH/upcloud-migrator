@@ -301,6 +301,26 @@ pub fn map_network_interface(res: &TerraformResource) -> MigrationResult {
     }
 }
 
+/// Map an `azurerm_subnet_network_security_group_association` to a silent consumed result.
+///
+/// This resource is a join table that links subnets to NSGs. It has no standalone
+/// UpCloud equivalent but its source HCL is consumed by the generator's cross-reference
+/// resolution to discover which servers each security group covers.
+pub fn map_subnet_nsg_association(res: &TerraformResource) -> MigrationResult {
+    MigrationResult {
+        resource_type: res.resource_type.clone(),
+        resource_name: res.name.clone(),
+        source_file: res.source_file.display().to_string(),
+        status: MigrationStatus::Native,
+        upcloud_type: "(consumed by firewall resolution)".into(),
+        upcloud_hcl: None,
+        snippet: None,
+        parent_resource: None,
+        notes: vec![],
+        source_hcl: None,
+    }
+}
+
 /// Parse security_rule blocks from a raw `resource "azurerm_network_security_group" ...` HCL string.
 fn parse_nsg_rules(raw_hcl: &str) -> Vec<(String, i32, i32, String, Option<String>, bool)> {
     let Ok(body) = hcl::from_str::<hcl::Body>(raw_hcl) else {

@@ -127,6 +127,12 @@ resource "aws_security_group" "redis" {
   }
 }
 
+variable "ssh_public_key" {
+  description = "SSH public key for EC2 instances"
+  type        = string
+  default     = ""
+}
+
 resource "aws_key_pair" "main" {
   key_name   = "webapp-key"
   public_key = var.ssh_public_key != "" ? var.ssh_public_key : "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7... placeholder-key"

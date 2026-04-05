@@ -38,6 +38,9 @@ impl ResourceMapper for AzureResourceMapper {
             "azurerm_network_security_rule" => network::map_network_security_rule(res),
             "azurerm_public_ip" => network::map_public_ip(res),
             "azurerm_network_interface" => network::map_network_interface(res),
+            "azurerm_subnet_network_security_group_association" => {
+                network::map_subnet_nsg_association(res)
+            }
 
             // Load Balancers
             "azurerm_lb" => loadbalancer::map_lb(res),
