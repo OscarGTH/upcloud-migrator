@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.5.0...upcloud-migrate-v0.6.0) (2026-04-05)
+
+
+### Features
+
+* add azure provider and deduplicate some upcloud hcl to shared module. ([b367439](https://github.com/OscarGTH/upcloud-migrator/commit/b3674399ec0dea3c378241051a282243e95ee4f7))
+* **azure:** add better support for application gateways ([898f46e](https://github.com/OscarGTH/upcloud-migrator/commit/898f46e9913b7dcc000601aedcb3786b2ca7d720))
+
+
+### Bug Fixes
+
+* **aws:** stop generating firewall rules for non-vm resources ([08aa55d](https://github.com/OscarGTH/upcloud-migrator/commit/08aa55d92be6831610f4fd7f8af3e7ae32b36e4c))
+* improve azure load balancer parity compared to aws and fix e2e test fixture. ([c458f87](https://github.com/OscarGTH/upcloud-migrator/commit/c458f87af0d8583f8d621c5c33e915ab591ee7c6))
+
 ## [0.5.0](https://github.com/OscarGTH/upcloud-migrator/compare/upcloud-migrate-v0.4.0...upcloud-migrate-v0.5.0) (2026-03-26)
 
 
