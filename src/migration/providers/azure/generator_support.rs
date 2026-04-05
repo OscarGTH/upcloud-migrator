@@ -353,6 +353,10 @@ pub fn rewrite_output_refs(s: &str) -> String {
                 result = format!("{}{}{}", &result[..start], replacement, &result[end..]);
                 search_from = start + replacement.len();
             }
+        } else if azure_type == "azurerm_resource_group" {
+            let replacement = "null # Azure resource group: no UpCloud equivalent";
+            result = format!("{}{}{}", &result[..start], replacement, &result[end..]);
+            search_from = start + replacement.len();
         } else {
             let replacement = format!("<TODO: was {}>", candidate);
             result = format!("{}{}{}", &result[..start], replacement, &result[end..]);
@@ -361,6 +365,281 @@ pub fn rewrite_output_refs(s: &str) -> String {
     }
 
     result
+}
+
+// ── Application Gateway sub-resource generation ──────────────────────────────
+
+/// Convert a hyphenated Azure name to a valid Terraform resource identifier.
+fn tf_id(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// Extract all named blocks of `block_type` from Application Gateway source HCL.
+///
+/// Scans for lines where `block_type {` is the only non-whitespace content, then
+/// extracts the brace-balanced block content and the `name` attribute from it.
+/// Returns `Vec<(name, block_content)>`.
+fn extract_appgw_named_blocks(hcl: &str, block_type: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let needle = format!("{} {{", block_type);
+    let mut search_start = 0usize;
+    let bytes = hcl.as_bytes();
+
+    while let Some(rel) = hcl[search_start..].find(needle.as_str()) {
+        let abs = search_start + rel;
+
+        // Only match when block_type starts at the beginning of an (indented) line.
+        let line_start = hcl[..abs].rfind('\n').map_or(0, |p| p + 1);
+        if !hcl[line_start..abs].chars().all(|c| c == ' ' || c == '\t') {
+            search_start = abs + 1;
+            continue;
+        }
+
+        // Position of the opening '{' (last char of needle).
+        let brace_open = abs + needle.len() - 1;
+        let mut depth = 1i32;
+        let mut i = brace_open + 1;
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let content = &hcl[brace_open + 1..i];
+        if let Some(name) = extract_hcl_attr(content, "name") {
+            results.push((name, content.to_string()));
+        }
+        search_start = i + 1;
+    }
+
+    results
+}
+
+/// Extract `upcloud_network.SUBNET_NAME.id` from the AppGw `gateway_ip_configuration` subnet.
+pub fn extract_appgw_subnet_ref(hcl: &str) -> Option<String> {
+    for line in hcl.lines() {
+        let t = line.trim();
+        if t.starts_with("subnet_id") && t.contains("azurerm_subnet.") {
+            let pos = t.find("azurerm_subnet.")?;
+            let after = &t[pos + "azurerm_subnet.".len()..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                return Some(format!("upcloud_network.{}.id", name));
+            }
+        }
+    }
+    None
+}
+
+/// Extract health check properties from an AppGw inline `probe` block.
+/// Uses AppGw attribute names (`path`, `interval`, `unhealthy_threshold`) which differ
+/// from `azurerm_lb_probe` (`request_path`, `interval_in_seconds`, `number_of_probes`).
+fn appgw_probe_health_check_props(block_content: &str) -> String {
+    let protocol = extract_hcl_attr(block_content, "protocol").unwrap_or_default();
+    let hc_type = match protocol.to_lowercase().as_str() {
+        "http" => "http",
+        "https" => "https",
+        _ => "tcp",
+    };
+    let mut props = format!("    health_check_type     = \"{hc_type}\"\n");
+    if matches!(hc_type, "http" | "https") {
+        if let Some(path) = extract_hcl_attr(block_content, "path") {
+            props.push_str(&format!("    health_check_url      = \"{path}\"\n"));
+        }
+    }
+    if let Some(iv) = extract_hcl_attr(block_content, "interval") {
+        if let Ok(v) = iv.parse::<u32>() {
+            props.push_str(&format!("    health_check_interval = {v}\n"));
+        }
+    }
+    if let Some(n) = extract_hcl_attr(block_content, "unhealthy_threshold") {
+        if let Ok(v) = n.parse::<u32>() {
+            props.push_str(&format!("    health_check_fall     = {v}\n"));
+        }
+    }
+    props
+}
+
+/// Generate UpCloud LB sub-resources for an `azurerm_application_gateway`.
+///
+/// Parses inline blocks (backend pools, probes, listeners, routing rules, TLS certs)
+/// and emits:
+/// - `upcloud_loadbalancer_backend` (with health checks from probe chain)
+/// - `upcloud_loadbalancer_frontend` (from http_listener + request_routing_rule)
+/// - `upcloud_loadbalancer_frontend_tls_config` (for HTTPS listeners)
+/// - `upcloud_loadbalancer_frontend_rule` (for redirect configurations)
+pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
+    use std::collections::{HashMap, HashSet};
+
+    // frontend_port name → port number
+    let mut port_map: HashMap<String, u32> = HashMap::new();
+    for (name, content) in extract_appgw_named_blocks(hcl, "frontend_port") {
+        if let Some(s) = extract_hcl_attr(&content, "port") {
+            if let Ok(p) = s.parse::<u32>() {
+                port_map.insert(name, p);
+            }
+        }
+    }
+
+    // probe name → health check properties string
+    let probe_map: HashMap<String, String> = extract_appgw_named_blocks(hcl, "probe")
+        .into_iter()
+        .map(|(name, content)| (name, appgw_probe_health_check_props(&content)))
+        .collect();
+
+    // backend_http_settings name → probe name
+    let settings_probe_map: HashMap<String, String> =
+        extract_appgw_named_blocks(hcl, "backend_http_settings")
+            .into_iter()
+            .filter_map(|(name, content)| {
+                extract_hcl_attr(&content, "probe_name").map(|p| (name, p))
+            })
+            .collect();
+
+    // routing rules: (name, listener_name, backend_pool?, http_settings?, redirect_cfg?)
+    let routing_rules: Vec<(String, String, Option<String>, Option<String>, Option<String>)> =
+        extract_appgw_named_blocks(hcl, "request_routing_rule")
+            .into_iter()
+            .map(|(name, content)| {
+                let listener =
+                    extract_hcl_attr(&content, "http_listener_name").unwrap_or_default();
+                let backend = extract_hcl_attr(&content, "backend_address_pool_name");
+                let settings = extract_hcl_attr(&content, "backend_http_settings_name");
+                let redirect = extract_hcl_attr(&content, "redirect_configuration_name");
+                (name, listener, backend, settings, redirect)
+            })
+            .collect();
+
+    // http_listener name → (port_name, protocol, ssl_cert?, host_name?)
+    let listener_map: HashMap<String, (String, String, Option<String>, Option<String>)> =
+        extract_appgw_named_blocks(hcl, "http_listener")
+            .into_iter()
+            .map(|(name, content)| {
+                let port_name =
+                    extract_hcl_attr(&content, "frontend_port_name").unwrap_or_default();
+                let protocol =
+                    extract_hcl_attr(&content, "protocol").unwrap_or_else(|| "Http".into());
+                let ssl_cert = extract_hcl_attr(&content, "ssl_certificate_name");
+                let host_name = extract_hcl_attr(&content, "host_name");
+                (name, (port_name, protocol, ssl_cert, host_name))
+            })
+            .collect();
+
+    // backend_address_pool names in source order
+    let backend_pools: Vec<String> = extract_appgw_named_blocks(hcl, "backend_address_pool")
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+
+    // backend_pool → health check props (via routing rule → http_settings → probe)
+    let mut backend_health_map: HashMap<String, String> = HashMap::new();
+    for (_, _, backend_opt, settings_opt, _) in &routing_rules {
+        if let (Some(backend), Some(settings)) = (backend_opt, settings_opt) {
+            let probe_props = settings_probe_map
+                .get(settings)
+                .and_then(|p| probe_map.get(p))
+                .cloned()
+                .unwrap_or_else(|| "    health_check_type = \"tcp\"\n".into());
+            backend_health_map.insert(backend.clone(), probe_props);
+        }
+    }
+
+    let mut out = String::new();
+
+    // ── Backends (source order) ───────────────────────────────────────────────
+    for backend_name in &backend_pools {
+        let health = backend_health_map
+            .get(backend_name)
+            .cloned()
+            .unwrap_or_else(|| "    health_check_type = \"tcp\"\n".into());
+        out.push_str(&format!(
+            "resource \"upcloud_loadbalancer_backend\" \"{id}\" {{\n  loadbalancer = upcloud_loadbalancer.{lb}.id\n  name         = \"{name}\"\n\n  properties {{\n{health}  }}\n}}\n\n",
+            id = tf_id(backend_name),
+            lb = lb_name,
+            name = backend_name,
+            health = health,
+        ));
+    }
+
+    // ── Frontends (one per routing rule) ─────────────────────────────────────
+    let mut seen_tls_certs: HashSet<String> = HashSet::new();
+    for (_, listener_name, backend_opt, _, redirect_opt) in &routing_rules {
+        if listener_name.is_empty() {
+            continue;
+        }
+        let (port_name, protocol, ssl_cert_opt, _host) = match listener_map.get(listener_name) {
+            Some(v) => v,
+            None => continue,
+        };
+        let port = port_map.get(port_name).copied().unwrap_or(80);
+        let lid = tf_id(listener_name);
+
+        if let Some(backend_name) = backend_opt {
+            let bid = tf_id(backend_name);
+            out.push_str(&format!(
+                "resource \"upcloud_loadbalancer_frontend\" \"{lid}\" {{\n  loadbalancer         = upcloud_loadbalancer.{lb}.id\n  name                 = \"{name}\"\n  mode                 = \"http\"\n  port                 = {port}\n  default_backend_name = upcloud_loadbalancer_backend.{bid}.name\n\n  networks {{\n    name = \"public\"\n  }}\n}}\n\n",
+                lid = lid,
+                lb = lb_name,
+                name = listener_name,
+                port = port,
+                bid = bid,
+            ));
+            if protocol.to_lowercase() == "https" {
+                if let Some(cert_name) = ssl_cert_opt {
+                    let cid = tf_id(cert_name);
+                    seen_tls_certs.insert(cert_name.clone());
+                    out.push_str(&format!(
+                        "resource \"upcloud_loadbalancer_frontend_tls_config\" \"{lid}_tls\" {{\n  frontend           = upcloud_loadbalancer_frontend.{lid}.name\n  name               = \"{cert_name}\"\n  certificate_bundle = \"<TODO: upcloud_tls_certificate.{cid}.id>\"\n}}\n\n",
+                        lid = lid,
+                        cert_name = cert_name,
+                        cid = cid,
+                    ));
+                }
+            }
+        } else if let Some(redirect_cfg) = redirect_opt {
+            out.push_str(&format!(
+                "# NOTE: HTTP\u{2192}HTTPS redirect \u{2014} the rule below handles all traffic.\nresource \"upcloud_loadbalancer_frontend\" \"{lid}\" {{\n  loadbalancer         = upcloud_loadbalancer.{lb}.id\n  name                 = \"{name}\"\n  mode                 = \"http\"\n  port                 = {port}\n  default_backend_name = \"<TODO: required \u{2014} assign a backend (redirect rule handles all traffic)>\"\n\n  networks {{\n    name = \"public\"\n  }}\n}}\n\n",
+                lid = lid,
+                lb = lb_name,
+                name = listener_name,
+                port = port,
+            ));
+            out.push_str(&format!(
+                "resource \"upcloud_loadbalancer_frontend_rule\" \"{lid}_redirect\" {{\n  frontend = upcloud_loadbalancer_frontend.{lid}.name\n  name     = \"{cfg_name}\"\n  priority = 100\n\n  actions {{\n    http_redirect {{\n      scheme = \"https\"\n    }}\n  }}\n\n  matchers {{}}\n}}\n\n",
+                lid = lid,
+                cfg_name = redirect_cfg,
+            ));
+        }
+    }
+
+    // TLS certificate placeholder (informational, once per unique cert name)
+    if !seen_tls_certs.is_empty() {
+        out.push_str("# NOTE: provide SSL/TLS certificates for the frontends above.\n");
+        let mut sorted_certs: Vec<_> = seen_tls_certs.iter().collect();
+        sorted_certs.sort();
+        for cert_name in sorted_certs {
+            out.push_str(&format!(
+                "# resource \"upcloud_tls_certificate\" \"{cid}\" {{\n#   # certificate, private_key (PEM format) \u{2014} was: {cert_name}\n# }}\n",
+                cid = tf_id(cert_name),
+                cert_name = cert_name,
+            ));
+        }
+        out.push('\n');
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -560,5 +839,161 @@ mod tests {
     #[test]
     fn unknown_attr_returns_none() {
         assert_eq!(upcloud_attr_for("upcloud_server", "nonexistent_attr"), None);
+    }
+
+    // ── rewrite_output_refs for azurerm_resource_group ────────────────────────
+
+    #[test]
+    fn rewrite_output_refs_resource_group_becomes_null() {
+        let input = "value = azurerm_resource_group.main.name";
+        let result = rewrite_output_refs(input);
+        assert!(result.contains("null"), "{result}");
+        assert!(result.contains("no UpCloud equivalent"), "{result}");
+        assert!(!result.contains("<TODO:"), "{result}");
+    }
+
+    // ── Application Gateway helpers ───────────────────────────────────────────
+
+    #[test]
+    fn appgw_named_blocks_extracted_correctly() {
+        let hcl = concat!(
+            "  probe {\n",
+            "    name     = \"my-probe\"\n",
+            "    protocol = \"Http\"\n",
+            "  }\n",
+        );
+        let blocks = extract_appgw_named_blocks(hcl, "probe");
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].0, "my-probe");
+    }
+
+    #[test]
+    fn appgw_named_blocks_skips_non_block_occurrences() {
+        // "probe_name = ..." should not be treated as a probe block
+        let hcl = concat!(
+            "  backend_http_settings {\n",
+            "    name       = \"settings\"\n",
+            "    probe_name = \"my-probe\"\n",
+            "  }\n",
+        );
+        let blocks = extract_appgw_named_blocks(hcl, "probe");
+        assert!(blocks.is_empty(), "should not match probe_name: {blocks:?}");
+    }
+
+    #[test]
+    fn appgw_subnet_ref_extracted() {
+        let hcl = concat!(
+            "  gateway_ip_configuration {\n",
+            "    name      = \"gw-ip-config\"\n",
+            "    subnet_id = azurerm_subnet.appgw.id\n",
+            "  }\n",
+        );
+        assert_eq!(
+            extract_appgw_subnet_ref(hcl),
+            Some("upcloud_network.appgw.id".to_string())
+        );
+    }
+
+    #[test]
+    fn appgw_sub_resources_empty_hcl_returns_empty() {
+        assert!(generate_appgw_sub_resources("main", "").is_empty());
+    }
+
+    #[test]
+    fn appgw_sub_resources_backends_with_health_check() {
+        let hcl = concat!(
+            "  backend_address_pool {\n",
+            "    name = \"web-pool\"\n",
+            "  }\n",
+            "  probe {\n",
+            "    name     = \"web-probe\"\n",
+            "    protocol = \"Http\"\n",
+            "    path     = \"/health\"\n",
+            "    interval = 15\n",
+            "  }\n",
+            "  backend_http_settings {\n",
+            "    name       = \"web-settings\"\n",
+            "    probe_name = \"web-probe\"\n",
+            "  }\n",
+            "  request_routing_rule {\n",
+            "    name                       = \"rule1\"\n",
+            "    http_listener_name         = \"web-listener\"\n",
+            "    backend_address_pool_name  = \"web-pool\"\n",
+            "    backend_http_settings_name = \"web-settings\"\n",
+            "  }\n",
+            "  http_listener {\n",
+            "    name               = \"web-listener\"\n",
+            "    frontend_port_name = \"http-port\"\n",
+            "    protocol           = \"Http\"\n",
+            "  }\n",
+            "  frontend_port {\n",
+            "    name = \"http-port\"\n",
+            "    port = 80\n",
+            "  }\n",
+        );
+        let result = generate_appgw_sub_resources("main", hcl);
+        assert!(result.contains("upcloud_loadbalancer_backend"), "{result}");
+        assert!(result.contains("health_check_type     = \"http\""), "{result}");
+        assert!(result.contains("health_check_url      = \"/health\""), "{result}");
+        assert!(result.contains("upcloud_loadbalancer_backend.web_pool.name"), "{result}");
+    }
+
+    #[test]
+    fn appgw_sub_resources_https_generates_tls_config() {
+        let hcl = concat!(
+            "  backend_address_pool {\n",
+            "    name = \"api-pool\"\n",
+            "  }\n",
+            "  backend_http_settings {\n",
+            "    name = \"api-settings\"\n",
+            "  }\n",
+            "  ssl_certificate {\n",
+            "    name = \"my-cert\"\n",
+            "  }\n",
+            "  request_routing_rule {\n",
+            "    name                       = \"rule1\"\n",
+            "    http_listener_name         = \"api-listener\"\n",
+            "    backend_address_pool_name  = \"api-pool\"\n",
+            "    backend_http_settings_name = \"api-settings\"\n",
+            "  }\n",
+            "  http_listener {\n",
+            "    name                 = \"api-listener\"\n",
+            "    frontend_port_name   = \"https-port\"\n",
+            "    protocol             = \"Https\"\n",
+            "    ssl_certificate_name = \"my-cert\"\n",
+            "  }\n",
+            "  frontend_port {\n",
+            "    name = \"https-port\"\n",
+            "    port = 443\n",
+            "  }\n",
+        );
+        let result = generate_appgw_sub_resources("main", hcl);
+        assert!(result.contains("upcloud_loadbalancer_frontend_tls_config"), "{result}");
+        assert!(result.contains("my-cert"), "{result}");
+        assert!(result.contains("upcloud_tls_certificate"), "{result}");
+    }
+
+    #[test]
+    fn appgw_sub_resources_redirect_generates_frontend_rule() {
+        let hcl = concat!(
+            "  http_listener {\n",
+            "    name               = \"http-listener\"\n",
+            "    frontend_port_name = \"http-port\"\n",
+            "    protocol           = \"Http\"\n",
+            "  }\n",
+            "  request_routing_rule {\n",
+            "    name                        = \"redirect-rule\"\n",
+            "    http_listener_name          = \"http-listener\"\n",
+            "    redirect_configuration_name = \"http-to-https\"\n",
+            "  }\n",
+            "  frontend_port {\n",
+            "    name = \"http-port\"\n",
+            "    port = 80\n",
+            "  }\n",
+        );
+        let result = generate_appgw_sub_resources("main", hcl);
+        assert!(result.contains("upcloud_loadbalancer_frontend_rule"), "{result}");
+        assert!(result.contains("http_redirect"), "{result}");
+        assert!(result.contains("scheme = \"https\""), "{result}");
     }
 }

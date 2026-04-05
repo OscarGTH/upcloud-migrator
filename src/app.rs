@@ -792,31 +792,96 @@ impl App {
                     for line in log {
                         let _ = tx.send(AppMessage::GenerateLog(line)).await;
                     }
-                    // Run `terraform fmt` if available.
-                    match std::process::Command::new("terraform")
-                        .args(["fmt", output_dir.to_str().unwrap_or(".")])
+                    let mut tf_files: Vec<_> = match std::fs::read_dir(&output_dir) {
+                        Ok(entries) => entries
+                            .filter_map(|entry| entry.ok())
+                            .map(|entry| entry.path())
+                            .filter(|path| {
+                                path.extension()
+                                    .and_then(|ext| ext.to_str())
+                                    .map(|ext| ext.eq_ignore_ascii_case("tf"))
+                                    .unwrap_or(false)
+                            })
+                            .collect(),
+                        Err(_) => Vec::new(),
+                    };
+                    tf_files.sort();
+
+                    let terraform_available = std::process::Command::new("terraform")
+                        .arg("version")
                         .output()
-                    {
-                        Ok(out) if out.status.success() => {
-                            let _ = tx
-                                .send(AppMessage::GenerateLog("[terraform fmt] OK".into()))
-                                .await;
-                        }
-                        Ok(out) => {
-                            let stderr = String::from_utf8_lossy(&out.stderr);
-                            let _ = tx
-                                .send(AppMessage::GenerateLog(format!(
-                                    "[terraform fmt] {}",
-                                    stderr.trim()
-                                )))
-                                .await;
-                        }
-                        Err(_) => {
-                            let _ = tx
-                                .send(AppMessage::GenerateLog(
-                                    "[terraform fmt] not found — skipping".into(),
-                                ))
-                                .await;
+                        .is_ok();
+
+                    if !terraform_available {
+                        let _ = tx
+                            .send(AppMessage::GenerateLog(
+                                "[terraform fmt] not found — skipping".into(),
+                            ))
+                            .await;
+                    } else {
+                        for path in tf_files {
+                            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                                continue;
+                            };
+
+                            let content = match std::fs::read_to_string(&path) {
+                                Ok(content) => content,
+                                Err(e) => {
+                                    let _ = tx
+                                        .send(AppMessage::GenerateLog(format!(
+                                            "[terraform fmt] {} failed to read: {}",
+                                            file_name, e
+                                        )))
+                                        .await;
+                                    continue;
+                                }
+                            };
+
+                            if content.contains(crate::migration::generator::TODO_PLACEHOLDER_PREFIX) {
+                                let _ = tx
+                                    .send(AppMessage::GenerateLog(format!(
+                                        "[terraform fmt] {} skipped — unresolved TODO placeholders remain",
+                                        file_name
+                                    )))
+                                    .await;
+                                continue;
+                            }
+
+                            match std::process::Command::new("terraform")
+                                .args(["fmt", path.to_str().unwrap_or("")])
+                                .output()
+                            {
+                                Ok(out) if out.status.success() => {
+                                    let _ = tx
+                                        .send(AppMessage::GenerateLog(format!(
+                                            "[terraform fmt] {} OK",
+                                            file_name
+                                        )))
+                                        .await;
+                                }
+                                Ok(out) => {
+                                    let stderr = String::from_utf8_lossy(&out.stderr);
+                                    let first_line = stderr
+                                        .lines()
+                                        .find(|line| !line.trim().is_empty())
+                                        .unwrap_or("terraform fmt failed");
+                                    let _ = tx
+                                        .send(AppMessage::GenerateLog(format!(
+                                            "[terraform fmt] {} failed: {}",
+                                            file_name,
+                                            first_line.trim()
+                                        )))
+                                        .await;
+                                }
+                                Err(_) => {
+                                    let _ = tx
+                                        .send(AppMessage::GenerateLog(format!(
+                                            "[terraform fmt] {} unavailable — skipping",
+                                            file_name
+                                        )))
+                                        .await;
+                                }
+                            }
                         }
                     }
                     let _ = tx.send(AppMessage::GenerateDone(count, resolved_map)).await;

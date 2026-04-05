@@ -221,19 +221,34 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
 }
 
 pub fn map_application_gateway(res: &TerraformResource) -> MigrationResult {
-    let networks_block = r#"  networks {
+    let network_val = generator_support::extract_appgw_subnet_ref(&res.raw_hcl)
+        .unwrap_or_else(|| "\"<TODO: upcloud_network reference>\"".into());
+    let networks_block = format!(
+        r#"  networks {{
     name    = "private"
     type    = "private"
     family  = "IPv4"
-    network = "<TODO: upcloud_network reference>"
-  }
+    network = {network_val}
+  }}
 
-  networks {
+  networks {{
     name   = "public"
     type   = "public"
     family = "IPv4"
-  }"#;
-    let hcl = shared::upcloud_loadbalancer_hcl(&res.name, "production-small", networks_block, "  # Application Gateway features (WAF, path-based routing, etc.) need manual migration");
+  }}"#
+    );
+    let main_hcl = shared::upcloud_loadbalancer_hcl(
+        &res.name,
+        "production-small",
+        &networks_block,
+        "  # WAF and path-based routing require manual configuration",
+    );
+    let sub_resources = generator_support::generate_appgw_sub_resources(&res.name, &res.raw_hcl);
+    let hcl = if sub_resources.is_empty() {
+        main_hcl
+    } else {
+        format!("{}\n{}", main_hcl, sub_resources)
+    };
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -245,8 +260,9 @@ pub fn map_application_gateway(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            "Azure Application Gateway → UpCloud Load Balancer (L7 features need manual migration).".into(),
-            "WAF, URL-based routing, and SSL termination require separate configuration.".into(),
+            "Azure Application Gateway → UpCloud Load Balancer with backends and frontends.".into(),
+            "WAF and advanced routing features require manual migration.".into(),
+            "Update TLS certificate references before applying.".into(),
         ],
         source_hcl: None,
     }
@@ -541,5 +557,67 @@ mod tests {
         let r = map_application_gateway(&res);
         assert_eq!(r.status, crate::migration::types::MigrationStatus::Partial);
         assert_eq!(r.upcloud_type, "upcloud_loadbalancer");
+    }
+
+    #[test]
+    fn application_gateway_resolves_subnet_from_raw_hcl() {
+        let raw = concat!(
+            "resource \"azurerm_application_gateway\" \"main\" {\n",
+            "  gateway_ip_configuration {\n",
+            "    name      = \"gw-ip\"\n",
+            "    subnet_id = azurerm_subnet.appgw.id\n",
+            "  }\n",
+            "}\n",
+        );
+        let res = make_res_with_hcl("azurerm_application_gateway", "main", &[], raw);
+        let hcl = map_application_gateway(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("upcloud_network.appgw.id"), "subnet should be resolved\n{hcl}");
+        assert!(!hcl.contains("<TODO: upcloud_network reference>"), "{hcl}");
+    }
+
+    #[test]
+    fn application_gateway_generates_backends_and_frontends() {
+        let raw = concat!(
+            "resource \"azurerm_application_gateway\" \"main\" {\n",
+            "  gateway_ip_configuration {\n",
+            "    name      = \"gw-ip\"\n",
+            "    subnet_id = azurerm_subnet.appgw.id\n",
+            "  }\n",
+            "  backend_address_pool {\n",
+            "    name = \"web-pool\"\n",
+            "  }\n",
+            "  probe {\n",
+            "    name     = \"web-probe\"\n",
+            "    protocol = \"Http\"\n",
+            "    path     = \"/health\"\n",
+            "    interval = 15\n",
+            "  }\n",
+            "  backend_http_settings {\n",
+            "    name       = \"web-settings\"\n",
+            "    probe_name = \"web-probe\"\n",
+            "  }\n",
+            "  request_routing_rule {\n",
+            "    name                       = \"rule1\"\n",
+            "    http_listener_name         = \"web-listener\"\n",
+            "    backend_address_pool_name  = \"web-pool\"\n",
+            "    backend_http_settings_name = \"web-settings\"\n",
+            "  }\n",
+            "  http_listener {\n",
+            "    name               = \"web-listener\"\n",
+            "    frontend_port_name = \"http-port\"\n",
+            "    protocol           = \"Http\"\n",
+            "  }\n",
+            "  frontend_port {\n",
+            "    name = \"http-port\"\n",
+            "    port = 80\n",
+            "  }\n",
+            "}\n",
+        );
+        let res = make_res_with_hcl("azurerm_application_gateway", "main", &[], raw);
+        let hcl = map_application_gateway(&res).upcloud_hcl.unwrap();
+        assert!(hcl.contains("upcloud_loadbalancer_backend"), "{hcl}");
+        assert!(hcl.contains("upcloud_loadbalancer_frontend"), "{hcl}");
+        assert!(hcl.contains("health_check_type     = \"http\""), "{hcl}");
+        assert!(hcl.contains("health_check_url      = \"/health\""), "{hcl}");
     }
 }
