@@ -202,7 +202,9 @@ fn build_cross_ref_tables(
         if !nic_to_subnet.is_empty() {
             let supplements: Vec<(String, String)> = results
                 .iter()
-                .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance)
+                .filter(|r| {
+                    provider.resource_role(&r.resource_type) == ResourceRole::ComputeInstance
+                })
                 .filter(|r| !server_subnet_map.contains_key(&r.resource_name))
                 .filter_map(|r| {
                     r.source_hcl.as_deref().and_then(|hcl| {
@@ -368,37 +370,37 @@ fn build_cross_ref_tables(
 
     // Build probe_health_map: backend_pool_name → health check property lines.
     // Chain: azurerm_lb_probe (or similar) → azurerm_lb_rule (probe_id + backend_pool_ids)
-    let probe_health_map: HashMap<String, String> =
-        if let Some(probe_type) = provider.lb_probe_resource_type() {
-            let probe_snippet_map: HashMap<String, String> = results
-                .iter()
-                .filter(|r| r.resource_type == probe_type)
-                .filter_map(|r| {
-                    r.source_hcl.as_ref().map(|hcl| {
-                        let props = provider.extract_probe_health_check_props(hcl);
-                        (r.resource_name.clone(), props)
-                    })
+    let probe_health_map: HashMap<String, String> = if let Some(probe_type) =
+        provider.lb_probe_resource_type()
+    {
+        let probe_snippet_map: HashMap<String, String> = results
+            .iter()
+            .filter(|r| r.resource_type == probe_type)
+            .filter_map(|r| {
+                r.source_hcl.as_ref().map(|hcl| {
+                    let props = provider.extract_probe_health_check_props(hcl);
+                    (r.resource_name.clone(), props)
                 })
-                .filter(|(_, props)| !props.is_empty())
-                .collect();
+            })
+            .filter(|(_, props)| !props.is_empty())
+            .collect();
 
-            let mut map: HashMap<String, String> = HashMap::new();
-            for r in results
-                .iter()
-                .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener)
+        let mut map: HashMap<String, String> = HashMap::new();
+        for r in results
+            .iter()
+            .filter(|r| provider.resource_role(&r.resource_type) == ResourceRole::LbListener)
+        {
+            if let Some(hcl) = r.source_hcl.as_deref()
+                && let Some((backend_name, probe_name)) = provider.extract_probe_from_lb_rule(hcl)
+                && let Some(props) = probe_snippet_map.get(&probe_name)
             {
-                if let Some(hcl) = r.source_hcl.as_deref()
-                    && let Some((backend_name, probe_name)) =
-                        provider.extract_probe_from_lb_rule(hcl)
-                    && let Some(props) = probe_snippet_map.get(&probe_name)
-                {
-                    map.entry(backend_name).or_insert_with(|| props.clone());
-                }
+                map.entry(backend_name).or_insert_with(|| props.clone());
             }
-            map
-        } else {
-            HashMap::new()
-        };
+        }
+        map
+    } else {
+        HashMap::new()
+    };
 
     // Build managed_sg_names: SG resource names referenced by managed services (LBs,
     // managed databases, caches) rather than EC2 instances.  When server_id resolution
@@ -4327,10 +4329,7 @@ resource "kubernetes_deployment_v1" "nginx" {
             None,
         );
 
-        let output = run_generate(
-            &[nsg, nsg_assoc, nic, server, subnet],
-            "azure_nsg_chain",
-        );
+        let output = run_generate(&[nsg, nsg_assoc, nic, server, subnet], "azure_nsg_chain");
 
         // The NSG should resolve to the web server via the chain:
         // NSG 'web_nsg' → association links subnet 'web' ↔ NSG 'web_nsg'

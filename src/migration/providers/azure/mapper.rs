@@ -85,7 +85,9 @@ impl ResourceMapper for AzureResourceMapper {
             ),
 
             // DNS
-            "azurerm_dns_zone" | "azurerm_dns_a_record" | "azurerm_dns_cname_record"
+            "azurerm_dns_zone"
+            | "azurerm_dns_a_record"
+            | "azurerm_dns_cname_record"
             | "azurerm_private_dns_zone" => partial_dns(res),
             "azurerm_private_dns_zone_virtual_network_link" => unsupported(
                 res,
@@ -93,16 +95,15 @@ impl ResourceMapper for AzureResourceMapper {
             ),
 
             // Identity / IAM
-            "azurerm_user_assigned_identity" | "azurerm_role_assignment"
-            | "azurerm_role_definition" => {
-                unsupported(res, "(no IAM equivalent)")
-            }
+            "azurerm_user_assigned_identity"
+            | "azurerm_role_assignment"
+            | "azurerm_role_definition" => unsupported(res, "(no IAM equivalent)"),
 
             // Serverless
-            "azurerm_function_app" | "azurerm_linux_function_app"
-            | "azurerm_windows_function_app" | "azurerm_service_plan" => {
-                unsupported(res, "(no serverless/FaaS)")
-            }
+            "azurerm_function_app"
+            | "azurerm_linux_function_app"
+            | "azurerm_windows_function_app"
+            | "azurerm_service_plan" => unsupported(res, "(no serverless/FaaS)"),
 
             // CDN
             "azurerm_cdn_profile" | "azurerm_cdn_endpoint" | "azurerm_frontdoor" => {
@@ -110,15 +111,18 @@ impl ResourceMapper for AzureResourceMapper {
             }
 
             // Messaging
-            "azurerm_servicebus_namespace" | "azurerm_servicebus_queue"
-            | "azurerm_servicebus_topic" | "azurerm_eventgrid_topic"
-            | "azurerm_eventhub_namespace" | "azurerm_eventhub" => {
-                unsupported(res, "(no messaging service)")
-            }
+            "azurerm_servicebus_namespace"
+            | "azurerm_servicebus_queue"
+            | "azurerm_servicebus_topic"
+            | "azurerm_eventgrid_topic"
+            | "azurerm_eventhub_namespace"
+            | "azurerm_eventhub" => unsupported(res, "(no messaging service)"),
 
             // Monitoring
-            "azurerm_monitor_metric_alert" | "azurerm_monitor_action_group"
-            | "azurerm_log_analytics_workspace" | "azurerm_application_insights"
+            "azurerm_monitor_metric_alert"
+            | "azurerm_monitor_action_group"
+            | "azurerm_log_analytics_workspace"
+            | "azurerm_application_insights"
             | "azurerm_monitor_diagnostic_setting" => {
                 unsupported(res, "(no equivalent monitoring resource)")
             }

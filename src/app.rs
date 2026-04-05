@@ -839,7 +839,10 @@ impl App {
 
                             let has_active_todo = content.lines().any(|l| {
                                 let t = l.trim_start();
-                                !t.starts_with('#') && t.contains(crate::migration::generator::TODO_PLACEHOLDER_PREFIX)
+                                !t.starts_with('#')
+                                    && t.contains(
+                                        crate::migration::generator::TODO_PLACEHOLDER_PREFIX,
+                                    )
                             });
                             if has_active_todo {
                                 let _ = tx

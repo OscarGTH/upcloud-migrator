@@ -40,36 +40,37 @@ pub fn map_managed_disk(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_data_disk_attachment(res: &TerraformResource) -> MigrationResult {
-    let disk_name = res
-        .attributes
-        .get("managed_disk_id")
-        .and_then(|v| {
-            let v = v.trim_matches('"');
-            let rest = v.strip_prefix("azurerm_managed_disk.")?;
-            let base = rest.split(['.', '[']).next().unwrap_or(rest);
-            if base.is_empty() { None } else { Some(base.to_string()) }
-        });
-    let vm_name = res
-        .attributes
-        .get("virtual_machine_id")
-        .and_then(|v| {
-            let v = v.trim_matches('"');
-            for prefix in &[
-                "azurerm_linux_virtual_machine.",
-                "azurerm_windows_virtual_machine.",
-                "azurerm_virtual_machine.",
-            ] {
-                if let Some(rest) = v.strip_prefix(prefix) {
-                    let base = rest.split(['.', '[']).next().unwrap_or(rest);
-                    if !base.is_empty() {
-                        return Some(base.to_string());
-                    }
+    let disk_name = res.attributes.get("managed_disk_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        let rest = v.strip_prefix("azurerm_managed_disk.")?;
+        let base = rest.split(['.', '[']).next().unwrap_or(rest);
+        if base.is_empty() {
+            None
+        } else {
+            Some(base.to_string())
+        }
+    });
+    let vm_name = res.attributes.get("virtual_machine_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        for prefix in &[
+            "azurerm_linux_virtual_machine.",
+            "azurerm_windows_virtual_machine.",
+            "azurerm_virtual_machine.",
+        ] {
+            if let Some(rest) = v.strip_prefix(prefix) {
+                let base = rest.split(['.', '[']).next().unwrap_or(rest);
+                if !base.is_empty() {
+                    return Some(base.to_string());
                 }
             }
-            None
-        });
+        }
+        None
+    });
 
-    let storage_ref = disk_name.as_deref().unwrap_or("<TODO: storage>").to_string();
+    let storage_ref = disk_name
+        .as_deref()
+        .unwrap_or("<TODO: storage>")
+        .to_string();
     let server_ref = vm_name.as_deref().unwrap_or("<TODO: server>").to_string();
 
     let snippet = shared::storage_devices_snippet(&server_ref, &storage_ref);
@@ -84,8 +85,11 @@ pub fn map_data_disk_attachment(res: &TerraformResource) -> MigrationResult {
         snippet: Some(snippet),
         parent_resource: vm_name,
         notes: vec![
-            "Disk attachment → add a storage_devices block inside the upcloud_server resource.".into(),
-            format!("Add the snippet to upcloud_server.{server_ref} to attach upcloud_storage.{storage_ref}."),
+            "Disk attachment → add a storage_devices block inside the upcloud_server resource."
+                .into(),
+            format!(
+                "Add the snippet to upcloud_server.{server_ref} to attach upcloud_storage.{storage_ref}."
+            ),
         ],
         source_hcl: None,
     }
@@ -164,9 +168,7 @@ pub fn map_storage_container(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: storage_account_name,
-        notes: vec![
-            "Azure Blob Container → UpCloud Object Storage Bucket.".into(),
-        ],
+        notes: vec!["Azure Blob Container → UpCloud Object Storage Bucket.".into()],
         source_hcl: None,
     }
 }
@@ -201,7 +203,8 @@ pub fn map_storage_share(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            "Azure File Share → UpCloud File Storage (NFS-based). Manual mount config needed.".into(),
+            "Azure File Share → UpCloud File Storage (NFS-based). Manual mount config needed."
+                .into(),
         ],
         source_hcl: None,
     }
@@ -232,12 +235,18 @@ mod tests {
         let res = make_res(
             "azurerm_managed_disk",
             "data",
-            &[("storage_account_type", "Premium_LRS"), ("disk_size_gb", "100")],
+            &[
+                ("storage_account_type", "Premium_LRS"),
+                ("disk_size_gb", "100"),
+            ],
         );
         let r = map_managed_disk(&res);
         assert_eq!(r.upcloud_type, "upcloud_storage");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_storage\" \"data\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_storage\" \"data\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("tier  = \"maxiops\""), "{hcl}");
     }
 
@@ -246,7 +255,10 @@ mod tests {
         let res = make_res(
             "azurerm_managed_disk",
             "archive",
-            &[("storage_account_type", "Standard_LRS"), ("disk_size_gb", "500")],
+            &[
+                ("storage_account_type", "Standard_LRS"),
+                ("disk_size_gb", "500"),
+            ],
         );
         let hcl = map_managed_disk(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("tier  = \"hdd\""), "{hcl}");
@@ -257,9 +269,17 @@ mod tests {
         let res = make_res(
             "azurerm_managed_disk",
             "v",
-            &[("storage_account_type", "Premium_ZRS"), ("disk_size_gb", "50")],
+            &[
+                ("storage_account_type", "Premium_ZRS"),
+                ("disk_size_gb", "50"),
+            ],
         );
-        assert!(map_managed_disk(&res).upcloud_hcl.unwrap().contains("maxiops"));
+        assert!(
+            map_managed_disk(&res)
+                .upcloud_hcl
+                .unwrap()
+                .contains("maxiops")
+        );
     }
 
     #[test]
@@ -267,7 +287,10 @@ mod tests {
         let res = make_res(
             "azurerm_managed_disk",
             "big",
-            &[("storage_account_type", "Premium_LRS"), ("disk_size_gb", "200")],
+            &[
+                ("storage_account_type", "Premium_LRS"),
+                ("disk_size_gb", "200"),
+            ],
         );
         let hcl = map_managed_disk(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("size  = 200"), "{hcl}");
@@ -314,7 +337,10 @@ mod tests {
         let r = map_storage_account(&res);
         let hcl = r.upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_managed_object_storage"), "{hcl}");
-        assert!(hcl.contains("upcloud_managed_object_storage_bucket"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_managed_object_storage_bucket"),
+            "{hcl}"
+        );
     }
 
     // ── map_storage_container ─────────────────────────────────────────────────
@@ -326,20 +352,29 @@ mod tests {
             "blobs",
             &[
                 ("name", "my-container"),
-                ("storage_account_name", "azurerm_storage_account.assets.name"),
+                (
+                    "storage_account_name",
+                    "azurerm_storage_account.assets.name",
+                ),
             ],
         );
         let r = map_storage_container(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_object_storage_bucket");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("upcloud_managed_object_storage.assets.id"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_managed_object_storage.assets.id"),
+            "{hcl}"
+        );
     }
 
     #[test]
     fn storage_container_without_account_has_todo_ref() {
         let res = make_res("azurerm_storage_container", "blobs", &[]);
         let hcl = map_storage_container(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("upcloud_managed_object_storage.<TODO>.id"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_managed_object_storage.<TODO>.id"),
+            "{hcl}"
+        );
     }
 
     // ── map_storage_share ─────────────────────────────────────────────────────
@@ -350,7 +385,10 @@ mod tests {
         let r = map_storage_share(&res);
         assert_eq!(r.upcloud_type, "upcloud_file_storage");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_file_storage\" \"share\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_file_storage\" \"share\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("size              = 1000"), "{hcl}");
     }
 

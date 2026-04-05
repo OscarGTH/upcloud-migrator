@@ -32,8 +32,7 @@ pub fn hcl_value(val: &str) -> String {
     }
 }
 
-pub const FIREWALL_CATCHALL_EGRESS: &str =
-    "  firewall_rule {\n    direction = \"out\"\n    action    = \"accept\"\n    family    = \"IPv4\"\n    comment   = \"Allow all outbound\"\n  }\n";
+pub const FIREWALL_CATCHALL_EGRESS: &str = "  firewall_rule {\n    direction = \"out\"\n    action    = \"accept\"\n    family    = \"IPv4\"\n    comment   = \"Allow all outbound\"\n  }\n";
 
 /// Returns true if `name` is a recognized property of `upcloud_managed_database_postgresql`.
 /// Used to filter provider-specific parameter names before suggesting or injecting them.
@@ -165,7 +164,13 @@ pub fn upcloud_managed_database_hcl(
 }
 
 /// Generate an `upcloud_storage` HCL resource block.
-pub fn upcloud_storage_hcl(name: &str, title: &str, size: u32, tier: &str, count_line: &str) -> String {
+pub fn upcloud_storage_hcl(
+    name: &str,
+    title: &str,
+    size: u32,
+    tier: &str,
+    count_line: &str,
+) -> String {
     format!(
         r#"resource "upcloud_storage" "{name}" {{
 {count_line}  title = "{title}"
@@ -183,7 +188,12 @@ pub fn upcloud_storage_hcl(name: &str, title: &str, size: u32, tier: &str, count
 }
 
 /// Generate an `upcloud_loadbalancer` HCL resource block.
-pub fn upcloud_loadbalancer_hcl(name: &str, plan: &str, networks_block: &str, extra_comment: &str) -> String {
+pub fn upcloud_loadbalancer_hcl(
+    name: &str,
+    plan: &str,
+    networks_block: &str,
+    extra_comment: &str,
+) -> String {
     let comment = if extra_comment.is_empty() {
         String::new()
     } else {

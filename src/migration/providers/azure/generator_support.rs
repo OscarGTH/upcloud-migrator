@@ -35,13 +35,14 @@ pub fn extract_nsg_refs_from_instance_hcl(hcl: &str) -> Vec<String> {
 pub fn extract_subnet_from_instance_hcl(hcl: &str) -> Option<String> {
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("subnet_id") && trimmed.contains('=') {
-            if let Some(pos) = trimmed.find("azurerm_subnet.") {
-                let after = &trimmed[pos + "azurerm_subnet.".len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+        if trimmed.starts_with("subnet_id")
+            && trimmed.contains('=')
+            && let Some(pos) = trimmed.find("azurerm_subnet.")
+        {
+            let after = &trimmed[pos + "azurerm_subnet.".len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.to_string());
             }
         }
     }
@@ -76,23 +77,24 @@ pub fn extract_nsg_subnet_association_hcl(hcl: &str) -> Option<(String, String)>
     let mut nsg_name: Option<String> = None;
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if subnet_name.is_none() && trimmed.starts_with("subnet_id") {
-            if let Some(pos) = trimmed.find("azurerm_subnet.") {
-                let after = &trimmed[pos + "azurerm_subnet.".len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    subnet_name = Some(name.to_string());
-                }
+        if subnet_name.is_none()
+            && trimmed.starts_with("subnet_id")
+            && let Some(pos) = trimmed.find("azurerm_subnet.")
+        {
+            let after = &trimmed[pos + "azurerm_subnet.".len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                subnet_name = Some(name.to_string());
             }
         }
-        if nsg_name.is_none() && trimmed.starts_with("network_security_group_id") {
-            if let Some(pos) = trimmed.find("azurerm_network_security_group.") {
-                let after =
-                    &trimmed[pos + "azurerm_network_security_group.".len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    nsg_name = Some(name.to_string());
-                }
+        if nsg_name.is_none()
+            && trimmed.starts_with("network_security_group_id")
+            && let Some(pos) = trimmed.find("azurerm_network_security_group.")
+        {
+            let after = &trimmed[pos + "azurerm_network_security_group.".len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                nsg_name = Some(name.to_string());
             }
         }
     }
@@ -103,28 +105,23 @@ pub fn extract_nsg_subnet_association_hcl(hcl: &str) -> Option<(String, String)>
 }
 
 /// Extract (backend_pool_name, server_name) from an `azurerm_lb_backend_address_pool_association` source HCL.
-pub fn extract_backend_pool_server_from_association_hcl(
-    hcl: &str,
-) -> Option<(String, String)> {
+pub fn extract_backend_pool_server_from_association_hcl(hcl: &str) -> Option<(String, String)> {
     let mut pool_name: Option<String> = None;
     let mut server_name: Option<String> = None;
     for line in hcl.lines() {
         let trimmed = line.trim();
         if pool_name.is_none()
             && trimmed.starts_with("backend_address_pool_id")
+            && let Some(pos) = trimmed.find("azurerm_lb_backend_address_pool.")
         {
-            if let Some(pos) = trimmed.find("azurerm_lb_backend_address_pool.") {
-                let after = &trimmed[pos + "azurerm_lb_backend_address_pool.".len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    pool_name = Some(name.to_string());
-                }
+            let after = &trimmed[pos + "azurerm_lb_backend_address_pool.".len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                pool_name = Some(name.to_string());
             }
         }
         if server_name.is_none() && trimmed.starts_with("network_interface_id") {
-            for prefix in &[
-                "azurerm_network_interface.",
-            ] {
+            for prefix in &["azurerm_network_interface."] {
                 if let Some(pos) = trimmed.find(prefix) {
                     let after = &trimmed[pos + prefix.len()..];
                     let name: String = after
@@ -150,13 +147,14 @@ pub fn extract_backend_pool_from_lb_rule_hcl(hcl: &str) -> Option<String> {
     const PREFIX: &str = "azurerm_lb_backend_address_pool.";
     for line in hcl.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("backend_address_pool_ids") || trimmed.starts_with("backend_address_pool_id") {
-            if let Some(pos) = trimmed.find(PREFIX) {
-                let after = &trimmed[pos + PREFIX.len()..];
-                let name = after.split('.').next().unwrap_or("").trim_matches('"');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+        if (trimmed.starts_with("backend_address_pool_ids")
+            || trimmed.starts_with("backend_address_pool_id"))
+            && let Some(pos) = trimmed.find(PREFIX)
+        {
+            let after = &trimmed[pos + PREFIX.len()..];
+            let name = after.split('.').next().unwrap_or("").trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.to_string());
             }
         }
     }
@@ -207,21 +205,21 @@ pub fn extract_probe_health_check_props_hcl(hcl: &str) -> String {
     };
     let mut props = format!("    health_check_type     = \"{hc_type}\"\n");
 
-    if matches!(hc_type, "http" | "https") {
-        if let Some(path) = extract_hcl_attr(hcl, "request_path") {
-            props.push_str(&format!("    health_check_url      = \"{path}\"\n"));
-        }
+    if matches!(hc_type, "http" | "https")
+        && let Some(path) = extract_hcl_attr(hcl, "request_path")
+    {
+        props.push_str(&format!("    health_check_url      = \"{path}\"\n"));
     }
-    if let Some(interval) = extract_hcl_attr(hcl, "interval_in_seconds") {
-        if let Ok(v) = interval.parse::<u32>() {
-            props.push_str(&format!("    health_check_interval = {v}\n"));
-        }
+    if let Some(interval) = extract_hcl_attr(hcl, "interval_in_seconds")
+        && let Ok(v) = interval.parse::<u32>()
+    {
+        props.push_str(&format!("    health_check_interval = {v}\n"));
     }
-    if let Some(n) = extract_hcl_attr(hcl, "number_of_probes") {
-        if let Ok(v) = n.parse::<u32>() {
-            props.push_str(&format!("    health_check_rise     = {v}\n"));
-            props.push_str(&format!("    health_check_fall     = {v}\n"));
-        }
+    if let Some(n) = extract_hcl_attr(hcl, "number_of_probes")
+        && let Ok(v) = n.parse::<u32>()
+    {
+        props.push_str(&format!("    health_check_rise     = {v}\n"));
+        props.push_str(&format!("    health_check_fall     = {v}\n"));
     }
     props
 }
@@ -231,10 +229,12 @@ fn extract_hcl_attr(hcl: &str, attr: &str) -> Option<String> {
     hcl.lines()
         .find(|l| {
             let t = l.trim();
-            t.starts_with(attr)
-                && t[attr.len()..].trim_start().starts_with('=')
+            t.starts_with(attr) && t[attr.len()..].trim_start().starts_with('=')
         })
-        .and_then(|l| l.find('=').map(|pos| l[pos + 1..].trim().trim_matches('"').to_string()))
+        .and_then(|l| {
+            l.find('=')
+                .map(|pos| l[pos + 1..].trim().trim_matches('"').to_string())
+        })
         .filter(|s| !s.is_empty())
 }
 
@@ -248,7 +248,8 @@ pub fn sanitize_azure_refs(s: String) -> String {
 /// Map an Azure resource type name to its UpCloud equivalent.
 pub fn upcloud_type_for_azure(azure_type: &str) -> Option<&'static str> {
     match azure_type {
-        "azurerm_linux_virtual_machine" | "azurerm_windows_virtual_machine"
+        "azurerm_linux_virtual_machine"
+        | "azurerm_windows_virtual_machine"
         | "azurerm_virtual_machine" => Some("upcloud_server"),
         "azurerm_lb" => Some("upcloud_loadbalancer"),
         "azurerm_virtual_network" => Some("upcloud_router"),
@@ -346,10 +347,7 @@ pub fn rewrite_output_refs(s: &str) -> String {
                 result = format!("{}{}{}", &result[..start], replacement, &result[end..]);
                 search_from = start + replacement.len();
             } else {
-                let replacement = format!(
-                    "{}.{}.<TODO: was .{}>",
-                    uc_type, uc_name, attr_trail
-                );
+                let replacement = format!("{}.{}.<TODO: was .{}>", uc_type, uc_name, attr_trail);
                 result = format!("{}{}{}", &result[..start], replacement, &result[end..]);
                 search_from = start + replacement.len();
             }
@@ -454,20 +452,20 @@ fn appgw_probe_health_check_props(block_content: &str) -> String {
         _ => "tcp",
     };
     let mut props = format!("    health_check_type     = \"{hc_type}\"\n");
-    if matches!(hc_type, "http" | "https") {
-        if let Some(path) = extract_hcl_attr(block_content, "path") {
-            props.push_str(&format!("    health_check_url      = \"{path}\"\n"));
-        }
+    if matches!(hc_type, "http" | "https")
+        && let Some(path) = extract_hcl_attr(block_content, "path")
+    {
+        props.push_str(&format!("    health_check_url      = \"{path}\"\n"));
     }
-    if let Some(iv) = extract_hcl_attr(block_content, "interval") {
-        if let Ok(v) = iv.parse::<u32>() {
-            props.push_str(&format!("    health_check_interval = {v}\n"));
-        }
+    if let Some(iv) = extract_hcl_attr(block_content, "interval")
+        && let Ok(v) = iv.parse::<u32>()
+    {
+        props.push_str(&format!("    health_check_interval = {v}\n"));
     }
-    if let Some(n) = extract_hcl_attr(block_content, "unhealthy_threshold") {
-        if let Ok(v) = n.parse::<u32>() {
-            props.push_str(&format!("    health_check_fall     = {v}\n"));
-        }
+    if let Some(n) = extract_hcl_attr(block_content, "unhealthy_threshold")
+        && let Ok(v) = n.parse::<u32>()
+    {
+        props.push_str(&format!("    health_check_fall     = {v}\n"));
     }
     props
 }
@@ -483,13 +481,21 @@ fn appgw_probe_health_check_props(block_content: &str) -> String {
 pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
     use std::collections::{HashMap, HashSet};
 
+    type AppGwRoutingRule = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+
     // frontend_port name → port number
     let mut port_map: HashMap<String, u32> = HashMap::new();
     for (name, content) in extract_appgw_named_blocks(hcl, "frontend_port") {
-        if let Some(s) = extract_hcl_attr(&content, "port") {
-            if let Ok(p) = s.parse::<u32>() {
-                port_map.insert(name, p);
-            }
+        if let Some(s) = extract_hcl_attr(&content, "port")
+            && let Ok(p) = s.parse::<u32>()
+        {
+            port_map.insert(name, p);
         }
     }
 
@@ -509,12 +515,11 @@ pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
             .collect();
 
     // routing rules: (name, listener_name, backend_pool?, http_settings?, redirect_cfg?)
-    let routing_rules: Vec<(String, String, Option<String>, Option<String>, Option<String>)> =
+    let routing_rules: Vec<AppGwRoutingRule> =
         extract_appgw_named_blocks(hcl, "request_routing_rule")
             .into_iter()
             .map(|(name, content)| {
-                let listener =
-                    extract_hcl_attr(&content, "http_listener_name").unwrap_or_default();
+                let listener = extract_hcl_attr(&content, "http_listener_name").unwrap_or_default();
                 let backend = extract_hcl_attr(&content, "backend_address_pool_name");
                 let settings = extract_hcl_attr(&content, "backend_http_settings_name");
                 let redirect = extract_hcl_attr(&content, "redirect_configuration_name");
@@ -569,7 +574,9 @@ pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
     let listener_backend_map: HashMap<String, String> = routing_rules
         .iter()
         .filter_map(|(_, listener, backend_opt, _, _)| {
-            backend_opt.as_ref().map(|backend| (listener.clone(), backend.clone()))
+            backend_opt
+                .as_ref()
+                .map(|backend| (listener.clone(), backend.clone()))
         })
         .collect();
 
@@ -613,25 +620,27 @@ pub fn generate_appgw_sub_resources(lb_name: &str, hcl: &str) -> String {
                 port = port,
                 bid = bid,
             ));
-            if protocol.to_lowercase() == "https" {
-                if let Some(cert_name) = ssl_cert_opt {
-                    let cid = tf_id(cert_name);
-                    seen_tls_certs.insert(cert_name.clone());
-                    out.push_str(&format!(
+            if protocol.to_lowercase() == "https"
+                && let Some(cert_name) = ssl_cert_opt
+            {
+                let cid = tf_id(cert_name);
+                seen_tls_certs.insert(cert_name.clone());
+                out.push_str(&format!(
                         "resource \"upcloud_loadbalancer_frontend_tls_config\" \"{lid}_tls\" {{\n  frontend           = upcloud_loadbalancer_frontend.{lid}.name\n  name               = \"{cert_name}\"\n  certificate_bundle = \"<TODO: upcloud_tls_certificate.{cid}.id>\"\n}}\n\n",
                         lid = lid,
                         cert_name = cert_name,
                         cid = cid,
                     ));
-                }
             }
         } else if let Some(redirect_cfg) = redirect_opt {
             let resolved_backend = redirect_target_map
-            .get(redirect_cfg)
+                .get(redirect_cfg)
                 .and_then(|target_listener| listener_backend_map.get(target_listener))
                 .or_else(|| backend_pools.first());
             let backend_ref = resolved_backend
-                .map(|backend_name| format!("upcloud_loadbalancer_backend.{}.name", tf_id(backend_name)))
+                .map(|backend_name| {
+                    format!("upcloud_loadbalancer_backend.{}.name", tf_id(backend_name))
+                })
                 .unwrap_or_else(|| "<TODO: assign a backend>".into());
             out.push_str(&format!(
                 "# NOTE: HTTP\u{2192}HTTPS redirect \u{2014} reuse the target listener backend so the frontend is applyable.\nresource \"upcloud_loadbalancer_frontend\" \"{lid}\" {{\n  loadbalancer         = upcloud_loadbalancer.{lb}.id\n  name                 = \"{name}\"\n  mode                 = \"http\"\n  port                 = {port}\n  default_backend_name = {backend_ref}\n\n  networks {{\n    name = \"public\"\n  }}\n}}\n\n",
@@ -681,7 +690,10 @@ mod tests {
             "}\n"
         );
         let refs = extract_nsg_refs_from_instance_hcl(hcl);
-        assert!(refs.contains(&"web_nsg".to_string()), "should extract NSG name: {refs:?}");
+        assert!(
+            refs.contains(&"web_nsg".to_string()),
+            "should extract NSG name: {refs:?}"
+        );
     }
 
     #[test]
@@ -697,7 +709,9 @@ mod tests {
 
     #[test]
     fn returns_empty_when_no_nsg_refs() {
-        let refs = extract_nsg_refs_from_instance_hcl("resource \"azurerm_linux_virtual_machine\" \"web\" {}");
+        let refs = extract_nsg_refs_from_instance_hcl(
+            "resource \"azurerm_linux_virtual_machine\" \"web\" {}",
+        );
         assert!(refs.is_empty());
     }
 
@@ -721,7 +735,9 @@ mod tests {
 
     #[test]
     fn returns_none_when_no_subnet_ref() {
-        let result = extract_subnet_from_instance_hcl("resource \"azurerm_linux_virtual_machine\" \"web\" {}");
+        let result = extract_subnet_from_instance_hcl(
+            "resource \"azurerm_linux_virtual_machine\" \"web\" {}",
+        );
         assert!(result.is_none());
     }
 
@@ -785,7 +801,10 @@ mod tests {
     fn sanitize_removes_data_source_refs() {
         let input = "value = data.azurerm_subscription.current.id".to_string();
         let out = sanitize_azure_refs(input);
-        assert!(out.contains("<TODO: remove Azure data source ref>"), "{out}");
+        assert!(
+            out.contains("<TODO: remove Azure data source ref>"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -812,17 +831,26 @@ mod tests {
 
     #[test]
     fn azure_lb_maps_to_upcloud_loadbalancer() {
-        assert_eq!(upcloud_type_for_azure("azurerm_lb"), Some("upcloud_loadbalancer"));
+        assert_eq!(
+            upcloud_type_for_azure("azurerm_lb"),
+            Some("upcloud_loadbalancer")
+        );
     }
 
     #[test]
     fn azure_vnet_maps_to_upcloud_router() {
-        assert_eq!(upcloud_type_for_azure("azurerm_virtual_network"), Some("upcloud_router"));
+        assert_eq!(
+            upcloud_type_for_azure("azurerm_virtual_network"),
+            Some("upcloud_router")
+        );
     }
 
     #[test]
     fn azure_subnet_maps_to_upcloud_network() {
-        assert_eq!(upcloud_type_for_azure("azurerm_subnet"), Some("upcloud_network"));
+        assert_eq!(
+            upcloud_type_for_azure("azurerm_subnet"),
+            Some("upcloud_network")
+        );
     }
 
     #[test]
@@ -958,9 +986,18 @@ mod tests {
         );
         let result = generate_appgw_sub_resources("main", hcl);
         assert!(result.contains("upcloud_loadbalancer_backend"), "{result}");
-        assert!(result.contains("health_check_type     = \"http\""), "{result}");
-        assert!(result.contains("health_check_url      = \"/health\""), "{result}");
-        assert!(result.contains("upcloud_loadbalancer_backend.web_pool.name"), "{result}");
+        assert!(
+            result.contains("health_check_type     = \"http\""),
+            "{result}"
+        );
+        assert!(
+            result.contains("health_check_url      = \"/health\""),
+            "{result}"
+        );
+        assert!(
+            result.contains("upcloud_loadbalancer_backend.web_pool.name"),
+            "{result}"
+        );
     }
 
     #[test]
@@ -993,7 +1030,10 @@ mod tests {
             "  }\n",
         );
         let result = generate_appgw_sub_resources("main", hcl);
-        assert!(result.contains("upcloud_loadbalancer_frontend_tls_config"), "{result}");
+        assert!(
+            result.contains("upcloud_loadbalancer_frontend_tls_config"),
+            "{result}"
+        );
         assert!(result.contains("my-cert"), "{result}");
         assert!(result.contains("upcloud_tls_certificate"), "{result}");
     }
@@ -1017,7 +1057,10 @@ mod tests {
             "  }\n",
         );
         let result = generate_appgw_sub_resources("main", hcl);
-        assert!(result.contains("upcloud_loadbalancer_frontend_rule"), "{result}");
+        assert!(
+            result.contains("upcloud_loadbalancer_frontend_rule"),
+            "{result}"
+        );
         assert!(result.contains("http_redirect"), "{result}");
         assert!(result.contains("scheme = \"https\""), "{result}");
     }

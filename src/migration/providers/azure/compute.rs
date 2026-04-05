@@ -13,12 +13,12 @@ pub fn azure_vm_size_to_upcloud_plan(vm_size: &str) -> Option<&'static str> {
         "Standard_B4ms" => Some("4xCPU-8GB"),
 
         // D-series (general purpose)
-        "Standard_D2s_v3" | "Standard_D2s_v4" | "Standard_D2s_v5"
-        | "Standard_D2as_v4" | "Standard_D2as_v5" => Some("2xCPU-4GB"),
-        "Standard_D4s_v3" | "Standard_D4s_v4" | "Standard_D4s_v5"
-        | "Standard_D4as_v4" | "Standard_D4as_v5" => Some("4xCPU-8GB"),
-        "Standard_D8s_v3" | "Standard_D8s_v4" | "Standard_D8s_v5"
-        | "Standard_D8as_v4" | "Standard_D8as_v5" => Some("8xCPU-32GB"),
+        "Standard_D2s_v3" | "Standard_D2s_v4" | "Standard_D2s_v5" | "Standard_D2as_v4"
+        | "Standard_D2as_v5" => Some("2xCPU-4GB"),
+        "Standard_D4s_v3" | "Standard_D4s_v4" | "Standard_D4s_v5" | "Standard_D4as_v4"
+        | "Standard_D4as_v5" => Some("4xCPU-8GB"),
+        "Standard_D8s_v3" | "Standard_D8s_v4" | "Standard_D8s_v5" | "Standard_D8as_v4"
+        | "Standard_D8as_v5" => Some("8xCPU-32GB"),
         "Standard_D16s_v3" | "Standard_D16s_v4" | "Standard_D16s_v5" => Some("16xCPU-64GB"),
 
         // F-series (compute optimized)
@@ -145,7 +145,8 @@ pub fn map_linux_virtual_machine(res: &TerraformResource) -> MigrationResult {
         } else {
             format!("VM size '{}' → plan '{}'", vm_size, plan)
         },
-        "OS image → Ubuntu 24.04 LTS (update if needed: upctl storage list --public --template)".into(),
+        "OS image → Ubuntu 24.04 LTS (update if needed: upctl storage list --public --template)"
+            .into(),
     ];
     if res.attributes.contains_key("custom_data") {
         notes.push("custom_data set — migrate to user_data for cloud-init.".into());
@@ -304,16 +305,13 @@ pub fn map_virtual_machine(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_ssh_public_key(res: &TerraformResource) -> MigrationResult {
-    let public_key = res
-        .attributes
-        .get("public_key")
-        .map(|v| {
-            if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
-                v[1..v.len() - 1].to_string()
-            } else {
-                v.to_string()
-            }
-        });
+    let public_key = res.attributes.get("public_key").map(|v| {
+        if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
+            v[1..v.len() - 1].to_string()
+        } else {
+            v.to_string()
+        }
+    });
 
     let key_value = public_key
         .as_deref()
@@ -483,32 +481,50 @@ mod tests {
 
     #[test]
     fn b1s_maps_to_1cpu_1gb() {
-        assert_eq!(azure_vm_size_to_upcloud_plan("Standard_B1s"), Some("1xCPU-1GB"));
+        assert_eq!(
+            azure_vm_size_to_upcloud_plan("Standard_B1s"),
+            Some("1xCPU-1GB")
+        );
     }
 
     #[test]
     fn b2s_maps_to_2cpu_4gb() {
-        assert_eq!(azure_vm_size_to_upcloud_plan("Standard_B2s"), Some("2xCPU-4GB"));
+        assert_eq!(
+            azure_vm_size_to_upcloud_plan("Standard_B2s"),
+            Some("2xCPU-4GB")
+        );
     }
 
     #[test]
     fn d4s_v3_maps_to_4cpu_8gb() {
-        assert_eq!(azure_vm_size_to_upcloud_plan("Standard_D4s_v3"), Some("4xCPU-8GB"));
+        assert_eq!(
+            azure_vm_size_to_upcloud_plan("Standard_D4s_v3"),
+            Some("4xCPU-8GB")
+        );
     }
 
     #[test]
     fn d8s_v5_maps_to_8cpu_32gb() {
-        assert_eq!(azure_vm_size_to_upcloud_plan("Standard_D8s_v5"), Some("8xCPU-32GB"));
+        assert_eq!(
+            azure_vm_size_to_upcloud_plan("Standard_D8s_v5"),
+            Some("8xCPU-32GB")
+        );
     }
 
     #[test]
     fn e4s_v3_maps_to_4cpu_16gb() {
-        assert_eq!(azure_vm_size_to_upcloud_plan("Standard_E4s_v3"), Some("4xCPU-16GB"));
+        assert_eq!(
+            azure_vm_size_to_upcloud_plan("Standard_E4s_v3"),
+            Some("4xCPU-16GB")
+        );
     }
 
     #[test]
     fn f8s_v2_maps_to_6cpu_16gb() {
-        assert_eq!(azure_vm_size_to_upcloud_plan("Standard_F8s_v2"), Some("6xCPU-16GB"));
+        assert_eq!(
+            azure_vm_size_to_upcloud_plan("Standard_F8s_v2"),
+            Some("6xCPU-16GB")
+        );
     }
 
     #[test]
@@ -520,7 +536,11 @@ mod tests {
 
     #[test]
     fn linux_vm_generates_upcloud_server() {
-        let res = make_res("azurerm_linux_virtual_machine", "web", &[("size", "Standard_B2s")]);
+        let res = make_res(
+            "azurerm_linux_virtual_machine",
+            "web",
+            &[("size", "Standard_B2s")],
+        );
         let r = map_linux_virtual_machine(&res);
         assert_eq!(r.upcloud_type, "upcloud_server");
         assert_eq!(r.resource_name, "web");
@@ -597,7 +617,10 @@ mod tests {
         let res = make_res("azurerm_linux_virtual_machine", "vm", &[]);
         let hcl = map_linux_virtual_machine(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("login {"), "{hcl}");
-        assert!(hcl.contains("keys = [\"<TODO: paste SSH public key>\"]"), "{hcl}");
+        assert!(
+            hcl.contains("keys = [\"<TODO: paste SSH public key>\"]"),
+            "{hcl}"
+        );
     }
 
     // ── map_windows_virtual_machine ───────────────────────────────────────────

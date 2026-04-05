@@ -123,7 +123,8 @@ pub fn map_network_security_group(res: &TerraformResource) -> MigrationResult {
     let hcl = shared::upcloud_firewall_rules_hcl(&res.name, &rule_blocks);
 
     let mut notes = vec![
-        "Network Security Group → UpCloud Firewall Rules (attached per-server, not per-network)".into(),
+        "Network Security Group → UpCloud Firewall Rules (attached per-server, not per-network)"
+            .into(),
     ];
     if rules.is_empty() {
         notes.push("No security rules found — add firewall_rule blocks manually.".into());
@@ -180,7 +181,7 @@ pub fn map_network_security_rule(res: &TerraformResource) -> MigrationResult {
             if v == "*" {
                 return Some(65535);
             }
-            v.split('-').last().and_then(|p| p.parse::<i32>().ok())
+            v.split('-').next_back().and_then(|p| p.parse::<i32>().ok())
         })
         .unwrap_or(65535);
     let protocol = res
@@ -257,7 +258,8 @@ pub fn map_public_ip(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            "Azure Public IP → UpCloud Floating IP. Attach via mac_address to the target server.".into(),
+            "Azure Public IP → UpCloud Floating IP. Attach via mac_address to the target server."
+                .into(),
         ],
         source_hcl: None,
     }
@@ -377,7 +379,14 @@ fn parse_nsg_rules(raw_hcl: &str) -> Vec<(String, i32, i32, String, Option<Strin
             }
 
             let is_all_traffic = protocol == "*" || (from_port == 0 && to_port == 65535);
-            rules.push((direction, from_port, to_port, protocol, description, is_all_traffic));
+            rules.push((
+                direction,
+                from_port,
+                to_port,
+                protocol,
+                description,
+                is_all_traffic,
+            ));
         }
     }
     rules
@@ -409,8 +418,14 @@ mod tests {
         let r = map_virtual_network(&res);
         assert_eq!(r.upcloud_type, "upcloud_router");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_router\" \"main_router\""), "{hcl}");
-        assert!(!hcl.contains("upcloud_network"), "VNet must not produce upcloud_network\n{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_router\" \"main_router\""),
+            "{hcl}"
+        );
+        assert!(
+            !hcl.contains("upcloud_network"),
+            "VNet must not produce upcloud_network\n{hcl}"
+        );
         assert!(!hcl.contains("ip_network"), "{hcl}");
     }
 
@@ -435,7 +450,10 @@ mod tests {
         let r = map_subnet(&res);
         assert_eq!(r.upcloud_type, "upcloud_network");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_network\" \"app_subnet\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_network\" \"app_subnet\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("10.0.1.0/24"), "{hcl}");
     }
 
@@ -472,13 +490,24 @@ mod tests {
             &[("address_prefixes", "10.0.4.0/24")],
         );
         let hcl = map_subnet(&res).upcloud_hcl.unwrap();
-        assert_eq!(hcl.matches("ip_network").count(), 1, "must have exactly 1 ip_network block\n{hcl}");
+        assert_eq!(
+            hcl.matches("ip_network").count(),
+            1,
+            "must have exactly 1 ip_network block\n{hcl}"
+        );
     }
 
     #[test]
     fn subnet_snippet_is_none() {
-        let res = make_res("azurerm_subnet", "s", &[("address_prefixes", "10.0.5.0/24")]);
-        assert!(map_subnet(&res).snippet.is_none(), "subnets are standalone resources, not snippets");
+        let res = make_res(
+            "azurerm_subnet",
+            "s",
+            &[("address_prefixes", "10.0.5.0/24")],
+        );
+        assert!(
+            map_subnet(&res).snippet.is_none(),
+            "subnets are standalone resources, not snippets"
+        );
     }
 
     // ── map_network_security_group ─────────────────────────────────────────────
@@ -489,7 +518,10 @@ mod tests {
         let r = map_network_security_group(&res);
         assert_eq!(r.upcloud_type, "upcloud_firewall_rules");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_firewall_rules\" \"nsg\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_firewall_rules\" \"nsg\""),
+            "{hcl}"
+        );
     }
 
     #[test]
@@ -508,6 +540,9 @@ mod tests {
         let r = map_public_ip(&res);
         assert_eq!(r.upcloud_type, "upcloud_floating_ip_address");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_floating_ip_address\" \"myip\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_floating_ip_address\" \"myip\""),
+            "{hcl}"
+        );
     }
 }

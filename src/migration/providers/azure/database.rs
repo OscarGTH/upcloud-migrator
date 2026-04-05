@@ -46,7 +46,10 @@ pub fn map_postgresql_server(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("Azure PostgreSQL (SKU: {}) → UpCloud Managed PostgreSQL (plan: {})", sku, plan),
+            format!(
+                "Azure PostgreSQL (SKU: {}) → UpCloud Managed PostgreSQL (plan: {})",
+                sku, plan
+            ),
             "Migrate DB parameters, connection strings, and firewall rules manually.".into(),
             "Set network.uuid to the upcloud_network resource in the same zone.".into(),
         ],
@@ -86,7 +89,10 @@ pub fn map_postgresql_flexible_server(res: &TerraformResource) -> MigrationResul
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("Azure PostgreSQL Flexible (SKU: {}) → UpCloud Managed PostgreSQL (plan: {})", sku, plan),
+            format!(
+                "Azure PostgreSQL Flexible (SKU: {}) → UpCloud Managed PostgreSQL (plan: {})",
+                sku, plan
+            ),
             "Migrate high availability, read replicas, and connection strings manually.".into(),
         ],
         source_hcl: None,
@@ -125,7 +131,10 @@ pub fn map_mysql_server(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("Azure MySQL (SKU: {}) → UpCloud Managed MySQL (plan: {})", sku, plan),
+            format!(
+                "Azure MySQL (SKU: {}) → UpCloud Managed MySQL (plan: {})",
+                sku, plan
+            ),
             "Migrate DB parameters and connection strings manually.".into(),
         ],
         source_hcl: None,
@@ -159,7 +168,10 @@ pub fn map_mysql_flexible_server(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("Azure MySQL Flexible (SKU: {}) → UpCloud Managed MySQL (plan: {})", sku, plan),
+            format!(
+                "Azure MySQL Flexible (SKU: {}) → UpCloud Managed MySQL (plan: {})",
+                sku, plan
+            ),
             "Migrate high availability and connection strings manually.".into(),
         ],
         source_hcl: None,
@@ -207,7 +219,10 @@ pub fn map_redis_cache(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("Azure Redis Cache ({}/{}) → UpCloud Managed Valkey (plan: {})", sku, capacity, plan),
+            format!(
+                "Azure Redis Cache ({}/{}) → UpCloud Managed Valkey (plan: {})",
+                sku, capacity, plan
+            ),
             "Valkey is Redis-compatible. Migrate connection strings and auth tokens.".into(),
         ],
         source_hcl: None,
@@ -227,7 +242,9 @@ pub fn map_postgresql_flexible_server_database(res: &TerraformResource) -> Migra
             let v = v.trim_matches('"');
             // azurerm_postgresql_flexible_server.<name>.id
             if v.starts_with("azurerm_postgresql_flexible_server.") {
-                v.split('.').nth(1).map(|n| format!("upcloud_managed_database_postgresql.{}", n))
+                v.split('.')
+                    .nth(1)
+                    .map(|n| format!("upcloud_managed_database_postgresql.{}", n))
             } else {
                 None
             }
@@ -273,7 +290,9 @@ pub fn map_postgresql_flexible_server_configuration(res: &TerraformResource) -> 
         .and_then(|v| {
             let v = v.trim_matches('"');
             if v.starts_with("azurerm_postgresql_flexible_server.") {
-                v.split('.').nth(1).map(|n| format!("upcloud_managed_database_postgresql.{}", n))
+                v.split('.')
+                    .nth(1)
+                    .map(|n| format!("upcloud_managed_database_postgresql.{}", n))
             } else {
                 None
             }
@@ -326,7 +345,10 @@ pub fn map_cosmosdb_account(res: &TerraformResource) -> MigrationResult {
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("Azure CosmosDB ({}) has no direct UpCloud equivalent.", kind),
+            format!(
+                "Azure CosmosDB ({}) has no direct UpCloud equivalent.",
+                kind
+            ),
             "Consider using UpCloud Managed PostgreSQL or MySQL for relational workloads.".into(),
         ],
         source_hcl: None,
@@ -391,28 +413,44 @@ mod tests {
 
     #[test]
     fn burstable_sku_maps_to_small_plan() {
-        let res = make_res("azurerm_postgresql_server", "db", &[("sku_name", "B_Gen5_1")]);
+        let res = make_res(
+            "azurerm_postgresql_server",
+            "db",
+            &[("sku_name", "B_Gen5_1")],
+        );
         let hcl = map_postgresql_server(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("1x1xCPU-2GB-25GB"), "{hcl}");
     }
 
     #[test]
     fn general_purpose_sku_maps_to_medium_plan() {
-        let res = make_res("azurerm_postgresql_server", "db", &[("sku_name", "GP_Gen5_4")]);
+        let res = make_res(
+            "azurerm_postgresql_server",
+            "db",
+            &[("sku_name", "GP_Gen5_4")],
+        );
         let hcl = map_postgresql_server(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("1x2xCPU-4GB-50GB"), "{hcl}");
     }
 
     #[test]
     fn memory_optimized_sku_maps_to_large_plan() {
-        let res = make_res("azurerm_postgresql_server", "db", &[("sku_name", "MO_Gen5_8")]);
+        let res = make_res(
+            "azurerm_postgresql_server",
+            "db",
+            &[("sku_name", "MO_Gen5_8")],
+        );
         let hcl = map_postgresql_server(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("2x4xCPU-8GB-100GB"), "{hcl}");
     }
 
     #[test]
     fn burstable_prefix_with_underscores_maps_to_small_plan() {
-        let res = make_res("azurerm_postgresql_server", "db", &[("sku_name", "B_Standard_B1ms")]);
+        let res = make_res(
+            "azurerm_postgresql_server",
+            "db",
+            &[("sku_name", "B_Standard_B1ms")],
+        );
         let hcl = map_postgresql_server(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("1x1xCPU-2GB-25GB"), "{hcl}");
     }
@@ -425,7 +463,10 @@ mod tests {
         let r = map_postgresql_server(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_postgresql");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_postgresql\" \"pgdb\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_managed_database_postgresql\" \"pgdb\""),
+            "{hcl}"
+        );
     }
 
     #[test]
@@ -476,7 +517,12 @@ mod tests {
         let res = make_res("azurerm_mysql_server", "mydb", &[]);
         let r = map_mysql_server(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_mysql");
-        assert!(r.upcloud_hcl.unwrap().contains("upcloud_managed_database_mysql"), "type in HCL");
+        assert!(
+            r.upcloud_hcl
+                .unwrap()
+                .contains("upcloud_managed_database_mysql"),
+            "type in HCL"
+        );
     }
 
     // ── map_mysql_flexible_server ─────────────────────────────────────────────
@@ -502,7 +548,10 @@ mod tests {
         let r = map_redis_cache(&res);
         assert_eq!(r.upcloud_type, "upcloud_managed_database_valkey");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_managed_database_valkey\" \"cache\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_managed_database_valkey\" \"cache\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("1x1xCPU-2GB"), "{hcl}");
     }
 
@@ -530,7 +579,10 @@ mod tests {
     fn cosmosdb_is_unsupported() {
         let res = make_res("azurerm_cosmosdb_account", "cosmos", &[]);
         let r = map_cosmosdb_account(&res);
-        assert_eq!(r.status, crate::migration::types::MigrationStatus::Unsupported);
+        assert_eq!(
+            r.status,
+            crate::migration::types::MigrationStatus::Unsupported
+        );
         assert!(r.upcloud_hcl.is_none());
     }
 
@@ -540,7 +592,10 @@ mod tests {
     fn mssql_server_is_unsupported() {
         let res = make_res("azurerm_mssql_server", "sql", &[]);
         let r = map_mssql_server(&res);
-        assert_eq!(r.status, crate::migration::types::MigrationStatus::Unsupported);
+        assert_eq!(
+            r.status,
+            crate::migration::types::MigrationStatus::Unsupported
+        );
         assert!(r.upcloud_hcl.is_none());
     }
 
@@ -548,6 +603,9 @@ mod tests {
     fn mssql_database_is_unsupported() {
         let res = make_res("azurerm_mssql_database", "sqldb", &[]);
         let r = map_mssql_database(&res);
-        assert_eq!(r.status, crate::migration::types::MigrationStatus::Unsupported);
+        assert_eq!(
+            r.status,
+            crate::migration::types::MigrationStatus::Unsupported
+        );
     }
 }

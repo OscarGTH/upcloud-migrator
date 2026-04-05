@@ -40,7 +40,12 @@ pub fn map_lb(res: &TerraformResource) -> MigrationResult {
         .to_string()
     };
 
-    let hcl = shared::upcloud_loadbalancer_hcl(&res.name, "development", &networks_block, "  # update to production-small or higher for production");
+    let hcl = shared::upcloud_loadbalancer_hcl(
+        &res.name,
+        "development",
+        &networks_block,
+        "  # update to production-small or higher for production",
+    );
 
     let mut notes = vec![
         format!("ALB/NLB ({}) → UpCloud Load Balancer", lb_type),

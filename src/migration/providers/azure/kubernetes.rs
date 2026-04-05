@@ -78,7 +78,9 @@ pub fn map_kubernetes_cluster_node_pool(res: &TerraformResource) -> MigrationRes
         .and_then(|v| {
             let v = v.trim_matches('"');
             if v.starts_with("azurerm_kubernetes_cluster.") {
-                v.split('.').nth(1).map(|n| format!("upcloud_kubernetes_cluster.{}.id", n))
+                v.split('.')
+                    .nth(1)
+                    .map(|n| format!("upcloud_kubernetes_cluster.{}.id", n))
             } else {
                 None
             }
@@ -113,7 +115,10 @@ pub fn map_kubernetes_cluster_node_pool(res: &TerraformResource) -> MigrationRes
         snippet: None,
         parent_resource: None,
         notes: vec![
-            format!("AKS Node Pool (vm_size: {}) → UpCloud k8s Node Group (plan: {})", vm_size, plan),
+            format!(
+                "AKS Node Pool (vm_size: {}) → UpCloud k8s Node Group (plan: {})",
+                vm_size, plan
+            ),
             "UpCloud node groups don't auto-scale — set node_count explicitly.".into(),
             "cluster reference auto-resolved from the AKS cluster.".into(),
         ],
@@ -143,11 +148,18 @@ mod tests {
 
     #[test]
     fn aks_cluster_generates_upcloud_kubernetes_cluster() {
-        let res = make_res("azurerm_kubernetes_cluster", "prod", &[("kubernetes_version", "1.30")]);
+        let res = make_res(
+            "azurerm_kubernetes_cluster",
+            "prod",
+            &[("kubernetes_version", "1.30")],
+        );
         let r = map_kubernetes_cluster(&res);
         assert_eq!(r.upcloud_type, "upcloud_kubernetes_cluster");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_kubernetes_cluster\" \"prod\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_kubernetes_cluster\" \"prod\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("version                 = \"1.30\""), "{hcl}");
     }
 
@@ -174,9 +186,16 @@ mod tests {
 
     #[test]
     fn aks_cluster_variable_version_emitted_unquoted() {
-        let res = make_res("azurerm_kubernetes_cluster", "c", &[("kubernetes_version", "var.k8s_version")]);
+        let res = make_res(
+            "azurerm_kubernetes_cluster",
+            "c",
+            &[("kubernetes_version", "var.k8s_version")],
+        );
         let hcl = map_kubernetes_cluster(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("version                 = var.k8s_version"), "{hcl}");
+        assert!(
+            hcl.contains("version                 = var.k8s_version"),
+            "{hcl}"
+        );
         assert!(!hcl.contains("\"var.k8s_version\""), "{hcl}");
     }
 
@@ -200,7 +219,10 @@ mod tests {
         let r = map_kubernetes_cluster_node_pool(&res);
         assert_eq!(r.upcloud_type, "upcloud_kubernetes_node_group");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_kubernetes_node_group\" \"workers\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_kubernetes_node_group\" \"workers\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("plan       = \"4xCPU-8GB\""), "{hcl}");
         assert!(hcl.contains("node_count = 3"), "{hcl}");
     }
@@ -212,7 +234,10 @@ mod tests {
             "np",
             &[
                 ("vm_size", "Standard_D2s_v3"),
-                ("kubernetes_cluster_id", "azurerm_kubernetes_cluster.prod.id"),
+                (
+                    "kubernetes_cluster_id",
+                    "azurerm_kubernetes_cluster.prod.id",
+                ),
             ],
         );
         let hcl = map_kubernetes_cluster_node_pool(&res).upcloud_hcl.unwrap();
@@ -223,7 +248,10 @@ mod tests {
     fn node_pool_without_cluster_ref_has_todo() {
         let res = make_res("azurerm_kubernetes_cluster_node_pool", "np", &[]);
         let hcl = map_kubernetes_cluster_node_pool(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("upcloud_kubernetes_cluster.<TODO>.id"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_kubernetes_cluster.<TODO>.id"),
+            "{hcl}"
+        );
     }
 
     #[test]

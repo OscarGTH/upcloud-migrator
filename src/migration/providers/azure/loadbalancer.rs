@@ -22,7 +22,12 @@ pub fn map_lb(res: &TerraformResource) -> MigrationResult {
     type   = "public"
     family = "IPv4"
   }"#;
-    let hcl = shared::upcloud_loadbalancer_hcl(&res.name, "development", networks_block, "  # update to production-small or higher for production");
+    let hcl = shared::upcloud_loadbalancer_hcl(
+        &res.name,
+        "development",
+        networks_block,
+        "  # update to production-small or higher for production",
+    );
 
     MigrationResult {
         resource_type: res.resource_type.clone(),
@@ -42,17 +47,14 @@ pub fn map_lb(res: &TerraformResource) -> MigrationResult {
 }
 
 pub fn map_lb_backend_address_pool(res: &TerraformResource) -> MigrationResult {
-    let lb_name = res
-        .attributes
-        .get("loadbalancer_id")
-        .and_then(|v| {
-            let v = v.trim_matches('"');
-            if v.starts_with("azurerm_lb.") {
-                v.split('.').nth(1).map(str::to_string)
-            } else {
-                None
-            }
-        });
+    let lb_name = res.attributes.get("loadbalancer_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("azurerm_lb.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
 
     let lb_ref = lb_name
         .as_deref()
@@ -145,25 +147,23 @@ pub fn map_lb_rule(res: &TerraformResource) -> MigrationResult {
         upcloud_hcl: Some(hcl),
         snippet: None,
         parent_resource: None,
-        notes: vec![
-            format!("LB Rule ({}/{}) → UpCloud LB Frontend (mode={})", protocol, port, upcloud_mode),
-        ],
+        notes: vec![format!(
+            "LB Rule ({}/{}) → UpCloud LB Frontend (mode={})",
+            protocol, port, upcloud_mode
+        )],
         source_hcl: None,
     }
 }
 
 pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> MigrationResult {
-    let pool_name = res
-        .attributes
-        .get("backend_address_pool_id")
-        .and_then(|v| {
-            let v = v.trim_matches('"');
-            if v.starts_with("azurerm_lb_backend_address_pool.") {
-                v.split('.').nth(1).map(str::to_string)
-            } else {
-                None
-            }
-        });
+    let pool_name = res.attributes.get("backend_address_pool_id").and_then(|v| {
+        let v = v.trim_matches('"');
+        if v.starts_with("azurerm_lb_backend_address_pool.") {
+            v.split('.').nth(1).map(str::to_string)
+        } else {
+            None
+        }
+    });
 
     let backend_ref = pool_name
         .as_deref()
@@ -171,11 +171,17 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
         .unwrap_or_else(|| "upcloud_loadbalancer_backend.<TODO>.id".into());
 
     // Extract the NIC name to give users a clearer hint for IP resolution.
-    let nic_name = generator_support::extract_backend_pool_server_from_association_hcl(&res.raw_hcl)
-        .map(|(_, nic)| nic);
+    let nic_name =
+        generator_support::extract_backend_pool_server_from_association_hcl(&res.raw_hcl)
+            .map(|(_, nic)| nic);
     let ip_ref = nic_name
         .as_deref()
-        .map(|nic| format!("upcloud_server.<TODO: server using NIC {}>.network_interface[1].ip_address", nic))
+        .map(|nic| {
+            format!(
+                "upcloud_server.<TODO: server using NIC {}>.network_interface[1].ip_address",
+                nic
+            )
+        })
         .unwrap_or_else(|| "<TODO: server IP>".into());
 
     let hcl = format!(
@@ -194,9 +200,8 @@ pub fn map_lb_backend_address_pool_association(res: &TerraformResource) -> Migra
         ip_ref = ip_ref,
     );
 
-    let mut notes = vec![
-        "Backend pool association → upcloud_loadbalancer_static_backend_member.".into(),
-    ];
+    let mut notes =
+        vec!["Backend pool association → upcloud_loadbalancer_static_backend_member.".into()];
     if let Some(ref nic) = nic_name {
         notes.push(format!(
             "Set ip to the private IP of the server using azurerm_network_interface.{} (e.g. upcloud_server.NAME.network_interface[1].ip_address).",
@@ -291,10 +296,10 @@ pub fn map_lb_probe(res: &TerraformResource) -> MigrationResult {
         ),
         "Health check settings are automatically injected into the associated backend pool.".into(),
     ];
-    if hc_type != "tcp" {
-        if let Some(path) = res.attributes.get("request_path") {
-            notes.push(format!("Health check path: {}", path.trim_matches('"')));
-        }
+    if hc_type != "tcp"
+        && let Some(path) = res.attributes.get("request_path")
+    {
+        notes.push(format!("Health check path: {}", path.trim_matches('"')));
     }
 
     MigrationResult {
@@ -329,7 +334,12 @@ mod tests {
         }
     }
 
-    fn make_res_with_hcl(resource_type: &str, name: &str, attrs: &[(&str, &str)], raw_hcl: &str) -> TerraformResource {
+    fn make_res_with_hcl(
+        resource_type: &str,
+        name: &str,
+        attrs: &[(&str, &str)],
+        raw_hcl: &str,
+    ) -> TerraformResource {
         TerraformResource {
             resource_type: resource_type.to_string(),
             name: name.to_string(),
@@ -350,7 +360,10 @@ mod tests {
         let r = map_lb(&res);
         assert_eq!(r.upcloud_type, "upcloud_loadbalancer");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_loadbalancer\" \"main\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_loadbalancer\" \"main\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("configured_status = \"started\""), "{hcl}");
     }
 
@@ -381,7 +394,10 @@ mod tests {
         let r = map_lb_backend_address_pool(&res);
         assert_eq!(r.upcloud_type, "upcloud_loadbalancer_backend");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("resource \"upcloud_loadbalancer_backend\" \"pool\""), "{hcl}");
+        assert!(
+            hcl.contains("resource \"upcloud_loadbalancer_backend\" \"pool\""),
+            "{hcl}"
+        );
         assert!(hcl.contains("upcloud_loadbalancer.main.id"), "{hcl}");
     }
 
@@ -419,8 +435,14 @@ mod tests {
         let r = map_lb_probe(&res);
         assert_eq!(r.status, crate::migration::types::MigrationStatus::Native);
         let snippet = r.snippet.expect("http probe should have a snippet");
-        assert!(snippet.contains("health_check_type     = \"http\""), "{snippet}");
-        assert!(snippet.contains("health_check_url      = \"/health\""), "{snippet}");
+        assert!(
+            snippet.contains("health_check_type     = \"http\""),
+            "{snippet}"
+        );
+        assert!(
+            snippet.contains("health_check_url      = \"/health\""),
+            "{snippet}"
+        );
         assert!(snippet.contains("health_check_interval = 15"), "{snippet}");
         assert!(snippet.contains("health_check_rise     = 2"), "{snippet}");
         assert!(snippet.contains("health_check_fall     = 2"), "{snippet}");
@@ -440,7 +462,10 @@ mod tests {
         let r = map_lb_probe(&res);
         assert_eq!(r.status, crate::migration::types::MigrationStatus::Native);
         let snippet = r.snippet.expect("tcp probe should have a snippet");
-        assert!(snippet.contains("health_check_type     = \"tcp\""), "{snippet}");
+        assert!(
+            snippet.contains("health_check_type     = \"tcp\""),
+            "{snippet}"
+        );
         // No URL for tcp
         assert!(!snippet.contains("health_check_url"), "{snippet}");
     }
@@ -496,7 +521,10 @@ mod tests {
         );
         let hcl = map_lb_rule(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_loadbalancer.main.id"), "{hcl}");
-        assert!(hcl.contains("upcloud_loadbalancer_backend.web.name"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_loadbalancer_backend.web.name"),
+            "{hcl}"
+        );
     }
 
     #[test]
@@ -508,7 +536,10 @@ mod tests {
         );
         let hcl = map_lb_rule(&res).upcloud_hcl.unwrap();
         assert!(hcl.contains("upcloud_loadbalancer.<TODO>.id"), "{hcl}");
-        assert!(hcl.contains("upcloud_loadbalancer_backend.<TODO>.name"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_loadbalancer_backend.<TODO>.name"),
+            "{hcl}"
+        );
     }
 
     // ── map_lb_backend_address_pool_association ────────────────────────────────
@@ -518,19 +549,30 @@ mod tests {
         let res = make_res(
             "azurerm_lb_backend_address_pool_association",
             "assoc",
-            &[("backend_address_pool_id", "azurerm_lb_backend_address_pool.pool.id")],
+            &[(
+                "backend_address_pool_id",
+                "azurerm_lb_backend_address_pool.pool.id",
+            )],
         );
         let r = map_lb_backend_address_pool_association(&res);
         assert_eq!(r.upcloud_type, "upcloud_loadbalancer_static_backend_member");
         let hcl = r.upcloud_hcl.unwrap();
-        assert!(hcl.contains("upcloud_loadbalancer_backend.pool.id"), "{hcl}");
+        assert!(
+            hcl.contains("upcloud_loadbalancer_backend.pool.id"),
+            "{hcl}"
+        );
     }
 
     #[test]
     fn pool_association_no_ref_has_todo() {
         let res = make_res("azurerm_lb_backend_address_pool_association", "a", &[]);
-        let hcl = map_lb_backend_address_pool_association(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("upcloud_loadbalancer_backend.<TODO>.id"), "{hcl}");
+        let hcl = map_lb_backend_address_pool_association(&res)
+            .upcloud_hcl
+            .unwrap();
+        assert!(
+            hcl.contains("upcloud_loadbalancer_backend.<TODO>.id"),
+            "{hcl}"
+        );
     }
 
     #[test]
@@ -538,15 +580,23 @@ mod tests {
         let res = make_res_with_hcl(
             "azurerm_lb_backend_address_pool_association",
             "web_assoc",
-            &[("backend_address_pool_id", "azurerm_lb_backend_address_pool.web.id")],
+            &[(
+                "backend_address_pool_id",
+                "azurerm_lb_backend_address_pool.web.id",
+            )],
             r#"resource "azurerm_lb_backend_address_pool_association" "web_assoc" {
   network_interface_id    = azurerm_network_interface.web.id
   ip_configuration_name   = "internal"
   backend_address_pool_id = azurerm_lb_backend_address_pool.web.id
 }"#,
         );
-        let hcl = map_lb_backend_address_pool_association(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("web"), "NIC name 'web' should appear in IP hint\n{hcl}");
+        let hcl = map_lb_backend_address_pool_association(&res)
+            .upcloud_hcl
+            .unwrap();
+        assert!(
+            hcl.contains("web"),
+            "NIC name 'web' should appear in IP hint\n{hcl}"
+        );
     }
 
     // ── map_application_gateway ───────────────────────────────────────────────
@@ -571,7 +621,10 @@ mod tests {
         );
         let res = make_res_with_hcl("azurerm_application_gateway", "main", &[], raw);
         let hcl = map_application_gateway(&res).upcloud_hcl.unwrap();
-        assert!(hcl.contains("upcloud_network.appgw.id"), "subnet should be resolved\n{hcl}");
+        assert!(
+            hcl.contains("upcloud_network.appgw.id"),
+            "subnet should be resolved\n{hcl}"
+        );
         assert!(!hcl.contains("<TODO: upcloud_network reference>"), "{hcl}");
     }
 

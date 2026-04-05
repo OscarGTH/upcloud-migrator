@@ -24,7 +24,8 @@ impl SourceProvider for AzureSourceProvider {
 
     fn resource_role(&self, resource_type: &str) -> ResourceRole {
         match resource_type {
-            "azurerm_linux_virtual_machine" | "azurerm_windows_virtual_machine"
+            "azurerm_linux_virtual_machine"
+            | "azurerm_windows_virtual_machine"
             | "azurerm_virtual_machine"
             | "azurerm_linux_virtual_machine_scale_set" => ResourceRole::ComputeInstance,
             "azurerm_ssh_public_key" => ResourceRole::KeyPair,
@@ -107,7 +108,10 @@ impl SourceProvider for AzureSourceProvider {
     }
 
     fn ssh_key_placeholder(&self, key_name: &str) -> String {
-        format!("<TODO: SSH public key for azurerm_ssh_public_key.{}>", key_name)
+        format!(
+            "<TODO: SSH public key for azurerm_ssh_public_key.{}>",
+            key_name
+        )
     }
 
     fn parameter_group_todo_text(&self, group_name: &str) -> String {

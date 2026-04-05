@@ -99,7 +99,10 @@ pub fn map_rds_instance(res: &TerraformResource) -> MigrationResult {
         &format!("{}-db", res.name),
         plan,
         &network_uuid_placeholder,
-        &format!("    # Private network access — required for servers to reach the database.{}", param_group_marker),
+        &format!(
+            "    # Private network access — required for servers to reach the database.{}",
+            param_group_marker
+        ),
     );
 
     let network_note = if network_uuid_placeholder.contains("subnet_group=") {
@@ -154,7 +157,7 @@ pub fn map_rds_cluster(res: &TerraformResource) -> MigrationResult {
         &format!("{}-cluster", res.name),
         "1x2xCPU-4GB-50GB",
         &network_uuid_placeholder,
-        &param_group_marker.trim_start_matches('\n'),
+        param_group_marker.trim_start_matches('\n'),
     );
 
     MigrationResult {

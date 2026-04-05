@@ -699,10 +699,8 @@ mod tests {
             "}\n",
         );
 
-        let tmp_path = std::env::temp_dir().join(format!(
-            "upcloud_firewall_source_{}.tf",
-            std::process::id()
-        ));
+        let tmp_path =
+            std::env::temp_dir().join(format!("upcloud_firewall_source_{}.tf", std::process::id()));
         std::fs::write(&tmp_path, tf_source).unwrap();
         let tf_file = parse_tf_file(&tmp_path).unwrap();
         let _ = std::fs::remove_file(&tmp_path);
@@ -714,8 +712,14 @@ mod tests {
             .as_deref()
             .expect("instance mapping must keep source HCL");
 
-        assert!(source_hcl.contains("vpc_security_group_ids"), "{source_hcl}");
-        assert!(source_hcl.contains("aws_security_group.web"), "{source_hcl}");
+        assert!(
+            source_hcl.contains("vpc_security_group_ids"),
+            "{source_hcl}"
+        );
+        assert!(
+            source_hcl.contains("aws_security_group.web"),
+            "{source_hcl}"
+        );
     }
 
     #[test]

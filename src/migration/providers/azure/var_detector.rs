@@ -41,9 +41,7 @@ const AZURE_REGIONS: &[&str] = &[
 /// Map an Azure region to the closest UpCloud zone.
 pub fn azure_region_to_upcloud_zone(region: &str) -> Option<&'static str> {
     match region {
-        "eastus" | "eastus2" | "centralus" | "northcentralus" | "southcentralus" => {
-            Some("us-nyc1")
-        }
+        "eastus" | "eastus2" | "centralus" | "northcentralus" | "southcentralus" => Some("us-nyc1"),
         "westus" | "westus2" | "westus3" => Some("us-chi1"),
         "canadacentral" | "canadaeast" => Some("us-nyc1"),
         "northeurope" | "uksouth" | "ukwest" => Some("de-fra1"),
@@ -97,12 +95,12 @@ fn score_vm_size(
     let original_default = default_val.map(str::to_string);
 
     // Signal 1: default matches Azure VM size (e.g. Standard_B2s)
-    if let Some(dv) = default_val {
-        if let Some(plan) = azure_vm_size_to_upcloud_plan(dv) {
-            score += 5;
-            signals.push(format!("default '{}' is an Azure VM size", dv));
-            converted_value = Some(plan.to_string());
-        }
+    if let Some(dv) = default_val
+        && let Some(plan) = azure_vm_size_to_upcloud_plan(dv)
+    {
+        score += 5;
+        signals.push(format!("default '{}' is an Azure VM size", dv));
+        converted_value = Some(plan.to_string());
     }
 
     // Signal 2: used as size / vm_size attribute
@@ -162,13 +160,13 @@ fn score_region(
     let original_default = default_val.map(str::to_string);
 
     // Signal 1: default is a known Azure region
-    if let Some(dv) = default_val {
-        if is_azure_region(dv) {
-            score += 5;
-            signals.push(format!("default '{}' is an Azure region", dv));
-            if let Some(zone) = azure_region_to_upcloud_zone(dv) {
-                converted_value = Some(zone.to_string());
-            }
+    if let Some(dv) = default_val
+        && is_azure_region(dv)
+    {
+        score += 5;
+        signals.push(format!("default '{}' is an Azure region", dv));
+        if let Some(zone) = azure_region_to_upcloud_zone(dv) {
+            converted_value = Some(zone.to_string());
         }
     }
 
@@ -230,7 +228,10 @@ mod tests {
 
     #[test]
     fn swedencentral_maps_to_fi_hel1() {
-        assert_eq!(azure_region_to_upcloud_zone("swedencentral"), Some("fi-hel1"));
+        assert_eq!(
+            azure_region_to_upcloud_zone("swedencentral"),
+            Some("fi-hel1")
+        );
     }
 
     #[test]
@@ -240,12 +241,18 @@ mod tests {
 
     #[test]
     fn southeastasia_maps_to_sg_sin1() {
-        assert_eq!(azure_region_to_upcloud_zone("southeastasia"), Some("sg-sin1"));
+        assert_eq!(
+            azure_region_to_upcloud_zone("southeastasia"),
+            Some("sg-sin1")
+        );
     }
 
     #[test]
     fn australiaeast_maps_to_au_syd1() {
-        assert_eq!(azure_region_to_upcloud_zone("australiaeast"), Some("au-syd1"));
+        assert_eq!(
+            azure_region_to_upcloud_zone("australiaeast"),
+            Some("au-syd1")
+        );
     }
 
     #[test]
@@ -277,7 +284,10 @@ mod tests {
     fn detects_vm_size_from_vm_size_usage_attr() {
         let det = AzureVarDetector;
         let results = det.detect("my_var", None, None, &["vm_size".to_string()]);
-        assert!(!results.is_empty(), "should detect from 'vm_size' usage attr");
+        assert!(
+            !results.is_empty(),
+            "should detect from 'vm_size' usage attr"
+        );
         assert_eq!(results[0].kind, VarKind::InstanceType);
     }
 
@@ -285,7 +295,10 @@ mod tests {
     fn detects_vm_size_from_variable_name() {
         let det = AzureVarDetector;
         let results = det.detect("vm_size", None, None, &[]);
-        assert!(!results.is_empty(), "variable name 'vm_size' should trigger detection");
+        assert!(
+            !results.is_empty(),
+            "variable name 'vm_size' should trigger detection"
+        );
         assert_eq!(results[0].kind, VarKind::InstanceType);
     }
 
@@ -313,7 +326,10 @@ mod tests {
     fn detects_region_from_location_usage_attr() {
         let det = AzureVarDetector;
         let results = det.detect("my_var", None, None, &["location".to_string()]);
-        assert!(!results.is_empty(), "should detect from 'location' usage attr");
+        assert!(
+            !results.is_empty(),
+            "should detect from 'location' usage attr"
+        );
         assert_eq!(results[0].kind, VarKind::Region);
     }
 
@@ -321,7 +337,10 @@ mod tests {
     fn detects_region_from_variable_name_containing_location() {
         let det = AzureVarDetector;
         let results = det.detect("azure_location", None, None, &[]);
-        assert!(!results.is_empty(), "variable name 'azure_location' should trigger detection");
+        assert!(
+            !results.is_empty(),
+            "variable name 'azure_location' should trigger detection"
+        );
         assert_eq!(results[0].kind, VarKind::Region);
     }
 
@@ -329,6 +348,9 @@ mod tests {
     fn unknown_default_value_returns_no_results() {
         let det = AzureVarDetector;
         let results = det.detect("my_flag", Some("true"), None, &[]);
-        assert!(results.is_empty(), "unrecognised default should return nothing");
+        assert!(
+            results.is_empty(),
+            "unrecognised default should return nothing"
+        );
     }
 }

@@ -152,7 +152,9 @@ pub trait SourceProvider {
 /// Detect the source cloud provider from migration results.
 /// Falls back to AWS if no provider-specific prefix is recognized.
 pub fn detect_provider(results: &[MigrationResult]) -> Box<dyn SourceProvider> {
-    let is_azure = results.iter().any(|r| r.resource_type.starts_with("azurerm_"));
+    let is_azure = results
+        .iter()
+        .any(|r| r.resource_type.starts_with("azurerm_"));
     let _is_aws = results.iter().any(|r| r.resource_type.starts_with("aws_"));
 
     if is_azure {
